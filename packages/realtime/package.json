@@ -1,0 +1,42 @@
+{
+  "name": "@folkways/realtime",
+  "version": "0.0.0",
+  "description": "Real-time communication SDK",
+  "types": "./dist/index.d.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
+    },
+    "./iife": "./dist/index.global.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup --config tsup.base.config.ts && tsup --config tsup.iife.config.ts",
+    "dev": "tsup --config tsup.base.config.ts && tsup --config tsup.iife.config.ts --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "pnpm build"
+  },
+  "keywords": ["realtime", "websocket", "sdk"],
+  "author": "Folkways",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.9.2",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/folkways/realtime.git",
+    "directory": "packages/realtime"
+  }
+}
