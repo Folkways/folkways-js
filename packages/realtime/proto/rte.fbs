@@ -1,0 +1,381 @@
+// RTE wire protocol, v1.
+//
+// One schema for both directions. A buffer is a packet of 1..64 frames.
+// Client packets carry file identifier "RTEC", server packets "RTES"; the
+// union tag ranges also encode direction (1-15 both, 16-127 client,
+// 128-255 server), so a frame is checked three ways before it is used.
+//
+// Evolution rules: add fields only at the end of a table, never reuse a tag
+// or enum value, and zero always means the safe default.
+// No table carries a segment id: the segment comes only from the verified token.
+
+namespace RTE.V1;
+
+// ---------------------------------------------------------------- enums
+
+enum DeliveryClass : ubyte {
+  Unspecified = 0,
+  Durable = 1,
+  LastValue = 2,
+  Ephemeral = 3,
+}
+
+enum AckMode : ubyte {
+  Default = 0,
+  NoAck = 1,
+  Accepted = 2,
+  Committed = 3,
+}
+
+enum StartAt : ubyte {
+  Latest = 0,
+  Oldest = 1,
+  After = 2,
+  LastN = 3,
+}
+
+enum OnGap : ubyte {
+  FromOldest = 0,
+  FromLatest = 1,
+  Fail = 2,
+}
+
+enum GapReason : ubyte {
+  Unspecified = 0,
+  Expired = 1,
+  EpochLost = 2,
+  SlowConsumer = 3,
+}
+
+enum FlowAction : ubyte {
+  Resume = 0,
+  Pause = 1,
+  Throttle = 2,
+}
+
+// 0-1023 belong to Folkways, 1024 and up are free for applications.
+enum ContentType : ushort {
+  Unspecified = 0,
+  Bytes = 1,
+  Json = 2,
+  Text = 3,
+  FlatBuffers = 4,
+  Protobuf = 5,
+  MsgPack = 6,
+  Cbor = 7,
+}
+
+// Grouped by hundreds: 1xx frame, 2xx auth, 3xx limits, 4xx topics, 5xx server.
+enum Code : ushort {
+  Ok = 0,
+
+  BadFrame = 100,
+  InvalidArgument = 101,
+  UnsupportedVersion = 102,
+  UnsupportedFrame = 103,
+  UnsupportedFeature = 104,
+  FrameTooLarge = 105,
+  HelloRequired = 106,
+
+  AuthRequired = 200,
+  AuthInvalid = 201,
+  AuthExpired = 202,
+  Forbidden = 203,
+  Suspended = 204,
+  ResumeRejected = 205,
+
+  RateLimited = 300,
+  QuotaExceeded = 301,
+  PayloadTooLarge = 302,
+  Backpressure = 303,
+
+  InvalidTopic = 400,
+  ClassMismatch = 401,
+  InvalidCursor = 402,
+  IdempotencyConflict = 403,
+  IdempotencyKeyRequired = 404,
+
+  Internal = 500,
+  Unavailable = 501,
+  Draining = 502,
+  Overloaded = 503,
+  Timeout = 504,
+}
+
+// ---------------------------------------------------------- building blocks
+
+struct Uuid128 {
+  hi: ulong;
+  lo: ulong;
+}
+
+// A position in a topic. The epoch changes whenever the node may have lost
+// the tail of the topic (recovery, ownership change, purge and recreate), so
+// a sequence is never assigned twice within one epoch.
+struct Cursor {
+  epoch: ulong;
+  seq: ulong;
+}
+
+struct TopicCursor {
+  topic_id: ulong;
+  cursor: Cursor;
+}
+
+table Header {
+  key: string (required);
+  value: string;
+}
+
+// One stored event. Nothing in it is specific to a recipient, so it is
+// encoded once and shared by every subscriber.
+table Event {
+  topic_id: ulong;
+  epoch: ulong;
+  seq: ulong;
+  server_ts_ms: ulong;
+  client_ts_ms: ulong;
+  publisher: string;
+  key: string;
+  tombstone: bool;
+  content_type: ContentType;
+  headers: [Header];
+  payload: [ubyte];
+}
+
+table Limits {
+  max_frame_bytes: uint = 65536;
+  max_payload_bytes: uint = 61440;
+  max_frames_per_packet: uint = 64;
+  max_subscriptions: uint = 1000;
+  max_topic_bytes: uint = 255;
+  max_headers: uint = 16;
+  heartbeat_ms: uint = 30000;
+  idle_timeout_ms: uint = 90000;
+}
+
+// ------------------------------------------------- both directions (1-15)
+
+table Ping {
+  nonce: ulong;
+  ts_ms: ulong;
+}
+
+table Pong {
+  nonce: ulong;
+  ts_ms: ulong;
+}
+
+table Close {
+  code: Code;
+  reason: string;
+  retry_after_ms: uint;
+}
+
+table Extension {
+  code: uint;
+  content_type: ContentType;
+  data: [ubyte];
+}
+
+// ----------------------------------------------------- client (16-127)
+
+table Hello {
+  proto_minor: ushort;
+  client: string;
+  token: string;
+  resume_session: Uuid128;
+  resume_token: [ubyte];
+  max_frame_bytes: uint;
+  features: [string];
+}
+
+table Reauth {
+  token: string (required);
+}
+
+table Publish {
+  topic: string;
+  topic_id: ulong;
+  payload: [ubyte];
+  content_type: ContentType;
+  delivery: DeliveryClass;
+  ack: AckMode;
+  idempotency_key: Uuid128;
+  key: string;
+  tombstone: bool;
+  ttl_ms: uint;
+  client_ts_ms: ulong;
+  headers: [Header];
+}
+
+table Subscribe {
+  topic: string;
+  topic_id: ulong;
+  start: StartAt;
+  cursor: Cursor;
+  last_n: uint;
+  on_gap: OnGap;
+  snapshot: bool = true;
+}
+
+table Unsubscribe {
+  topic: string;
+  topic_id: ulong;
+}
+
+table CursorAck {
+  acks: [TopicCursor];
+}
+
+table Poll {
+  topics: [Subscribe];
+  max_events: uint;
+  wait_ms: uint;
+}
+
+// ---------------------------------------------------- server (128-255)
+
+table Welcome {
+  proto_minor: ushort;
+  server: string;
+  server_time_ms: ulong;
+  session_id: Uuid128;
+  resume_token: [ubyte];
+  resumed: bool;
+  identity: string;
+  expires_at_ms: ulong;
+  limits: Limits (required);
+  features: [string];
+}
+
+table TokenExpiring {
+  expires_at_ms: ulong;
+}
+
+table OpOk {}
+
+table OpError {
+  code: Code;
+  message: string;
+  retry_after_ms: uint;
+  topic_id: ulong;
+}
+
+table PubAck {
+  topic_id: ulong;
+  level: AckMode;
+  epoch: ulong;
+  seq: ulong;
+  duplicate: bool;
+  server_ts_ms: ulong;
+}
+
+table SubAck {
+  topic_id: ulong;
+  delivery: DeliveryClass;
+  catching_up: bool;
+  oldest: Cursor;
+  latest: Cursor;
+  snapshot_follows: bool;
+}
+
+table Gap {
+  topic_id: ulong;
+  reason: GapReason;
+  requested: Cursor;
+  oldest: Cursor;
+  latest: Cursor;
+  resumed: bool;
+}
+
+table Flow {
+  action: FlowAction;
+  retry_after_ms: uint;
+  topic_id: ulong;
+}
+
+table PollEnd {
+  timed_out: bool;
+  more: bool;
+}
+
+table Deliver {
+  topic_id: ulong;
+  delivery: DeliveryClass;
+  replayed: bool;
+  events: [Event] (required);
+}
+
+table Snapshot {
+  topic_id: ulong;
+  snapshot_id: ulong;
+  chunk: uint;
+  last_chunk: bool;
+  fence: Cursor;
+  events: [Event];
+}
+
+table SubEnded {
+  topic_id: ulong;
+  code: Code;
+  message: string;
+}
+
+// ------------------------------------------------------------- framing
+
+// Tag numbers are permanent. A retired tag stays unused forever.
+union ClientBody {
+  Ping = 1,
+  Pong = 2,
+  Close = 3,
+  Extension = 4,
+  Hello = 16,
+  Reauth = 17,
+  Publish = 32,
+  Subscribe = 33,
+  Unsubscribe = 34,
+  CursorAck = 35,
+  Poll = 36,
+}
+
+union ServerBody {
+  Ping = 1,
+  Pong = 2,
+  Close = 3,
+  Extension = 4,
+  Welcome = 128,
+  TokenExpiring = 129,
+  OpOk = 144,
+  OpError = 145,
+  PubAck = 146,
+  SubAck = 147,
+  Gap = 148,
+  Flow = 149,
+  PollEnd = 150,
+  Deliver = 176,
+  Snapshot = 177,
+  SubEnded = 178,
+}
+
+table ClientFrame {
+  corr: ulong;
+  body: ClientBody;
+}
+
+table ServerFrame {
+  corr: ulong;
+  body: ServerBody;
+}
+
+// Finished with identifier "RTEC".
+table ClientPacket {
+  frames: [ClientFrame] (required);
+}
+
+// Finished with identifier "RTES".
+table ServerPacket {
+  frames: [ServerFrame] (required);
+}
+
+root_type ClientPacket;

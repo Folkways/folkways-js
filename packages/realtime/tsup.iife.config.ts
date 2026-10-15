@@ -1,19 +1,16 @@
 import { defineConfig } from 'tsup';
 
+// Browser <script> build: exposes the package exports as `window.Folkways`,
+// so `Folkways.connect(...)` works without a bundler.
 export default defineConfig({
   entry: ['src/index.ts'],
   format: ['iife'],
-  globalName: 'Realtime',               // internal var name for the IIFE
-  dts: false,                           // d.ts already emitted by base build
+  target: 'es2020',
+  globalName: 'Folkways',
+  dts: false,
   sourcemap: true,
-  clean: false,                         // don't delete dist created by base build
+  clean: false,
   minify: true,
   splitting: false,
-  banner: {
-    js: 'window.Folkways = window.Folkways || {};',
-  },
-  footer: {
-    js: 'window.Folkways.Realtime = Realtime;',
-  },
-  outDir: 'dist',                       // ensure both builds write to same place
+  outDir: 'dist',
 });
