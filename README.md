@@ -9,7 +9,7 @@ TypeScript client SDK for the Folkways Realtime Transport Engine (RTE v1), and e
 | [`@folkways/realtime`](./packages/realtime) | The SDK: `Folkways.connect()`, topics, subscriptions, WebSocket and HTTP long-poll transports |
 | [`react-example`](./apps/react-example) | A chat with a typing indicator built on the SDK |
 
-Design and specification: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+Usage guide and API: [packages/realtime](./packages/realtime#readme).
 
 ## Getting started
 
