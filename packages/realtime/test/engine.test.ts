@@ -742,7 +742,7 @@ describe('subscribe', () => {
     );
     await until(() => snapshots.length === 1);
     expect(snapshots[0]!.map((m) => m.key)).toEqual(['d1', 'd2']);
-    expect([...sub.values.keys()]).toEqual(['d1', 'd2']);
+    expect([...c.topic('rides/42/location').values().keys()]).toEqual(['d1', 'd2']);
     conn.reply(0n, {
       type: 'deliver',
       topicId: 3n,
@@ -750,8 +750,8 @@ describe('subscribe', () => {
       replayed: false,
       events: [event(3n, EPOCH, 3n, '', { key: 'd1', tombstone: true })],
     });
-    await until(() => sub.values.size === 1);
-    expect([...sub.values.keys()]).toEqual(['d2']);
+    await until(() => c.topic('rides/42/location').values().size === 1);
+    expect([...c.topic('rides/42/location').values().keys()]).toEqual(['d2']);
 
     // A second handle on the same topic shares the wire subscription and gets the current state.
     const late: Message[][] = [];
@@ -887,6 +887,106 @@ describe('subscribe', () => {
       if (out.length === 2) await sub.unsubscribe();
     }
     expect(out).toEqual(['a', 'b']);
+  });
+});
+
+describe('topic views', () => {
+  async function connected(opts: Partial<RealtimeOptions> = {}) {
+    const fake = new FakeStreamTransport();
+    const c = client(fake, { token: mintToken('alice'), ...opts });
+    const conn = await fake.nextConn();
+    await conn.welcome({ identity: 'alice' });
+    await c.connect();
+    return { c, conn };
+  }
+  const ack = (seq: bigint, uid?: bigint) =>
+    ({ type: 'pubAck', topicId: 9n, level: AckMode.Accepted, cursor: { epoch: EPOCH, seq }, duplicate: false, serverTsMs: 7, uid: uid ? { hi: 0n, lo: uid } : undefined }) as const;
+
+  it('shows a send as pending, then sent, and replaces it with the delivered copy in place', async () => {
+    const { c, conn } = await connected();
+    const room = c.topic<{ message: { text: string } }>('chat/45');
+    room.subscribe();
+    const s = await conn.next('subscribe');
+    conn.reply(s.corr, { type: 'subAck', topicId: 9n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
+    let notified = 0;
+    room.messages.subscribe(() => notified++);
+    const p = room.publish('message', { text: 'hi' });
+    expect(room.messages.getSnapshot()).toMatchObject([{ status: 'pending', pending: true, data: { text: 'hi' }, publisher: 'alice', name: 'message' }]);
+    const f = await conn.next('publish');
+    conn.reply(f.corr, ack(1n, 5n));
+    await p;
+    expect(room.messages.getSnapshot()).toMatchObject([{ status: 'sent', pending: false, id: `${EPOCH}:1`, uid: '00000000000000000000000000000005' }]);
+    conn.reply(0n, {
+      type: 'deliver',
+      topicId: 9n,
+      delivery: DeliveryClass.Durable,
+      replayed: false,
+      events: [
+        event(9n, EPOCH, 1n, '{"text":"hi"}', { publisher: 'alice', name: 'message', contentType: ContentType.Json, uid: { hi: 0n, lo: 5n } }),
+        event(9n, EPOCH, 2n, '{"text":"yo"}', { publisher: 'bob', name: 'message', contentType: ContentType.Json }),
+      ],
+    });
+    await until(() => room.messages.getSnapshot().length === 2);
+    expect(room.messages.getSnapshot().map((m) => [m.id, m.status, m.publisher])).toEqual([
+      [`${EPOCH}:1`, 'sent', 'alice'],
+      [`${EPOCH}:2`, 'sent', 'bob'],
+    ]);
+    expect(notified).toBeGreaterThanOrEqual(3);
+    expect(Object.isFrozen(room.messages.getSnapshot())).toBe(true);
+  });
+
+  it('marks a failed send and retries it with the same idempotency key', async () => {
+    const { c, conn } = await connected();
+    const room = c.topic('chat/45');
+    const p = room.publish('message', 'x').catch((e: RealtimeError) => e);
+    const f = await conn.next('publish');
+    conn.reply(f.corr, { type: 'opError', code: Code.Forbidden, message: 'no', retryAfterMs: 0, topicId: 0n });
+    expect(await p).toMatchObject({ code: Code.Forbidden });
+    const failed = room.messages.getSnapshot()[0]!;
+    expect(failed).toMatchObject({ status: 'failed', error: { code: Code.Forbidden } });
+    const again = failed.retry!();
+    expect(room.messages.getSnapshot()[0]!.status).toBe('pending');
+    const f2 = await conn.next('publish');
+    expect(f2.msg.publish.idempotencyKey).toEqual(f.msg.publish.idempotencyKey);
+    conn.reply(f2.corr, ack(3n));
+    await again;
+    expect(room.messages.getSnapshot()[0]!.status).toBe('sent');
+  });
+
+  it('keeps values per event name and expires signals after the TTL', async () => {
+    const { c, conn } = await connected({ signalTtlMs: 60 });
+    const room = c.topic('chat/45');
+    room.subscribe();
+    const s = await conn.next('subscribe');
+    conn.reply(s.corr, {
+      type: 'subAck',
+      topicId: 9n,
+      delivery: DeliveryClass.Unspecified,
+      catchingUp: false,
+      snapshotFollows: false,
+      deliveries: [DeliveryClass.Durable, DeliveryClass.LastValue, DeliveryClass.Ephemeral],
+    });
+    const typing = room.values('typing');
+    let typingChanges = 0;
+    typing.subscribe(() => typingChanges++);
+    conn.reply(0n, {
+      type: 'deliver',
+      topicId: 9n,
+      delivery: DeliveryClass.Unspecified,
+      replayed: false,
+      events: [
+        event(9n, 0n, 0n, 'a', { delivery: DeliveryClass.LastValue, name: 'read', key: 'bob' }),
+        event(9n, 0n, 0n, 'b', { delivery: DeliveryClass.LastValue, name: 'location', key: 'bob' }),
+        event(9n, 0n, 0n, 'c', { delivery: DeliveryClass.Ephemeral, name: 'typing', publisher: 'carol' }),
+      ],
+    });
+    await until(() => typing.size === 1);
+    expect(room.values('read').get('bob')?.data).toBe('a');
+    expect(room.values('location').get('bob')?.data).toBe('b');
+    expect([...typing.keys()]).toEqual(['carol']);
+    expect([...room.values().keys()].sort()).toEqual(['location/bob', 'read/bob', 'typing/carol']);
+    await until(() => typing.size === 0, 1_000, 'signal expiry');
+    expect(typingChanges).toBeGreaterThanOrEqual(2);
   });
 });
 

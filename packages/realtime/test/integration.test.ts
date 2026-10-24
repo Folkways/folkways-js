@@ -108,10 +108,10 @@ for (const transport of ['websocket', 'http'] as const) {
       expect(sub.deliveries).toEqual(['kv']);
 
       await bob.topic(topic).publish('location', { lat: 2 }, { delivery: 'kv', key: 'driver-2', ttlMs: 60_000 });
-      await until(() => sub.values.size === 2, 8_000, 'two values');
+      await until(() => alice.topic(topic).values().size === 2, 8_000, 'two values');
       await bob.topic(topic).publish('location', null, { delivery: 'kv', key: 'driver-1', remove: true });
-      await until(() => sub.values.size === 1, 8_000, 'delete applied');
-      expect([...sub.values.keys()]).toEqual(['driver-2']);
+      await until(() => alice.topic(topic).values().size === 1, 8_000, 'delete applied');
+      expect([...alice.topic(topic).values().keys()]).toEqual(['driver-2']);
     });
 
     it('reports Forbidden for topics without a rule or right', async () => {
@@ -178,8 +178,8 @@ live('ephemeral signals', () => {
     expect(sub.deliveries).toEqual(['signal']);
     const bob = await open('bob');
     void bob.topic(topic).publish('typing', { typing: true }, { delivery: 'signal' });
-    await until(() => sub.values.get('bob'), 8_000, 'signal');
-    expect(sub.values.get('bob')!.data).toEqual({ typing: true });
+    await until(() => alice.topic(topic).values().get('bob'), 8_000, 'signal');
+    expect(alice.topic(topic).values().get('bob')!.data).toEqual({ typing: true });
     // publish() on an Ephemeral topic still gets a receipt.
     await expect(bob.topic(topic).publish('typing', { typing: false }, { delivery: 'signal' })).resolves.toBeUndefined();
   });

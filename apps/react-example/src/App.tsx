@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
-import { Folkways, type Message, type Realtime } from '@folkways/realtime';
+import { Folkways, type Realtime } from '@folkways/realtime';
 import './App.css';
 
 // Dev node defaults (rte `make dev`). Get a token with `make -s token SUB=alice` in the rte repo.
@@ -16,34 +16,27 @@ type RoomEvents = { message: { text: string } };
 type TypingEvents = { typing: { typing: boolean } };
 
 function Chat({ client }: { client: Realtime }) {
-  const [messages, setMessages] = useState<Message<RoomEvents['message']>[]>([]);
-  const [typing, setTyping] = useState<string[]>([]);
+  const room = client.topic<RoomEvents>(ROOM);
+  const typingTopic = client.topic<TypingEvents>(TYPING);
+  const messages = useSyncExternalStore(room.messages.subscribe, room.messages.getSnapshot);
+  const typingValues = useSyncExternalStore(typingTopic.values().subscribe, typingTopic.values().getSnapshot);
   const { state, transport } = useSyncExternalStore(client.connection.subscribe, client.connection.getSnapshot);
   const identity = client.session?.identity;
+  const typing = [...typingValues.values()].filter((m) => (m.data as { typing?: boolean })?.typing && m.publisher !== identity).map((m) => m.publisher);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string>();
   const lastSignal = useRef(0);
 
   useEffect(() => {
-    const sub = client.topic<RoomEvents>(ROOM).subscribe((m) => setMessages((prev) => [...prev, m]), { from: { last: 50 } });
+    const sub = room.subscribe({ from: { last: 50 } });
     sub.on('error', (e) => setError(e.message));
     return () => void sub.unsubscribe();
-  }, [client]);
+  }, [room]);
 
   useEffect(() => {
-    const sub = client.topic<TypingEvents>(TYPING).subscribe();
-    const refresh = () =>
-      setTyping(
-        [...sub.values.values()].filter((m) => m.data?.typing && m.publisher !== identity).map((m) => m.publisher),
-      );
-    const off = sub.on('message', refresh);
-    const timer = setInterval(refresh, 1_000);
-    return () => {
-      off();
-      clearInterval(timer);
-      void sub.unsubscribe();
-    };
-  }, [client, identity]);
+    const sub = typingTopic.subscribe();
+    return () => void sub.unsubscribe();
+  }, [typingTopic]);
 
   async function send(e: FormEvent) {
     e.preventDefault();
@@ -74,8 +67,9 @@ function Chat({ client }: { client: Realtime }) {
       </header>
       <ul className="messages">
         {messages.map((m) => (
-          <li key={m.id} className={m.publisher === identity ? 'mine' : ''}>
+          <li key={m.id} className={`${m.publisher === identity ? 'mine' : ''} ${m.status}`}>
             <b>{m.publisher}</b> {m.data?.text ?? String(m.data)}
+            {m.status === 'failed' && <button onClick={() => void m.retry?.()}>retry</button>}
           </li>
         ))}
       </ul>

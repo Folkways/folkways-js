@@ -12,6 +12,7 @@ import { Emitter } from '../shared/emitter';
 import type { RealtimeError } from '../shared/errors';
 import { deliveryName, gapReasonName, toMessage } from './message';
 import type { Delivery, GapEvent, Message, MessageHandler, SubscriptionStatus } from './types';
+import type { TopicViews } from './views';
 
 export type SubscriptionEvents<M> = {
   /** Every event, after the handler ran. */
@@ -46,6 +47,7 @@ export class Subscription<M extends Message = Message> extends Emitter<Subscript
   private allowed: readonly DeliveryClass[] = [];
   private topicClass = DeliveryClass.Unspecified;
   private readonly events?: ReadonlySet<string>;
+  private attached = false;
   private cursorValue?: Cursor;
   private resolveReady!: () => void;
   private rejectReady!: (e: RealtimeError) => void;
@@ -56,8 +58,8 @@ export class Subscription<M extends Message = Message> extends Emitter<Subscript
     private readonly engine: Engine,
     spec: Parameters<Engine['subscribe']>[1],
     private readonly handler: MessageHandler<M> | undefined,
-    private readonly signalTtlMs: number,
     filter: SubscriptionFilter = {},
+    private readonly views?: TopicViews,
   ) {
     super();
     this.types = filter.types?.length ? filter.types : undefined;
@@ -84,25 +86,6 @@ export class Subscription<M extends Message = Message> extends Emitter<Subscript
   /** The last event this handle finished handling. */
   get cursor(): Cursor | undefined {
     return this.cursorValue;
-  }
-
-  /**
-   * Current values: LastValue topics by key, Ephemeral topics by publisher
-   * (signals younger than `signalTtlMs`). Empty for Durable topics.
-   */
-  get values(): Map<string, M> {
-    const out = new Map<string, M>();
-    const { kv, signals } = this.engine.values(this.entry);
-    const cutoff = Date.now() - this.signalTtlMs;
-    for (const byKey of kv.values()) {
-      for (const [k, v] of byKey) out.set(k, toMessage({ topic: this.topic, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true }) as M);
-    }
-    for (const byPublisher of signals.values()) {
-      for (const [k, v] of byPublisher) {
-        if (v.receivedAt >= cutoff) out.set(k, toMessage({ topic: this.topic, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true }) as M);
-      }
-    }
-    return out;
   }
 
   /** Stops this handle. The wire subscription ends when the last handle on the topic stops. */
@@ -152,6 +135,10 @@ export class Subscription<M extends Message = Message> extends Emitter<Subscript
     if (this.isTerminal()) return;
     this.allowed = info.deliveries;
     this.topicClass = info.deliveryClass;
+    if (!this.attached) {
+      this.attached = true;
+      this.views?.attach(this.entry);
+    }
     this.setStatus('active');
     this.resolveReady();
   }
@@ -160,6 +147,7 @@ export class Subscription<M extends Message = Message> extends Emitter<Subscript
   async onEvent(d: DeliveredEvent): Promise<void> {
     if (this.isTerminal() || !this.wants(d)) return;
     const m = toMessage(d) as M;
+    this.views?.ingest(m);
     await this.deliver(m);
     if (m.cursor) this.cursorValue = m.cursor;
     this.emit('message', m);
@@ -169,6 +157,7 @@ export class Subscription<M extends Message = Message> extends Emitter<Subscript
   async onSnapshot(events: DeliveredEvent[]): Promise<void> {
     if (this.isTerminal()) return;
     const messages = events.filter((d) => this.wants(d)).map((d) => toMessage(d) as M);
+    this.views?.refreshValues();
     for (const m of messages) await this.deliver(m);
     this.emit('snapshot', messages);
   }
@@ -229,6 +218,10 @@ export class Subscription<M extends Message = Message> extends Emitter<Subscript
   private setStatus(s: SubscriptionStatus): void {
     if (this.statusValue === s) return;
     this.statusValue = s;
+    if (this.attached && this.isTerminal()) {
+      this.attached = false;
+      this.views?.detach(this.entry);
+    }
     this.emit('status', s);
   }
 }

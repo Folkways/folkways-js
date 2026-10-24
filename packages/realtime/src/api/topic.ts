@@ -8,13 +8,17 @@ import { Subscription } from './subscription';
 import type {
   Delivery,
   EventMap,
+  LiveView,
+  Message,
   MessageHandler,
   MessageOf,
   PublishOptions,
   PublishReceipt,
   StartFrom,
   SubscribeOptions,
+  TopicMessage,
 } from './types';
+import { TopicViews, type ValuesView } from './views';
 
 function invalid(message: string, topic: string): RealtimeError {
   return new RealtimeError(Code.InvalidArgument, { message, topic, local: true });
@@ -74,12 +78,37 @@ export function toReceipt(topic: string, delivery: Delivery, ack: PubAck): Publi
  * Get it with `client.topic(name)`; handles are cached by name.
  */
 export class Topic<E extends EventMap = EventMap> {
+  private readonly views: TopicViews;
+
   /** @internal */
   constructor(
     readonly name: string,
     protected readonly engine: Engine,
     protected readonly signalTtlMs: number,
-  ) {}
+  ) {
+    this.views = new TopicViews(name, engine, signalTtlMs);
+  }
+
+  /**
+   * Recent stream events (up to 100) as a live view, including this
+   * client's sends: `pending` at once, `sent` on the node's receipt,
+   * `failed` with a `retry()`. Filled while a subscription of this handle is
+   * active (sends show either way).
+   */
+  get messages(): LiveView<readonly TopicMessage<E[keyof E & string], keyof E & string>[]> {
+    return this.views.messages as unknown as LiveView<readonly TopicMessage<E[keyof E & string], keyof E & string>[]>;
+  }
+
+  /**
+   * Current values of an event, as a live ReadonlyMap: kv values by key,
+   * signals by publisher (sent in the last 5 s). Without an event name,
+   * every value of the topic keyed `name/key` (e.g. a `$presence/…` topic,
+   * whose entries have no name, keeps plain keys). Filled while a
+   * subscription of this handle is active.
+   */
+  values<K extends keyof E & string>(event?: K): ValuesView {
+    return this.views.values(event);
+  }
 
   /**
    * Publishes one event. Stream and kv events resolve with the node's
@@ -104,10 +133,25 @@ export class Topic<E extends EventMap = EventMap> {
         (err) => this.engine.log.debug('signal not sent', { topic: this.name, err }),
       );
     }
-    return this.engine.publish(this.name, body, true, opts.signal).then((ack) => {
-      if (!ack) throw new RealtimeError(Code.Internal, { message: 'publish settled without a receipt', topic: this.name, local: true });
-      return toReceipt(this.name, delivery, ack);
+    if (delivery === 'kv') return this.send(body, delivery, opts.signal);
+    // Stream: show the send at once, then settle it in place.
+    const localId = `local:${format128(body.idempotencyKey!)}`;
+    const attempt = (): Promise<PublishReceipt> =>
+      this.send(body, delivery, opts.signal).then(
+        (r) => {
+          this.views.acked(localId, r);
+          return r;
+        },
+        (err: RealtimeError) => {
+          this.views.failed(localId, err);
+          throw err;
+        },
+      );
+    this.views.addPending(localId, this.pendingMessage(event, data, body, localId), async () => {
+      this.views.retrying(localId);
+      await attempt();
     });
+    return attempt();
   }
 
   /**
@@ -123,10 +167,44 @@ export class Topic<E extends EventMap = EventMap> {
   ): Subscription<MessageOf<E>> {
     const handler = typeof a === 'function' ? a : undefined;
     const opts = typeof a === 'function' ? b : (a ?? b);
-    return new Subscription<MessageOf<E>>(this.name, this.engine, toSpec(opts, this.name), handler, this.signalTtlMs, {
-      types: opts?.types?.map(deliveryCode),
-      events: opts?.events,
+    return new Subscription<MessageOf<E>>(
+      this.name,
+      this.engine,
+      toSpec(opts, this.name),
+      handler,
+      { types: opts?.types?.map(deliveryCode), events: opts?.events },
+      this.views,
+    );
+  }
+
+  private send(body: PublishBody, delivery: Delivery, signal?: AbortSignal): Promise<PublishReceipt> {
+    return this.engine.publish(this.name, body, true, signal).then((ack) => {
+      if (!ack) throw new RealtimeError(Code.Internal, { message: 'publish settled without a receipt', topic: this.name, local: true });
+      return toReceipt(this.name, delivery, ack);
     });
+  }
+
+  private pendingMessage(event: string, data: unknown, body: PublishBody, localId: string): Message {
+    const info = this.engine.info;
+    const headers: Record<string, string> = {};
+    for (const [k, v] of body.headers ?? []) headers[k] = v;
+    return {
+      topic: this.name,
+      name: event,
+      delivery: 'stream',
+      publisher: info?.identity ?? '',
+      data,
+      id: localId,
+      deleted: false,
+      headers,
+      contentType: body.contentType ?? 0,
+      payload: body.payload,
+      serverTime: body.clientTsMs ?? Date.now(),
+      clientTime: body.clientTsMs,
+      replayed: false,
+      pending: true,
+      fromCache: false,
+    };
   }
 
   /** The delivery of an event: the option, else the topic's definition, else `stream`. */
