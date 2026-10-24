@@ -167,6 +167,13 @@ export class SocketSession implements Session {
       this.enqueue({ frame: { corr, msg: { type: 'unsubscribe', topic } } });
     }
     for (const e of registry.entries()) {
+      if (e.retype && e.wire === 'active') {
+        // Widen the type filter: subscribe again after the last event seen.
+        const corr = this.corr();
+        this.pending.set(corr, { kind: 'ignore' });
+        this.enqueue({ frame: { corr, msg: { type: 'unsubscribe', topic: e.topicId !== undefined ? { id: e.topicId } : { name: e.name } } } });
+        e.wire = 'idle';
+      }
       if (e.wire !== 'idle') continue;
       if (!e.loaded) {
         void e.loading.then(() => this.syncSubscriptions());

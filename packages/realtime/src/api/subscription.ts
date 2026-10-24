@@ -1,7 +1,6 @@
 import {
   type ActiveInfo,
   type DeliveredEvent,
-  DeliveryClass,
   type Engine,
   type GapInfo,
   type TopicEntry,
@@ -92,11 +91,15 @@ export class Subscription<T = unknown> extends Emitter<SubscriptionEvents<T>> im
    */
   get values(): Map<string, Message<T>> {
     const out = new Map<string, Message<T>>();
-    const isEphemeral = this.entry.deliveryClass === DeliveryClass.Ephemeral;
+    const { kv, signals } = this.engine.values(this.entry);
     const cutoff = Date.now() - this.signalTtlMs;
-    for (const [k, v] of this.engine.values(this.entry)) {
-      if (isEphemeral && v.receivedAt < cutoff) continue;
-      out.set(k, toMessage<T>({ topic: this.topic, event: v.event, replayed: false, fromSnapshot: true }));
+    for (const byKey of kv.values()) {
+      for (const [k, v] of byKey) out.set(k, toMessage<T>({ topic: this.topic, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true }));
+    }
+    for (const byPublisher of signals.values()) {
+      for (const [k, v] of byPublisher) {
+        if (v.receivedAt >= cutoff) out.set(k, toMessage<T>({ topic: this.topic, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true }));
+      }
     }
     return out;
   }

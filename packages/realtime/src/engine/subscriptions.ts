@@ -31,6 +31,8 @@ export interface SubscribeSpec {
 export interface DeliveredEvent {
   readonly topic: string;
   readonly event: WireEvent;
+  /** The event's type: its own, else the frame's, else the topic's. */
+  readonly delivery: DeliveryClass;
   readonly replayed: boolean;
   readonly fromSnapshot: boolean;
 }
@@ -38,6 +40,8 @@ export interface DeliveredEvent {
 export interface ActiveInfo {
   readonly topicId: bigint;
   readonly deliveryClass: DeliveryClass;
+  /** Event types the topic's rule allows; empty from nodes before ADR-001. */
+  readonly deliveries: readonly DeliveryClass[];
   readonly catchingUp: boolean;
   readonly oldest?: Cursor;
   readonly latest?: Cursor;
@@ -53,6 +57,8 @@ export interface GapInfo {
 
 /** A consumer of one topic (layer 1's `Subscription`). Calls arrive in order, one at a time. */
 export interface TopicListener {
+  /** Event types this listener receives; absent or empty means all. */
+  readonly types?: readonly DeliveryClass[];
   onActive(info: ActiveInfo): void | Promise<void>;
   onEvent(e: DeliveredEvent): void | Promise<void>;
   onSnapshot(events: DeliveredEvent[]): void | Promise<void>;
@@ -69,7 +75,31 @@ export type WireState = 'idle' | 'subscribing' | 'active';
 
 export interface StoredValue {
   readonly event: WireEvent;
+  readonly delivery: DeliveryClass;
   readonly receivedAt: number;
+}
+
+/** Current values by event name, then by key (kv) or publisher (signal). */
+export type ValueMaps = Map<string, Map<string, StoredValue>>;
+
+const accepts = (types: readonly DeliveryClass[] | undefined, d: DeliveryClass): boolean =>
+  !types || types.length === 0 || types.includes(d);
+
+/** Union of event-type filters; empty means all. */
+function unionTypes(lists: (readonly DeliveryClass[] | undefined)[]): DeliveryClass[] {
+  const out = new Set<DeliveryClass>();
+  for (const l of lists) {
+    if (!l || l.length === 0) return [];
+    for (const t of l) out.add(t);
+  }
+  return [...out].sort();
+}
+
+/** True when a wire subscription for `have` carries every type in `want`. */
+function covers(have: readonly DeliveryClass[], want: readonly DeliveryClass[]): boolean {
+  if (have.length === 0) return true;
+  if (want.length === 0) return false;
+  return want.every((t) => have.includes(t));
 }
 
 /** One topic this client follows, shared by every listener on it. */
@@ -92,8 +122,16 @@ export class TopicEntry {
   loaded = false;
   readonly loading: Promise<void>;
   everActive = false;
-  /** Current values of a LastValue (by key) or Ephemeral (by publisher) topic. */
-  readonly values = new Map<string, StoredValue>();
+  /** Event types the rule allows (`SubAck.deliveries`); empty when unknown. */
+  allowed: readonly DeliveryClass[] = [];
+  /** Types requested by the current wire subscription; empty means all. */
+  wireTypes: readonly DeliveryClass[] = [];
+  /** A listener needs types the wire subscription does not carry: subscribe again. */
+  retype = false;
+  /** kv values: event name → key → value. */
+  readonly kv: ValueMaps = new Map();
+  /** Latest signal per sender: event name → publisher → value. */
+  readonly signals: ValueMaps = new Map();
   snapshotBuf?: { id: bigint; events: WireEvent[] };
   chain: Promise<void> = Promise.resolve();
   cursorRecovered = false;
@@ -121,8 +159,36 @@ export class TopicEntry {
         });
   }
 
+  /** The topic may hold kv or signal values (and so answers with snapshots). */
   get isState(): boolean {
-    return this.deliveryClass === DeliveryClass.LastValue || this.deliveryClass === DeliveryClass.Ephemeral;
+    const state = (d: DeliveryClass) => d === DeliveryClass.LastValue || d === DeliveryClass.Ephemeral;
+    return state(this.deliveryClass) || this.allowed.some(state);
+  }
+
+  /** The union of every listener's event types; empty means all. */
+  wantedTypes(): DeliveryClass[] {
+    return unionTypes([...this.listeners].map((l) => l.types));
+  }
+
+  /** The type of an event: its own, else the frame's, else the topic's (nodes before ADR-001). */
+  deliveryOf(e: WireEvent, frame: DeliveryClass = DeliveryClass.Unspecified): DeliveryClass {
+    return e.delivery || frame || this.deliveryClass || DeliveryClass.Durable;
+  }
+
+  /** Records a kv or signal event in the value maps. */
+  storeValue(event: WireEvent, delivery: DeliveryClass, now: number): void {
+    const maps = delivery === DeliveryClass.LastValue ? this.kv : delivery === DeliveryClass.Ephemeral ? this.signals : undefined;
+    if (!maps) return;
+    const name = event.name ?? '';
+    const key = delivery === DeliveryClass.LastValue ? (event.key ?? event.publisher) : event.publisher;
+    let m = maps.get(name);
+    if (event.tombstone) {
+      m?.delete(key);
+      if (m?.size === 0) maps.delete(name);
+      return;
+    }
+    if (!m) maps.set(name, (m = new Map()));
+    m.set(key, { event, delivery, receivedAt: now });
   }
 
   /** Where to resume: the last received event, else the stored cursor. */
@@ -133,9 +199,12 @@ export class TopicEntry {
   /** The `Subscribe` body for (re)subscribing this topic now. */
   subscribeBody(): SubscribeBody {
     const topic = { name: this.name };
+    const types = this.wantedTypes();
+    this.wireTypes = types;
+    this.retype = false;
     const at = this.resumeCursor;
     if (at) {
-      return { topic, start: StartAt.After, cursor: at, onGap: this.spec.onGap, snapshot: this.spec.snapshot || this.isState };
+      return { topic, start: StartAt.After, cursor: at, onGap: this.spec.onGap, snapshot: this.spec.snapshot || this.isState, types };
     }
     return {
       topic,
@@ -144,6 +213,7 @@ export class TopicEntry {
       lastN: this.spec.lastN,
       onGap: this.spec.onGap,
       snapshot: this.spec.snapshot,
+      types,
     };
   }
 }
@@ -159,7 +229,6 @@ export interface RegistryOptions {
 /** Subscribe errors worth retrying on the same session. */
 const TRANSIENT = new Set<number>([Code.RateLimited, Code.Internal, Code.Overloaded, Code.Unavailable]);
 
-const valueKey = (e: WireEvent): string => e.key ?? e.publisher;
 
 /**
  * Every topic the client follows, independent of the transport. Sessions
@@ -193,18 +262,25 @@ export class SubscriptionRegistry {
     let entry = this.byName.get(name);
     if (entry) {
       entry.listeners.add(listener);
+      if (entry.wire !== 'idle' && !covers(entry.wireTypes, entry.wantedTypes())) {
+        // The newcomer needs types the wire subscription filters out.
+        entry.retype = true;
+        this.opts.onChange();
+      }
       if (entry.everActive && entry.wire === 'active' && entry.topicId !== undefined) {
         // A late joiner: confirm at once and hand it the current state.
         const info: ActiveInfo = {
           topicId: entry.topicId,
           deliveryClass: entry.deliveryClass,
+          deliveries: entry.allowed,
           catchingUp: false,
           latest: entry.latest,
         };
-        const e = entry;
+        // The values as of now: later events reach the newcomer through the chain.
+        const values = entry.isState ? this.currentValues(entry).filter((d) => accepts(listener.types, d.delivery)) : undefined;
         this.run(entry, async () => {
           await listener.onActive(info);
-          if (e.isState) await listener.onSnapshot(this.currentValues(e));
+          if (values) await listener.onSnapshot(values);
         });
       }
       return entry;
@@ -254,6 +330,7 @@ export class SubscriptionRegistry {
     if (entry.removed) return;
     this.bind(entry, ack.topicId);
     entry.deliveryClass = ack.delivery;
+    entry.allowed = ack.deliveries;
     entry.latest = ack.latest;
     if (quiet && entry.wire === 'active') return;
     entry.wire = 'active';
@@ -261,6 +338,7 @@ export class SubscriptionRegistry {
     const info: ActiveInfo = {
       topicId: ack.topicId,
       deliveryClass: ack.delivery,
+      deliveries: ack.deliveries,
       catchingUp: ack.catchingUp,
       oldest: ack.oldest,
       latest: ack.latest,
@@ -298,20 +376,24 @@ export class SubscriptionRegistry {
   /** Events from the wire. `replayed` overrides the frame's flag (long-poll reads are always "replays"). */
   onDeliver(entry: TopicEntry, d: Deliver, replayed = d.replayed): void {
     if (entry.removed) return;
-    if (d.delivery !== DeliveryClass.Unspecified) entry.deliveryClass = d.delivery;
+    if (d.delivery !== DeliveryClass.Unspecified && entry.allowed.length === 0) entry.deliveryClass = d.delivery;
     const now = this.now();
     for (const event of d.events) {
+      const delivery = entry.deliveryOf(event, d.delivery);
+      // Only numbered events take part in order, dedup and resume; nodes
+      // with ADR-001 number stream events only, so kv and signal events
+      // (seq 0) never look like a gap or a duplicate.
+      const numbered = event.seq > 0n;
       const c: Cursor = { epoch: event.epoch, seq: event.seq };
-      if (!isAfter(c, entry.received)) continue; // already seen
-      entry.received = c;
-      if (entry.isState) {
-        if (event.tombstone) entry.values.delete(valueKey(event));
-        else entry.values.set(valueKey(event), { event, receivedAt: now });
+      if (numbered) {
+        if (!isAfter(c, entry.received)) continue; // already seen
+        entry.received = c;
       }
-      const delivered: DeliveredEvent = { topic: entry.name, event, replayed, fromSnapshot: false };
+      entry.storeValue(event, delivery, now);
+      const delivered: DeliveredEvent = { topic: entry.name, event, delivery, replayed, fromSnapshot: false };
       this.run(entry, async () => {
-        await Promise.all([...entry.listeners].map((l) => l.onEvent(delivered)));
-        await this.processed(entry, c);
+        await Promise.all([...entry.listeners].filter((l) => accepts(l.types, delivery)).map((l) => l.onEvent(delivered)));
+        if (numbered && delivery === DeliveryClass.Durable) await this.processed(entry, c);
       });
     }
   }
@@ -326,19 +408,21 @@ export class SubscriptionRegistry {
     const events = entry.snapshotBuf.events;
     entry.snapshotBuf = undefined;
     const now = this.now();
-    entry.values.clear();
+    entry.kv.clear();
+    entry.signals.clear();
     let top: Cursor | undefined = s.fence;
+    const delivered: DeliveredEvent[] = [];
     for (const event of events) {
-      if (!event.tombstone) entry.values.set(valueKey(event), { event, receivedAt: now });
+      const delivery = entry.deliveryOf(event);
+      entry.storeValue(event, delivery, now);
+      if (!event.tombstone) delivered.push({ topic: entry.name, event, delivery, replayed: false, fromSnapshot: true });
+      if (event.seq === 0n) continue;
       const c = { epoch: event.epoch, seq: event.seq };
       if (!top || (c.epoch === top.epoch && c.seq > top.seq)) top = c;
     }
     if (top) entry.received = top;
-    const delivered = events
-      .filter((e) => !e.tombstone)
-      .map((event): DeliveredEvent => ({ topic: entry.name, event, replayed: false, fromSnapshot: true }));
     this.run(entry, async () => {
-      await Promise.all([...entry.listeners].map((l) => l.onSnapshot(delivered)));
+      await Promise.all([...entry.listeners].map((l) => l.onSnapshot(delivered.filter((d) => accepts(l.types, d.delivery)))));
       if (top) await this.processed(entry, top);
     });
   }
@@ -381,6 +465,7 @@ export class SubscriptionRegistry {
     for (const entry of this.byName.values()) {
       const wasActive = entry.wire === 'active';
       entry.wire = 'idle';
+      entry.retype = false;
       entry.snapshotBuf = undefined;
       entry.topicId = undefined;
       if (wasActive) this.each(entry, (l) => l.onResync());
@@ -401,16 +486,24 @@ export class SubscriptionRegistry {
     const out: TopicCursor[] = [];
     for (const e of this.byName.values()) {
       if (e.wire !== 'active' || e.topicId === undefined || !e.processed) continue;
-      if (e.deliveryClass !== DeliveryClass.Durable || sameCursor(e.processed, e.hinted)) continue;
+      if ((e.isState && e.allowed.length === 0) || sameCursor(e.processed, e.hinted)) continue;
       e.hinted = e.processed;
       out.push({ topicId: e.topicId, cursor: e.processed });
     }
     return out;
   }
 
-  /** The current values of a state topic, as snapshot events. */
+  /** The current kv and signal values of a topic, as snapshot events. */
   currentValues(entry: TopicEntry): DeliveredEvent[] {
-    return [...entry.values.values()].map(({ event }) => ({ topic: entry.name, event, replayed: false, fromSnapshot: true }));
+    const out: DeliveredEvent[] = [];
+    for (const maps of [entry.kv, entry.signals]) {
+      for (const byKey of maps.values()) {
+        for (const { event, delivery } of byKey.values()) {
+          out.push({ topic: entry.name, event, delivery, replayed: false, fromSnapshot: true });
+        }
+      }
+    }
+    return out;
   }
 
   // ------------------------------------------------------------ internals
@@ -428,7 +521,7 @@ export class SubscriptionRegistry {
 
   private async processed(entry: TopicEntry, c: Cursor): Promise<void> {
     entry.processed = c;
-    if (entry.deliveryClass !== DeliveryClass.Durable) return;
+    if (entry.isState && entry.allowed.length === 0) return; // a state topic on a node before ADR-001: snapshots resume it
     try {
       await this.opts.cursorStore.set(entry.name, c);
     } catch (err) {

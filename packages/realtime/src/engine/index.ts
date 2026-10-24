@@ -4,7 +4,7 @@
  */
 export { Engine, type ConnectionState, type EngineConfig, type EngineEvents, type ReconnectInfo, type ReconnectOptions } from './engine';
 export type { CloseInfo, SessionInfo } from './session';
-export type { ActiveInfo, DeliveredEvent, GapInfo, StoredValue, SubscribeSpec, TopicEntry, TopicListener } from './subscriptions';
+export type { ActiveInfo, DeliveredEvent, GapInfo, StoredValue, SubscribeSpec, TopicEntry, TopicListener, ValueMaps } from './subscriptions';
 export { type CursorStore, memoryCursorStore, localStorageCursorStore } from './cursor-store';
 export { type TokenProvider, type TokenReason, type TokenSource, peekJwt } from './token';
 export {

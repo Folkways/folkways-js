@@ -142,9 +142,10 @@ describe('PublishQueue', () => {
 describe('SubscriptionRegistry', () => {
   const spec = { start: StartAt.Latest, lastN: 0, onGap: OnGap.FromOldest, snapshot: true, resume: true };
 
-  function listener() {
+  function listener(types?: DeliveryClass[]) {
     const calls: string[] = [];
     const l: TopicListener = {
+      types,
       onActive: () => void calls.push('active'),
       onEvent: (e) => void calls.push(`event:${e.event.seq}`),
       onSnapshot: (es) => void calls.push(`snapshot:${es.length}`),
@@ -199,5 +200,85 @@ describe('SubscriptionRegistry', () => {
     await e.chain;
     expect(calls).toEqual(['active', 'event:1', 'event:2', 'event:3', 'event:1']);
     expect(e.processed).toEqual({ epoch: 2n, seq: 1n });
+  });
+
+  describe('events of several types in one topic (ADR-001)', () => {
+    const { Durable: S, LastValue: KV, Ephemeral: SIG } = DeliveryClass;
+    const deliver = (...events: ReturnType<typeof event>[]) => ({ topicId: 1n, delivery: DeliveryClass.Unspecified, replayed: false, events });
+
+    it('takes the event\'s own type, scopes kv keys by event name and skips unnumbered events in dedup', async () => {
+      const r = new SubscriptionRegistry({ cursorStore: memoryCursorStore(), logger: silentLogger, onChange: () => {} });
+      const { l, calls } = listener();
+      const e = r.add('chat/a', spec, l);
+      r.onSubAck(e, { topicId: 1n, delivery: DeliveryClass.Unspecified, catchingUp: false, snapshotFollows: false, deliveries: [S, KV, SIG] });
+      r.onDeliver(
+        e,
+        deliver(
+          event(1n, 1n, 1n, 'hi', { delivery: S, name: 'message' }),
+          event(1n, 0n, 0n, '{}', { delivery: KV, name: 'read', key: 'user:7' }),
+          event(1n, 0n, 0n, '{}', { delivery: KV, name: 'location', key: 'user:7' }),
+          event(1n, 0n, 0n, '{}', { delivery: SIG, name: 'typing', publisher: 'user:8' }),
+          event(1n, 0n, 0n, '{}', { delivery: SIG, name: 'typing', publisher: 'user:8' }),
+          event(1n, 1n, 2n, 'again', { delivery: S, name: 'message' }),
+        ),
+      );
+      await e.chain;
+      expect(calls).toEqual(['active', 'event:1', 'event:0', 'event:0', 'event:0', 'event:0', 'event:2']);
+      expect(e.received).toEqual({ epoch: 1n, seq: 2n });
+      expect(e.processed).toEqual({ epoch: 1n, seq: 2n });
+      expect([...e.kv.keys()].sort()).toEqual(['location', 'read']);
+      expect(e.kv.get('read')!.has('user:7')).toBe(true);
+      expect(e.signals.get('typing')!.size).toBe(1);
+      r.onDeliver(e, deliver(event(1n, 0n, 0n, '', { delivery: KV, name: 'read', key: 'user:7', tombstone: true })));
+      expect(e.kv.has('read')).toBe(false);
+      expect(e.kv.get('location')!.has('user:7')).toBe(true);
+    });
+
+    it('falls back to the frame and topic class for nodes before ADR-001', async () => {
+      const r = new SubscriptionRegistry({ cursorStore: memoryCursorStore(), logger: silentLogger, onChange: () => {} });
+      const types: number[] = [];
+      const l: TopicListener = { ...listener().l, onEvent: (d) => void types.push(d.delivery) };
+      const e = r.add('fleet/1', spec, l);
+      r.onSubAck(e, { topicId: 1n, delivery: KV, catchingUp: false, snapshotFollows: false, deliveries: [] });
+      r.onDeliver(e, { ...deliver(event(1n, 1n, 1n, '{}', { key: 'car-1' })), delivery: KV });
+      await e.chain;
+      expect(types).toEqual([KV]);
+      expect(e.kv.get('')!.has('car-1')).toBe(true);
+      expect(e.processed).toBeUndefined(); // state topics on old nodes resume from snapshots
+    });
+
+    it('asks the wire for the union of every listener\'s types and filters each listener locally', async () => {
+      let changes = 0;
+      const r = new SubscriptionRegistry({ cursorStore: memoryCursorStore(), logger: silentLogger, onChange: () => changes++ });
+      const inbox = listener([S]);
+      const e = r.add('chat/a', spec, inbox.l);
+      await e.loading;
+      expect(e.subscribeBody().types).toEqual([S]);
+      r.onSubAck(e, { topicId: 1n, delivery: DeliveryClass.Unspecified, catchingUp: false, snapshotFollows: false, deliveries: [S, SIG] });
+      const room = listener();
+      const before = changes;
+      r.add('chat/a', spec, room.l);
+      expect(e.retype).toBe(true);
+      expect(changes).toBe(before + 1);
+      expect(e.subscribeBody().types).toEqual([]);
+      expect(e.retype).toBe(false);
+      r.onDeliver(
+        e,
+        deliver(event(1n, 1n, 1n, 'hi', { delivery: S, name: 'message' }), event(1n, 0n, 0n, '{}', { delivery: SIG, name: 'typing' })),
+      );
+      await e.chain;
+      expect(inbox.calls).toEqual(['active', 'event:1']);
+      expect(room.calls).toEqual(['active', 'snapshot:0', 'event:1', 'event:0']);
+    });
+
+    it('does not resubscribe when the wire already carries the newcomer\'s types', async () => {
+      const r = new SubscriptionRegistry({ cursorStore: memoryCursorStore(), logger: silentLogger, onChange: () => {} });
+      const e = r.add('chat/a', spec, listener().l);
+      await e.loading;
+      e.subscribeBody();
+      r.onSubAck(e, { topicId: 1n, delivery: S, catchingUp: false, snapshotFollows: false, deliveries: [] });
+      r.add('chat/a', spec, listener([S]).l);
+      expect(e.retype).toBe(false);
+    });
   });
 });

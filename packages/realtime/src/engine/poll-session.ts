@@ -348,12 +348,15 @@ export class PollSession implements Session {
   private pollBody(e: TopicEntry, recheck: boolean): SubscribeBody {
     const topic = { name: e.name };
     const onGap = e.spec.onGap;
-    if (e.received) return { topic, start: StartAt.After, cursor: e.received, onGap, snapshot: true };
-    if (e.latest) return { topic, start: StartAt.After, cursor: e.latest, onGap, snapshot: true };
+    const types = e.wantedTypes();
+    e.wireTypes = types;
+    e.retype = false;
+    if (e.received) return { topic, start: StartAt.After, cursor: e.received, onGap, snapshot: true, types };
+    if (e.latest) return { topic, start: StartAt.After, cursor: e.latest, onGap, snapshot: true, types };
     // An empty Durable topic: everything it will hold is new to us.
-    if (!e.isState) return { topic, start: StartAt.Oldest, onGap, snapshot: true };
+    if (!e.isState) return { topic, start: StartAt.Oldest, onGap, snapshot: true, types };
     // An empty state topic has no cursor to poll after, so every other poll asks for a fresh snapshot.
-    return { topic, start: StartAt.Latest, onGap, snapshot: recheck };
+    return { topic, start: StartAt.Latest, onGap, snapshot: recheck, types };
   }
 
   private afterRead(e: TopicEntry): void {

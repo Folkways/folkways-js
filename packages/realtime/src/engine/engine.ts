@@ -252,8 +252,9 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     this.registry.remove(entry, listener);
   }
 
-  values(entry: TopicEntry): ReadonlyMap<string, StoredValue> {
-    return entry.values;
+  /** Current kv values and latest signals of a topic, by event name. */
+  values(entry: TopicEntry): { readonly kv: ReadonlyMap<string, ReadonlyMap<string, StoredValue>>; readonly signals: ReadonlyMap<string, ReadonlyMap<string, StoredValue>> } {
+    return { kv: entry.kv, signals: entry.signals };
   }
 
   // ------------------------------------------------------- SessionHost
