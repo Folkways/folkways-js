@@ -35,6 +35,16 @@ export type {
   TokenSource,
 } from './types';
 export { Topic } from './topic';
+export {
+  defineTopic,
+  type EventDefinition,
+  type EventDefinitions,
+  type SignalEvents,
+  type TopicDefinition,
+  type TopicDefinitionSpec,
+  type TopicParams,
+  type TopicRule,
+} from './define-topic';
 export { SetSubscription, TopicSet, type SetSubscriptionEvents } from './topic-set';
 export type { ValuesView } from './views';
 export { Subscription, type SubscriptionEvents } from './subscription';

@@ -77,8 +77,9 @@ export function toReceipt(topic: string, delivery: Delivery, ack: PubAck): Publi
  * `signal` event, chosen per publish (or fixed by the topic's definition).
  * Get it with `client.topic(name)`; handles are cached by name.
  */
-export class Topic<E extends EventMap = EventMap> {
+export class Topic<E extends EventMap = EventMap, S extends keyof E & string = never> {
   private readonly views: TopicViews;
+  private defined?: Readonly<Record<string, { readonly delivery: Delivery; readonly ttlMs?: number }>>;
 
   /** @internal */
   constructor(
@@ -116,8 +117,9 @@ export class Topic<E extends EventMap = EventMap> {
    * most once. Signals are fire-and-forget: dropped while not connected,
    * and the promise resolves once written (or dropped).
    */
+  publish<K extends S>(event: K, data: E[K], opts?: PublishOptions): Promise<void>;
   publish<K extends keyof E & string>(event: K, data: E[K], opts: PublishOptions & { delivery: 'signal' }): Promise<void>;
-  publish<K extends keyof E & string>(event: K, data: E[K], opts?: PublishOptions): Promise<PublishReceipt>;
+  publish<K extends Exclude<keyof E & string, S>>(event: K, data: E[K], opts?: PublishOptions): Promise<PublishReceipt>;
   publish<K extends keyof E & string>(event: K, data: E[K], opts: PublishOptions = {}): Promise<PublishReceipt | void> {
     let delivery: Delivery;
     let body: PublishBody;
@@ -207,14 +209,30 @@ export class Topic<E extends EventMap = EventMap> {
     };
   }
 
-  /** The delivery of an event: the option, else the topic's definition, else `stream`. */
-  protected deliveryFor(_event: string, opts: PublishOptions): Delivery {
-    return opts.delivery ?? 'stream';
+  /** @internal Applies a `defineTopic()` event map to this handle. */
+  define(events: Readonly<Record<string, { readonly delivery: Delivery; readonly ttlMs?: number }>>): void {
+    this.defined = events;
   }
 
-  /** Options the topic's definition fills in (none for a plain topic). */
-  protected withDefaults(_event: string, opts: PublishOptions): PublishOptions {
-    return opts;
+  /** The delivery of an event: the option, else the topic's definition, else `stream`. */
+  private deliveryFor(event: string, opts: PublishOptions): Delivery {
+    if (!this.defined) return opts.delivery ?? 'stream';
+    const def = this.defined[event];
+    if (!def) throw invalid(`event "${event}" is not in this topic's definition`, this.name);
+    if (opts.delivery && opts.delivery !== def.delivery) {
+      throw new RealtimeError(Code.ClassMismatch, {
+        message: `event "${event}" is a ${def.delivery} event in this topic's definition`,
+        topic: this.name,
+        local: true,
+      });
+    }
+    return def.delivery;
+  }
+
+  /** Options the topic's definition fills in. */
+  private withDefaults(event: string, opts: PublishOptions): PublishOptions {
+    const ttlMs = this.defined?.[event]?.ttlMs;
+    return ttlMs !== undefined && opts.ttlMs === undefined && !opts.remove ? { ...opts, ttlMs } : opts;
   }
 
   private body(event: string, data: unknown, delivery: Delivery, opts: PublishOptions): PublishBody {

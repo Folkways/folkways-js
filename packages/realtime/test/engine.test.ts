@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { Code, Folkways, type Message, Realtime, RealtimeError, type RealtimeOptions } from '../src';
+import { Code, Folkways, type Message, Realtime, RealtimeError, type RealtimeOptions, defineTopic } from '../src';
 import { AckMode, ContentType, DeliveryClass, GapReason, OnGap, StartAt } from '../src/transport/wire/model';
 import { FakeRequestTransport, FakeStreamTransport, until } from './support/fake-transport';
 import { event } from './support/server-codec';
@@ -1164,6 +1164,49 @@ describe('client.on and system topics', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(plain.conn.sent('subscribe')).toHaveLength(0);
     expect(anon.conn.sent('subscribe')).toHaveLength(0);
+  });
+});
+
+describe('defineTopic', () => {
+  type Chat = { message: { text: string }; typing: { on: boolean }; read: { upTo: string } };
+  const chatRoom = defineTopic<Chat>()('chat/{room}', {
+    events: { message: 'stream', typing: 'signal', read: { delivery: 'kv', keyIsPublisher: true, ttlMs: 30 * 86_400_000 } },
+    access: 'members',
+    presence: true,
+  });
+
+  it('builds names, the topic rule and the member ops from one definition', () => {
+    expect(chatRoom.topic({ room: '45' })).toBe('chat/45');
+    expect(() => chatRoom.topic({ room: 'a/b' })).toThrow(RealtimeError);
+    expect(() => chatRoom.topic({ room: 'with space' })).toThrow(RealtimeError);
+    expect(chatRoom.rule()).toEqual({
+      pattern: 'chat/*',
+      types: ['kv', 'signal', 'stream'],
+      events: { message: 'stream', typing: 'signal', read: 'kv' },
+      access: 'members',
+      presence: true,
+      keyIsPublisher: ['read'],
+      ttlMs: { read: 30 * 86_400_000 },
+    });
+    expect(chatRoom.memberOps()).toEqual(['subscribe', 'publish', 'signal', 'set', 'presence']);
+    expect(() => defineTopic('chat/{room}', { events: { typing: { delivery: 'signal', ttlMs: 5 } } })).toThrow(/kv events/);
+  });
+
+  it('fills in each event\'s delivery and kv TTL, and refuses events outside the map', async () => {
+    const fake = new FakeStreamTransport();
+    const c = client(fake);
+    const conn = await fake.nextConn();
+    await conn.welcome();
+    await c.connect();
+    const room = chatRoom.open(c, { room: '45' });
+    expect(room).toBe(c.topic('chat/45'));
+    await room.publish('typing', { on: true });
+    room.publish('read', { upTo: 'x' }).catch(() => {});
+    const [typing, read] = [await conn.next('publish'), await conn.next('publish')];
+    expect(typing.msg.publish).toMatchObject({ name: 'typing', delivery: DeliveryClass.Ephemeral, ack: AckMode.NoAck });
+    expect(read.msg.publish).toMatchObject({ name: 'read', delivery: DeliveryClass.LastValue, ttlMs: 30 * 86_400_000 });
+    await expect(room.publish('message', { text: 'x' }, { delivery: 'signal' } as never)).rejects.toMatchObject({ code: Code.ClassMismatch, local: true });
+    await expect((room as unknown as import('../src').Topic).publish('reads', {})).rejects.toMatchObject({ code: Code.InvalidArgument });
   });
 });
 
