@@ -12,4 +12,6 @@ Open a second tab with a token for another identity (`SUB=bob`) to chat between 
 
 Optional environment variables (`.env.local`): `VITE_RTE_WS`, `VITE_RTE_HTTP`, `VITE_RTE_TOKEN`.
 
-The token is pasted by hand only because this is a local demo. In an application, your backend mints short-lived tokens and the client passes a provider: `token: () => fetch('/api/rte-token').then((r) => r.text())`.
+The token is pasted by hand only because this is a local demo. In an application, your backend mints short-lived tokens (see `Folkways.Rest` in `@folkways/realtime/server`) and the client passes `authUrl: '/api/rte-token'`.
+
+Messages and typing use two topics because a local node before the ADR-001 release carries one delivery type per topic. With it, both are events of one room: `room.publish('typing', { on: true }, { delivery: 'signal' })`.
