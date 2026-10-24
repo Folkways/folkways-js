@@ -14,6 +14,21 @@
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
     },
+    "./stores/indexeddb": {
+      "types": "./dist/stores/indexeddb.d.ts",
+      "import": "./dist/stores/indexeddb.mjs",
+      "require": "./dist/stores/indexeddb.js"
+    },
+    "./stores/async-storage": {
+      "types": "./dist/stores/async-storage.d.ts",
+      "import": "./dist/stores/async-storage.mjs",
+      "require": "./dist/stores/async-storage.js"
+    },
+    "./stores/file": {
+      "types": "./dist/stores/file.d.ts",
+      "import": "./dist/stores/file.mjs",
+      "require": "./dist/stores/file.js"
+    },
     "./iife": "./dist/index.global.js",
     "./package.json": "./package.json"
   },
@@ -41,6 +56,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.9.2",
+    "fake-indexeddb": "6.0.0",
     "tsup": "^8.5.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.6"

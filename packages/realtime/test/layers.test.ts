@@ -10,6 +10,7 @@ const ALLOWED: Record<string, string[]> = {
   engine: ['transport', 'shared'],
   transport: ['shared'],
   shared: [],
+  stores: ['engine'],
 };
 
 function files(dir: string): string[] {
