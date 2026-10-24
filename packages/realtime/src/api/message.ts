@@ -2,52 +2,8 @@ import { ContentType, DeliveryClass, type DeliveredEvent, GapReason } from '../e
 import { Code } from '../shared/codes';
 import { type Cursor, formatCursor } from '../shared/cursor';
 import { RealtimeError } from '../shared/errors';
-
-export type DeliveryClassName = 'durable' | 'last-value' | 'ephemeral';
-export type ContentTypeName = 'bytes' | 'json' | 'text' | 'flatbuffers' | 'protobuf' | 'msgpack' | 'cbor';
-
-/** One event received on a topic. */
-export interface Message<T = unknown> {
-  readonly topic: string;
-  readonly topicId: bigint;
-  /** Position of the event in its topic. */
-  readonly cursor: Cursor;
-  /** `"epoch:seq"`: unique per topic, usable as a React key. */
-  readonly id: string;
-  /** The payload decoded by content type: JSON → value, Text → string, otherwise the bytes. `undefined` for deletes. */
-  readonly data: T;
-  /** The raw payload (a view into the received packet; do not modify). */
-  readonly payload: Uint8Array;
-  readonly contentType: number;
-  /** Verified identity of the publisher (the token's `sub`). */
-  readonly publisher: string;
-  /** LastValue item key (for Ephemeral topics, the publisher). */
-  readonly key?: string;
-  /** A LastValue delete. */
-  readonly deleted: boolean;
-  readonly headers: Readonly<Record<string, string>>;
-  /** When the node accepted the event (Unix ms); informational, not for ordering. */
-  readonly serverTime: number;
-  /** The publisher's own clock (Unix ms), when it set one. */
-  readonly clientTime?: number;
-  /** Delivered from retained history rather than live. */
-  readonly replayed: boolean;
-  /** Part of a state snapshot. */
-  readonly fromSnapshot: boolean;
-}
-
-/** A publish the node accepted. */
-export interface PublishReceipt {
-  readonly topic: string;
-  readonly topicId: bigint;
-  readonly cursor: Cursor;
-  readonly id: string;
-  /** Acknowledgement level reached: `accepted` in this RTE release. */
-  readonly level: 'accepted' | 'committed';
-  /** The node had already accepted this idempotency key; nothing was published twice. */
-  readonly duplicate: boolean;
-  readonly serverTime: number;
-}
+import { format128 } from '../shared/random';
+import type { ContentTypeName, Delivery, GapReasonName, Message } from './types';
 
 const CONTENT_TYPES: Record<ContentTypeName, number> = {
   bytes: ContentType.Bytes,
@@ -138,33 +94,30 @@ export function decodePayload(contentType: number, payload: Uint8Array): unknown
   }
 }
 
-export function deliveryClassName(c: DeliveryClass): DeliveryClassName | undefined {
+/** The public name of a wire delivery class (internal names stay on the wire). */
+export function deliveryName(c: DeliveryClass): Delivery {
   switch (c) {
-    case DeliveryClass.Durable:
-      return 'durable';
     case DeliveryClass.LastValue:
-      return 'last-value';
+      return 'kv';
     case DeliveryClass.Ephemeral:
-      return 'ephemeral';
+      return 'signal';
     default:
-      return undefined;
+      return 'stream';
   }
 }
 
-export function deliveryClassCode(name: DeliveryClassName): DeliveryClass {
+export function deliveryCode(name: Delivery): DeliveryClass {
   switch (name) {
-    case 'durable':
+    case 'stream':
       return DeliveryClass.Durable;
-    case 'last-value':
+    case 'kv':
       return DeliveryClass.LastValue;
-    case 'ephemeral':
+    case 'signal':
       return DeliveryClass.Ephemeral;
     default:
-      throw new RealtimeError(Code.InvalidArgument, { message: `unknown delivery class "${String(name)}"`, local: true });
+      throw new RealtimeError(Code.InvalidArgument, { message: `unknown delivery "${String(name)}"; use stream, kv or signal`, local: true });
   }
 }
-
-export type GapReasonName = 'expired' | 'epoch-lost' | 'slow-consumer' | 'unspecified';
 
 export function gapReasonName(r: GapReason): GapReasonName {
   switch (r) {
@@ -179,26 +132,39 @@ export function gapReasonName(r: GapReason): GapReasonName {
   }
 }
 
-export function toMessage<T = unknown>(d: DeliveredEvent): Message<T> {
+/** `"epoch:seq"` for numbered events, else the uid: unique within a topic. */
+export function eventId(cursor: Cursor | undefined, uid: string | undefined, fallback: string): string {
+  if (cursor) return formatCursor(cursor);
+  return uid ?? fallback;
+}
+
+export function toMessage<T = unknown, E extends string = string>(d: DeliveredEvent, extra: { fromCache?: boolean } = {}): Message<T, E> {
   const e = d.event;
-  const cursor = { epoch: e.epoch, seq: e.seq };
+  const delivery = deliveryName(d.delivery);
+  const cursor = e.seq > 0n ? { epoch: e.epoch, seq: e.seq } : undefined;
+  const uid = e.uid ? format128(e.uid) : undefined;
+  const name = (e.name ?? '') as E;
+  const key = delivery === 'signal' ? e.publisher : e.key;
   const headers: Record<string, string> = {};
   for (const [k, v] of e.headers) headers[k] = v;
   return {
     topic: d.topic,
-    topicId: e.topicId,
-    cursor,
-    id: formatCursor(cursor),
-    data: (e.tombstone ? undefined : decodePayload(e.contentType, e.payload)) as T,
-    payload: e.payload,
-    contentType: e.contentType,
+    name,
+    delivery,
     publisher: e.publisher,
-    key: e.key,
+    data: (e.tombstone ? undefined : decodePayload(e.contentType, e.payload)) as T,
+    uid,
+    cursor,
+    id: eventId(cursor, uid, `${delivery}/${name}/${key ?? ''}/${e.serverTsMs}`),
+    key,
     deleted: e.tombstone,
     headers,
+    contentType: e.contentType,
+    payload: e.payload,
     serverTime: e.serverTsMs,
     clientTime: e.clientTsMs || undefined,
     replayed: d.replayed,
-    fromSnapshot: d.fromSnapshot,
+    pending: false,
+    fromCache: extra.fromCache ?? false,
   };
 }

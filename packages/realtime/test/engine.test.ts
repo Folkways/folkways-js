@@ -372,10 +372,10 @@ describe('connection states', () => {
     await c.connect();
     fake.refuse = 1_000;
     fake.conns[0]!.drop();
-    const queued = c.topic('chat/a').publish('queued while reconnecting').catch((e: RealtimeError) => e);
+    const queued = c.topic('chat/a').publish('message', 'queued while reconnecting').catch((e: RealtimeError) => e);
     await until(() => c.connection.state === 'offline', 2_000, 'offline');
     expect(await queued).toMatchObject({ code: Code.NotConnected });
-    await expect(c.topic('chat/a').publish('while offline')).rejects.toMatchObject({ code: Code.NotConnected });
+    await expect(c.topic('chat/a').publish('message', 'while offline')).rejects.toMatchObject({ code: Code.NotConnected });
     fake.refuse = 0;
     await (await fake.nextConn(2_000)).welcome();
     await until(() => c.connection.state === 'connected', 2_000, 'connected');
@@ -397,7 +397,7 @@ describe('connection states', () => {
     conn.serverClose(Code.AuthInvalid);
     await until(() => c.connection.state === 'failed');
     expect(sub.status).toBe('resyncing');
-    await expect(c.topic('chat/a').publish('nope')).rejects.toMatchObject({ code: Code.AuthInvalid });
+    await expect(c.topic('chat/a').publish('message', 'nope')).rejects.toMatchObject({ code: Code.AuthInvalid });
 
     const reconnected = c.connect();
     const conn2 = await fake.nextConn();
@@ -463,24 +463,43 @@ describe('publish', () => {
     const conn = await fake.nextConn();
     await conn.welcome();
     await c.connect();
-    const p = c.topic('chat/lobby').publish({ text: 'hi' }, { headers: { trace: 't1' } });
+    const p = c.topic('chat/lobby').publish('message', { text: 'hi' }, { headers: { trace: 't1' } });
     const f = await conn.next('publish');
     expect(f.msg.publish).toMatchObject({
       topic: { name: 'chat/lobby' },
+      name: 'message',
+      delivery: DeliveryClass.Durable,
       contentType: ContentType.Json,
       ack: AckMode.Accepted,
       headers: [['trace', 't1']],
     });
     expect(JSON.parse(new TextDecoder().decode(f.msg.publish.payload))).toEqual({ text: 'hi' });
     expect(f.msg.publish.idempotencyKey).toBeDefined();
-    conn.reply(f.corr, { type: 'pubAck', topicId: 1n, level: AckMode.Accepted, cursor: { epoch: EPOCH, seq: 1n }, duplicate: false, serverTsMs: 5 });
-    await expect(p).resolves.toMatchObject({ id: `${EPOCH}:1`, level: 'accepted', duplicate: false, topicId: 1n });
+    conn.reply(f.corr, {
+      type: 'pubAck',
+      topicId: 1n,
+      level: AckMode.Accepted,
+      cursor: { epoch: EPOCH, seq: 1n },
+      duplicate: false,
+      serverTsMs: 5,
+      uid: { hi: 0n, lo: 255n },
+    });
+    await expect(p).resolves.toEqual({
+      topic: 'chat/lobby',
+      delivery: 'stream',
+      uid: '000000000000000000000000000000ff',
+      cursor: { epoch: EPOCH, seq: 1n },
+      id: `${EPOCH}:1`,
+      level: 'accepted',
+      duplicate: false,
+      serverTime: 5,
+    });
   });
 
   it('queues while offline and sends after Welcome', async () => {
     const fake = new FakeStreamTransport();
     const c = client(fake);
-    const p = c.publish('chat/lobby', 'early');
+    const p = c.topic('chat/lobby').publish('message', 'early');
     const conn = await fake.nextConn();
     await conn.welcome();
     const f = await conn.next('publish');
@@ -494,7 +513,7 @@ describe('publish', () => {
     const conn1 = await fake.nextConn();
     await conn1.welcome();
     await c.connect();
-    const p = c.publish('chat/lobby', 'once');
+    const p = c.topic('chat/lobby').publish('message', 'once');
     const first = await conn1.next('publish');
     conn1.drop();
     const conn2 = await fake.nextConn();
@@ -512,7 +531,7 @@ describe('publish', () => {
     const conn = await fake.nextConn();
     await conn.welcome();
     await c.connect();
-    const p = c.publish('chat/lobby', 'x');
+    const p = c.topic('chat/lobby').publish('message', 'x');
     const a = await conn.next('publish');
     conn.reply(a.corr, { type: 'opError', code: Code.RateLimited, message: 'slow', retryAfterMs: 20, topicId: 0n });
     const b = await conn.next('publish');
@@ -520,7 +539,7 @@ describe('publish', () => {
     conn.reply(b.corr, { type: 'pubAck', topicId: 1n, level: AckMode.Accepted, cursor: { epoch: 1n, seq: 1n }, duplicate: false, serverTsMs: 1 });
     await expect(p).resolves.toBeDefined();
 
-    const q = c.publish('other/x', 'nope');
+    const q = c.topic('other/x').publish('message', 'nope');
     const f = await conn.next('publish');
     conn.reply(f.corr, { type: 'opError', code: Code.Forbidden, message: 'not allowed', retryAfterMs: 0, topicId: 0n });
     await expect(q).rejects.toMatchObject({ code: Code.Forbidden, topic: 'other/x', local: false });
@@ -532,28 +551,50 @@ describe('publish', () => {
     const conn = await fake.nextConn();
     await conn.welcome({ limits: { maxPayloadBytes: 4 } });
     await c.connect();
-    await expect(c.publish('chat/lobby', 'too long')).rejects.toMatchObject({ code: Code.PayloadTooLarge, local: true });
+    await expect(c.topic('chat/lobby').publish('message', 'too long')).rejects.toMatchObject({ code: Code.PayloadTooLarge, local: true });
     expect(() => c.topic('bad topic')).toThrow(RealtimeError);
-    await expect(c.publish('chat/lobby', 'x', { idempotencyKey: 'nope' })).rejects.toMatchObject({ code: Code.InvalidArgument });
+    await expect(c.topic('chat/lobby').publish('message', 'x', { idempotencyKey: 'nope' })).rejects.toMatchObject({ code: Code.InvalidArgument });
     expect(conn.sent('publish')).toHaveLength(0);
   });
 
-  it('signal() is fire-and-forget with NoAck', async () => {
+  it('sends signals fire-and-forget with NoAck, and drops them while not connected', async () => {
     const fake = new FakeStreamTransport();
     const c = client(fake);
+    await expect(c.topic('chat/1').publish('typing', { on: true }, { delivery: 'signal' })).resolves.toBeUndefined();
     const conn = await fake.nextConn();
     await conn.welcome();
     await c.connect();
-    c.topic('typing/room-1').signal({ typing: true });
+    await c.topic('chat/1').publish('typing', { on: true }, { delivery: 'signal' });
     const f = await conn.next('publish');
-    expect(f.msg.publish.ack).toBe(AckMode.NoAck);
+    expect(f.msg.publish).toMatchObject({ name: 'typing', delivery: DeliveryClass.Ephemeral, ack: AckMode.NoAck });
     expect(f.msg.publish.idempotencyKey).toBeUndefined();
+    expect(conn.sent('publish')).toHaveLength(1);
+  });
+
+  it('keys kv events by your identity unless given a key, and deletes with remove', async () => {
+    const fake = new FakeStreamTransport();
+    const c = client(fake, { token: mintToken('user:7') });
+    const conn = await fake.nextConn();
+    await conn.welcome({ identity: 'user:7' });
+    await c.connect();
+    const room = c.topic('chat/45');
+    room.publish('read', { upTo: 'abc' }, { delivery: 'kv', ttlMs: 60_000 }).catch(() => {});
+    room.publish('title', 'Lunch', { delivery: 'kv', key: 'room' }).catch(() => {});
+    room.publish('read', null, { delivery: 'kv', remove: true }).catch(() => {});
+    const [a, b, d] = [await conn.next('publish'), await conn.next('publish'), await conn.next('publish')];
+    expect(a.msg.publish).toMatchObject({ name: 'read', delivery: DeliveryClass.LastValue, key: 'user:7', ttlMs: 60_000 });
+    expect(b.msg.publish).toMatchObject({ name: 'title', key: 'room' });
+    expect(d.msg.publish).toMatchObject({ name: 'read', key: 'user:7', tombstone: true });
+    expect(d.msg.publish.payload).toHaveLength(0);
+    await expect(room.publish('message', 'x', { key: 'k' })).rejects.toMatchObject({ code: Code.InvalidArgument });
+    await expect(room.publish('message', 'x', { remove: true })).rejects.toMatchObject({ code: Code.InvalidArgument });
+    await expect(room.publish('', 'x')).rejects.toMatchObject({ code: Code.InvalidArgument });
   });
 
   it('rejects pending publishes on close', async () => {
     const fake = new FakeStreamTransport();
     const c = client(fake);
-    const p = c.publish('chat/lobby', 'x');
+    const p = c.topic('chat/lobby').publish('message', 'x');
     const rejected = expect(p).rejects.toMatchObject({ code: Code.ClientClosed });
     const t0 = Date.now();
     await c.close();
@@ -575,7 +616,7 @@ describe('subscribe', () => {
   it('subscribes, delivers in order with async handlers, and drops duplicates', async () => {
     const { c, conn } = await connected();
     const seen: string[] = [];
-    const sub = c.topic('chat/lobby').subscribe<string>(async (m) => {
+    const sub = c.topic<{ '': string }>('chat/lobby').subscribe(async (m) => {
       await new Promise((r) => setTimeout(r, m.data === 'one' ? 20 : 0));
       seen.push(m.data);
     });
@@ -583,7 +624,7 @@ describe('subscribe', () => {
     expect(s.msg.subscribe).toMatchObject({ topic: { name: 'chat/lobby' }, start: StartAt.Latest, onGap: OnGap.FromOldest });
     conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
     await sub.ready;
-    expect(sub.deliveryClass).toBe('durable');
+    expect(sub.deliveries).toEqual(['stream']);
     conn.reply(0n, {
       type: 'deliver',
       topicId: 7n,
@@ -601,7 +642,7 @@ describe('subscribe', () => {
   it('resubscribes after a reconnect from the last cursor', async () => {
     const { fake, c, conn } = await connected();
     const got: Message[] = [];
-    const sub = c.subscribe('chat/lobby', (m) => {
+    const sub = c.topic('chat/lobby').subscribe((m) => {
       got.push(m);
     });
     const s = await conn.next('subscribe');
@@ -653,7 +694,7 @@ describe('subscribe', () => {
       { corr: 0n, msg: { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: true, snapshotFollows: false, deliveries: [] } },
     );
     await sub.ready;
-    expect(gaps).toEqual([{ reason: 'epoch-lost', requested: { epoch: 1n, seq: 3n }, oldest: { epoch: EPOCH, seq: 1n }, latest: { epoch: EPOCH, seq: 4n }, resumed: true }]);
+    expect(gaps).toEqual([{ topic: 'chat/lobby', reason: 'epoch-lost', requested: { epoch: 1n, seq: 3n }, oldest: { epoch: EPOCH, seq: 1n }, latest: { epoch: EPOCH, seq: 4n }, resumed: true }]);
   });
 
   it("fails the subscription on a Gap with onGap: 'fail'", async () => {
@@ -722,6 +763,61 @@ describe('subscribe', () => {
     expect(conn.sent('subscribe')).toHaveLength(1);
   });
 
+  it('receives named events of several types in one topic, filtered by types and events', async () => {
+    const { c, conn } = await connected();
+    const room: Message[] = [];
+    const inbox: Message[] = [];
+    const reads: Message[] = [];
+    c.topic('chat/45').subscribe((m) => void room.push(m));
+    c.topic('chat/45').subscribe((m) => void inbox.push(m), { types: ['stream'] });
+    c.topic('chat/45').subscribe((m) => void reads.push(m), { events: ['read'] });
+    const s = await conn.next('subscribe');
+    expect(s.msg.subscribe.types).toEqual([]); // the first handle wants every type
+    conn.reply(s.corr, {
+      type: 'subAck',
+      topicId: 9n,
+      delivery: DeliveryClass.Unspecified,
+      catchingUp: false,
+      snapshotFollows: false,
+      deliveries: [DeliveryClass.Durable, DeliveryClass.LastValue, DeliveryClass.Ephemeral],
+    });
+    conn.reply(0n, {
+      type: 'deliver',
+      topicId: 9n,
+      delivery: DeliveryClass.Unspecified,
+      replayed: false,
+      events: [
+        event(9n, EPOCH, 1n, '{"text":"hi"}', { delivery: DeliveryClass.Durable, name: 'message', contentType: ContentType.Json, uid: { hi: 0n, lo: 1n } }),
+        event(9n, 0n, 0n, '{"on":true}', { delivery: DeliveryClass.Ephemeral, name: 'typing', contentType: ContentType.Json }),
+        event(9n, 0n, 0n, '{"upTo":"x"}', { delivery: DeliveryClass.LastValue, name: 'read', key: 'bob', contentType: ContentType.Json }),
+      ],
+    });
+    await until(() => room.length === 3 && reads.length === 1);
+    expect(room.map((m) => [m.name, m.delivery])).toEqual([
+      ['message', 'stream'],
+      ['typing', 'signal'],
+      ['read', 'kv'],
+    ]);
+    expect(room[0]).toMatchObject({ uid: '00000000000000000000000000000001', cursor: { epoch: EPOCH, seq: 1n }, data: { text: 'hi' }, pending: false, fromCache: false });
+    expect(room[1]).toMatchObject({ cursor: undefined, key: 'bob', publisher: 'bob' });
+    expect(inbox.map((m) => m.name)).toEqual(['message']);
+    expect(reads.map((m) => m.data)).toEqual([{ upTo: 'x' }]);
+  });
+
+  it('subscribes again with wider types when a handle needs types the wire filters out', async () => {
+    const { c, conn } = await connected();
+    const inbox = c.topic('chat/45').subscribe({ types: ['stream'] });
+    const s = await conn.next('subscribe');
+    expect(s.msg.subscribe.types).toEqual([DeliveryClass.Durable]);
+    conn.reply(s.corr, { type: 'subAck', topicId: 9n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
+    await inbox.ready;
+    c.topic('chat/45').subscribe();
+    const u = await conn.next('unsubscribe');
+    expect(u.msg.topic).toEqual({ id: 9n });
+    const s2 = await conn.next('subscribe');
+    expect(s2.msg.subscribe.types).toEqual([]);
+  });
+
   it('ends the subscription on SubEnded', async () => {
     const { c, conn } = await connected();
     const sub = c.topic('chat/lobby').subscribe();
@@ -775,7 +871,7 @@ describe('subscribe', () => {
 
   it('supports for-await iteration', async () => {
     const { c, conn } = await connected();
-    const sub = c.topic('chat/lobby').subscribe<string>();
+    const sub = c.topic<{ '': string }>('chat/lobby').subscribe();
     const s = await conn.next('subscribe');
     conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
     conn.reply(0n, {
@@ -848,7 +944,7 @@ describe('http long-poll', () => {
     await c.connect();
     expect(c.session?.identity).toBe('alice');
     const got: Message<string>[] = [];
-    const sub = c.subscribe<string>('chat/lobby', (m) => {
+    const sub = c.topic<{ '': string }>('chat/lobby').subscribe((m) => {
       got.push(m);
     }, { from: 'oldest' });
     await sub.ready;
@@ -857,7 +953,7 @@ describe('http long-poll', () => {
       ['first', true],
       ['second', false],
     ]);
-    const r = await c.publish('chat/lobby', 'hello');
+    const r = await c.topic('chat/lobby').publish('message', 'hello');
     expect(r.id).toBe(`${EPOCH}:1`);
     const call = http.calls.find((x) => x.frames[0]!.msg.type === 'publish')!;
     expect(call.token).toBe(c['engine'].tokens['token']);

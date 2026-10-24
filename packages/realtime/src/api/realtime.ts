@@ -4,12 +4,10 @@ import { RealtimeError, localError } from '../shared/errors';
 import { assertTopic } from '../shared/topic';
 import { RealtimeConnection } from './connection';
 import { Live } from './live';
-import type { PublishReceipt } from './message';
 import { type RealtimeOptions, type ResolvedOptions, resolveOptions } from './options';
 import { toSession } from './session';
-import type { MessageHandler, Subscription } from './subscription';
-import { type PublishOptions, type SubscribeOptions, Topic } from './topic';
-import type { CloseOptions, ConnectOptions, Connection, LiveView, Session, TokenSource } from './types';
+import { Topic } from './topic';
+import type { CloseOptions, ConnectOptions, Connection, EventMap, LiveView, Session, TokenSource } from './types';
 
 /**
  * A client of one RTE segment. Create it, then `connect()`:
@@ -103,29 +101,19 @@ export class Realtime {
     await this.engine.close();
   }
 
-  /** The handle for a topic. Throws `InvalidTopic` for a malformed name. */
-  topic(name: string): Topic {
+  /**
+   * The handle for a topic (a room). Throws `InvalidTopic` for a malformed
+   * name. Pass an event map to type each event's data:
+   * `client.topic<{ message: { text: string } }>('chat/45')`.
+   */
+  topic<E extends EventMap = EventMap>(name: string): Topic<E> {
     let t = this.topics.get(name);
     if (!t) {
       assertTopic(name, this.engine.limits.maxTopicBytes);
       t = new Topic(name, this.engine, this.opts.signalTtlMs);
       this.topics.set(name, t);
     }
-    return t;
-  }
-
-  /** Shortcut for `client.topic(name).publish(data, opts)`. */
-  publish(topic: string, data: unknown, opts?: PublishOptions): Promise<PublishReceipt> {
-    try {
-      return this.topic(topic).publish(data, opts);
-    } catch (e) {
-      return Promise.reject(e);
-    }
-  }
-
-  /** Shortcut for `client.topic(name).subscribe(handler, opts)`. */
-  subscribe<T = unknown>(topic: string, handler?: MessageHandler<T>, opts?: SubscribeOptions): Subscription<T> {
-    return this.topic(topic).subscribe<T>(handler, opts);
+    return t as unknown as Topic<E>;
   }
 
   /** A string token can be checked before anything is sent. */

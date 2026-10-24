@@ -7,15 +7,16 @@ const ENDPOINTS = {
   websocket: import.meta.env.VITE_RTE_WS ?? 'ws://127.0.0.1:8080/v1/ws',
   http: import.meta.env.VITE_RTE_HTTP ?? 'http://127.0.0.1:3000',
 };
+// Until the node carries several event types per topic (ADR-001, rte#11-#15),
+// the room's messages and its typing signals live on two topics.
 const ROOM = 'chat/lobby';
 const TYPING = 'typing/lobby';
 
-interface ChatMessage {
-  text: string;
-}
+type RoomEvents = { message: { text: string } };
+type TypingEvents = { typing: { typing: boolean } };
 
 function Chat({ client }: { client: Realtime }) {
-  const [messages, setMessages] = useState<Message<ChatMessage>[]>([]);
+  const [messages, setMessages] = useState<Message<RoomEvents['message']>[]>([]);
   const [typing, setTyping] = useState<string[]>([]);
   const { state, transport } = useSyncExternalStore(client.connection.subscribe, client.connection.getSnapshot);
   const identity = client.session?.identity;
@@ -24,13 +25,13 @@ function Chat({ client }: { client: Realtime }) {
   const lastSignal = useRef(0);
 
   useEffect(() => {
-    const sub = client.topic(ROOM).subscribe<ChatMessage>((m) => setMessages((prev) => [...prev, m]), { from: { last: 50 } });
+    const sub = client.topic<RoomEvents>(ROOM).subscribe((m) => setMessages((prev) => [...prev, m]), { from: { last: 50 } });
     sub.on('error', (e) => setError(e.message));
     return () => void sub.unsubscribe();
   }, [client]);
 
   useEffect(() => {
-    const sub = client.topic(TYPING).subscribe<{ typing: boolean }>();
+    const sub = client.topic<TypingEvents>(TYPING).subscribe();
     const refresh = () =>
       setTyping(
         [...sub.values.values()].filter((m) => m.data?.typing && m.publisher !== identity).map((m) => m.publisher),
@@ -49,9 +50,9 @@ function Chat({ client }: { client: Realtime }) {
     const text = draft.trim();
     if (!text) return;
     setDraft('');
-    client.topic(TYPING).signal({ typing: false });
+    void client.topic<TypingEvents>(TYPING).publish('typing', { typing: false }, { delivery: 'signal' });
     try {
-      await client.topic(ROOM).publish({ text });
+      await client.topic<RoomEvents>(ROOM).publish('message', { text });
     } catch (err) {
       setError((err as Error).message);
     }
@@ -61,7 +62,7 @@ function Chat({ client }: { client: Realtime }) {
     setDraft(value);
     if (Date.now() - lastSignal.current > 2_000) {
       lastSignal.current = Date.now();
-      client.topic(TYPING).signal({ typing: true });
+      void client.topic<TypingEvents>(TYPING).publish('typing', { typing: true }, { delivery: 'signal' });
     }
   }
 

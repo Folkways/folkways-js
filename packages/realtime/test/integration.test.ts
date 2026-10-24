@@ -75,18 +75,18 @@ for (const transport of ['websocket', 'http'] as const) {
       const alice = await open('alice', opts);
       expect(alice.connection.transport).toBe(transport);
       const got: Message[] = [];
-      const sub = alice.subscribe(topic, (m) => {
+      const sub = alice.topic(topic).subscribe((m) => {
         got.push(m);
       });
       await sub.ready;
-      expect(sub.deliveryClass).toBe('durable');
+      expect(sub.deliveries).toEqual(['stream']);
 
       const bob = await open('bob', opts);
-      const r1 = await bob.publish(topic, { text: 'hi' }, { headers: { trace: 'abc' } });
-      const r2 = await bob.publish(topic, 'plain');
-      const r3 = await bob.publish(topic, new Uint8Array([1, 2, 3]));
+      const r1 = await bob.topic(topic).publish('message', { text: 'hi' }, { headers: { trace: 'abc' } });
+      const r2 = await bob.topic(topic).publish('message', 'plain');
+      const r3 = await bob.topic(topic).publish('message', new Uint8Array([1, 2, 3]));
       expect(r1).toMatchObject({ level: 'accepted', duplicate: false });
-      expect(r2.cursor.seq).toBe(r1.cursor.seq + 1n);
+      expect(r2.cursor!.seq).toBe(r1.cursor!.seq + 1n);
 
       await until(() => got.length === 3, 8_000, 'three messages');
       expect(got.map((m) => m.data)).toEqual([{ text: 'hi' }, 'plain', new Uint8Array([1, 2, 3])]);
@@ -97,7 +97,7 @@ for (const transport of ['websocket', 'http'] as const) {
     it('keeps LastValue state: snapshot, update, tombstone', async () => {
       const topic = `rides/${uniq()}/location`;
       const bob = await open('bob', opts);
-      await bob.topic(topic).set('driver-1', { lat: 1 });
+      await bob.topic(topic).publish('location', { lat: 1 }, { delivery: 'kv', key: 'driver-1' });
       const alice = await open('alice', opts);
       const snapshots: Message[][] = [];
       const sub = alice.topic(topic).subscribe();
@@ -105,35 +105,35 @@ for (const transport of ['websocket', 'http'] as const) {
       await sub.ready;
       await until(() => snapshots.length >= 1, 8_000, 'snapshot');
       expect(snapshots[0]!.map((m) => [m.key, m.data])).toEqual([['driver-1', { lat: 1 }]]);
-      expect(sub.deliveryClass).toBe('last-value');
+      expect(sub.deliveries).toEqual(['kv']);
 
-      await bob.topic(topic).set('driver-2', { lat: 2 }, { ttlMs: 60_000 });
+      await bob.topic(topic).publish('location', { lat: 2 }, { delivery: 'kv', key: 'driver-2', ttlMs: 60_000 });
       await until(() => sub.values.size === 2, 8_000, 'two values');
-      await bob.topic(topic).delete('driver-1');
+      await bob.topic(topic).publish('location', null, { delivery: 'kv', key: 'driver-1', remove: true });
       await until(() => sub.values.size === 1, 8_000, 'delete applied');
       expect([...sub.values.keys()]).toEqual(['driver-2']);
     });
 
     it('reports Forbidden for topics without a rule or right', async () => {
       const alice = await open('alice', opts);
-      await expect(alice.publish(`other/${uniq()}`, 'x')).rejects.toMatchObject({ code: Code.Forbidden, local: false });
-      const sub = alice.subscribe(`other/${uniq()}`);
+      await expect(alice.topic(`other/${uniq()}`).publish('message', 'x')).rejects.toMatchObject({ code: Code.Forbidden, local: false });
+      const sub = alice.topic(`other/${uniq()}`).subscribe();
       await expect(sub.ready).rejects.toMatchObject({ code: Code.Forbidden });
       const reader = await open('reader', {
         ...opts,
         token: () => mintToken('reader', { cap: [{ topic: 'chat/>', ops: ['subscribe'] }] }),
       });
-      await expect(reader.publish(`chat/${uniq()}`, 'x')).rejects.toMatchObject({ code: Code.Forbidden });
+      await expect(reader.topic(`chat/${uniq()}`).publish('message', 'x')).rejects.toMatchObject({ code: Code.Forbidden });
     });
 
     it('answers a retried publish with the original receipt and refuses a conflicting one', async () => {
       const topic = `chat/${uniq()}`;
       const bob = await open('bob', opts);
       const key = '0123456789abcdef0123456789abcdef';
-      const a = await bob.publish(topic, 'once', { idempotencyKey: key });
-      const b = await bob.publish(topic, 'once', { idempotencyKey: key });
+      const a = await bob.topic(topic).publish('message', 'once', { idempotencyKey: key });
+      const b = await bob.topic(topic).publish('message', 'once', { idempotencyKey: key });
       expect(b).toMatchObject({ id: a.id, duplicate: true });
-      await expect(bob.publish(topic, 'different', { idempotencyKey: key })).rejects.toMatchObject({
+      await expect(bob.topic(topic).publish('message', 'different', { idempotencyKey: key })).rejects.toMatchObject({
         code: Code.IdempotencyConflict,
       });
     });
@@ -141,15 +141,15 @@ for (const transport of ['websocket', 'http'] as const) {
     it('replays history with from: oldest and last N', async () => {
       const topic = `chat/${uniq()}`;
       const bob = await open('bob', opts);
-      for (let i = 1; i <= 5; i++) await bob.publish(topic, `m${i}`);
+      for (let i = 1; i <= 5; i++) await bob.topic(topic).publish('message', `m${i}`);
       const alice = await open('alice', opts);
       const all: string[] = [];
-      alice.subscribe<string>(topic, (m) => void all.push(m.data), { from: 'oldest' });
+      alice.topic<{ message: string }>(topic).subscribe((m) => void all.push(m.data), { from: 'oldest' });
       await until(() => all.length === 5, 8_000, 'replay');
       expect(all).toEqual(['m1', 'm2', 'm3', 'm4', 'm5']);
       const carol = await open('carol', opts);
       const last: string[] = [];
-      carol.subscribe<string>(topic, (m) => void last.push(m.data), { from: { last: 2 } });
+      carol.topic<{ message: string }>(topic).subscribe((m) => void last.push(m.data), { from: { last: 2 } });
       await until(() => last.length === 2, 8_000, 'last 2');
       expect(last).toEqual(['m4', 'm5']);
     });
@@ -157,10 +157,10 @@ for (const transport of ['websocket', 'http'] as const) {
     it('reports a Gap for a cursor from another epoch and continues from the oldest', async () => {
       const topic = `chat/${uniq()}`;
       const bob = await open('bob', opts);
-      await bob.publish(topic, 'kept');
+      await bob.topic(topic).publish('message', 'kept');
       const alice = await open('alice', opts);
       const got: string[] = [];
-      const sub = alice.subscribe<string>(topic, (m) => void got.push(m.data), { from: { after: '1:1' } });
+      const sub = alice.topic<{ message: string }>(topic).subscribe((m) => void got.push(m.data), { from: { after: '1:1' } });
       const gap = new Promise((r) => sub.once('gap', r));
       await expect(gap).resolves.toMatchObject({ reason: 'epoch-lost', resumed: true });
       await until(() => got.length === 1, 8_000, 'replay after gap');
@@ -175,13 +175,13 @@ live('ephemeral signals', () => {
     const alice = await open('alice');
     const sub = alice.topic(topic).subscribe();
     await sub.ready;
-    expect(sub.deliveryClass).toBe('ephemeral');
+    expect(sub.deliveries).toEqual(['signal']);
     const bob = await open('bob');
-    bob.topic(topic).signal({ typing: true });
+    void bob.topic(topic).publish('typing', { typing: true }, { delivery: 'signal' });
     await until(() => sub.values.get('bob'), 8_000, 'signal');
     expect(sub.values.get('bob')!.data).toEqual({ typing: true });
     // publish() on an Ephemeral topic still gets a receipt.
-    await expect(bob.topic(topic).publish({ typing: false })).resolves.toMatchObject({ level: 'accepted' });
+    await expect(bob.topic(topic).publish('typing', { typing: false }, { delivery: 'signal' })).resolves.toBeUndefined();
   });
 });
 
@@ -191,20 +191,20 @@ live('resume after a dropped connection', () => {
     const ws = new KillableWs();
     const alice = await open('alice', { transports: ['websocket'], transportOverrides: { stream: ws } });
     const got: Message<string>[] = [];
-    const sub = alice.subscribe<string>(topic, (m) => {
+    const sub = alice.topic<{ message: string }>(topic).subscribe((m) => {
       got.push(m);
     });
     await sub.ready;
     const bob = await open('bob');
-    await bob.publish(topic, 'before');
+    await bob.topic(topic).publish('message', 'before');
     await until(() => got.length === 1, 8_000, 'first event');
 
     ws.conns[ws.conns.length - 1]!.close(4000, 'test drop');
     await until(() => alice.connection.state !== 'connected', 2_000, 'disconnect');
-    await bob.publish(topic, 'while-away-1');
-    await bob.publish(topic, 'while-away-2');
+    await bob.topic(topic).publish('message', 'while-away-1');
+    await bob.topic(topic).publish('message', 'while-away-2');
     await until(() => alice.connection.state === 'connected', 8_000, 'reconnect');
-    await bob.publish(topic, 'after');
+    await bob.topic(topic).publish('message', 'after');
     await until(() => got.length === 4, 8_000, 'all events');
     expect(got.map((m) => m.data)).toEqual(['before', 'while-away-1', 'while-away-2', 'after']);
     expect(got[1]!.replayed).toBe(true);
@@ -218,9 +218,9 @@ live('resume after a dropped connection', () => {
     const bob = await open('bob', { transports: ['websocket'], transportOverrides: { stream: ws } });
     const alice = await open('alice');
     const got: string[] = [];
-    await alice.subscribe<string>(topic, (m) => void got.push(m.data)).ready;
+    await alice.topic<{ message: string }>(topic).subscribe((m) => void got.push(m.data)).ready;
     ws.conns[ws.conns.length - 1]!.close(4000, 'test drop');
-    const p = bob.publish(topic, 'queued');
+    const p = bob.topic(topic).publish('message', 'queued');
     await expect(p).resolves.toMatchObject({ duplicate: false });
     await until(() => got.length === 1, 8_000, 'queued publish delivered');
     await new Promise((r) => setTimeout(r, 200));
@@ -235,10 +235,10 @@ live('mixed transports', () => {
     const socket = await open('socket', { transports: ['websocket'] });
     const atPoller: string[] = [];
     const atSocket: string[] = [];
-    await poller.subscribe<string>(topic, (m) => void atPoller.push(m.data)).ready;
-    await socket.subscribe<string>(topic, (m) => void atSocket.push(m.data)).ready;
-    await socket.publish(topic, 'from-ws');
-    await poller.publish(topic, 'from-http');
+    await poller.topic<{ message: string }>(topic).subscribe((m) => void atPoller.push(m.data)).ready;
+    await socket.topic<{ message: string }>(topic).subscribe((m) => void atSocket.push(m.data)).ready;
+    await socket.topic(topic).publish('message', 'from-ws');
+    await poller.topic(topic).publish('message', 'from-http');
     await until(() => atPoller.length === 2 && atSocket.length === 2, 8_000, 'both sides');
     expect(atPoller).toEqual(['from-ws', 'from-http']);
     expect(atSocket).toEqual(['from-ws', 'from-http']);

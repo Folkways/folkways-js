@@ -8,31 +8,30 @@ export type {
   ConnectionEvents,
   ConnectionSnapshot,
   ConnectionState,
+  ContentTypeName,
+  Delivery,
+  EventMap,
+  GapEvent,
+  GapReasonName,
   LiveView,
+  Message,
+  MessageHandler,
+  MessageOf,
   Op,
   Permission,
+  PublishOptions,
+  PublishReceipt,
   Segment,
   Session,
+  StartFrom,
+  SubscribeOptions,
+  SubscriptionStatus,
   TokenProvider,
   TokenReason,
   TokenSource,
 } from './types';
-export { Topic, type PublishOptions, type SignalOptions, type SubscribeOptions, type StartFrom } from './topic';
-export {
-  Subscription,
-  type GapEvent,
-  type MessageHandler,
-  type SubscriptionEvents,
-  type SubscriptionStatus,
-} from './subscription';
-export {
-  type ContentTypeName,
-  type DeliveryClassName,
-  type GapReasonName,
-  type Message,
-  type PublishReceipt,
-  decodePayload,
-  encodePayload,
-} from './message';
+export { Topic } from './topic';
+export { Subscription, type SubscriptionEvents } from './subscription';
+export { decodePayload, encodePayload } from './message';
 export { type RealtimeOptions, endpointsFromUrl } from './options';
 export { VERSION } from './version';

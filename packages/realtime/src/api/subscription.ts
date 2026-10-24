@@ -1,6 +1,7 @@
 import {
   type ActiveInfo,
   type DeliveredEvent,
+  DeliveryClass,
   type Engine,
   type GapInfo,
   type TopicEntry,
@@ -9,46 +10,42 @@ import {
 import type { Cursor } from '../shared/cursor';
 import { Emitter } from '../shared/emitter';
 import type { RealtimeError } from '../shared/errors';
-import { type DeliveryClassName, type GapReasonName, type Message, deliveryClassName, gapReasonName, toMessage } from './message';
+import { deliveryName, gapReasonName, toMessage } from './message';
+import type { Delivery, GapEvent, Message, MessageHandler, SubscriptionStatus } from './types';
 
-export type SubscriptionStatus = 'pending' | 'active' | 'resyncing' | 'failed' | 'ended' | 'closed';
-
-export interface GapEvent {
-  readonly reason: GapReasonName;
-  /** The cursor you asked to resume after. */
-  readonly requested?: Cursor;
-  /** Oldest event still retained: fetch `(requested, oldest)` from your backend. */
-  readonly oldest?: Cursor;
-  readonly latest?: Cursor;
-  /** False when `onGap: 'fail'` ended the subscription. */
-  readonly resumed: boolean;
-}
-
-export type MessageHandler<T> = (message: Message<T>) => void | Promise<void>;
-
-export type SubscriptionEvents<T> = {
+export type SubscriptionEvents<M> = {
   /** Every event, after the handler ran. */
-  message: (message: Message<T>) => void;
-  /** The full current state of a LastValue/Ephemeral topic (on subscribe and after reconnects). */
-  snapshot: (messages: Message<T>[]) => void;
+  message: (message: M) => void;
+  /** The current kv values and signals (on subscribe and after reconnects). */
+  snapshot: (messages: M[]) => void;
   gap: (gap: GapEvent) => void;
   /** The subscription failed, or the handler threw. */
   error: (err: RealtimeError | Error) => void;
-  /** The node ended the subscription (rights narrowed) or the client closed. */
+  /** The node ended the subscription (rights narrowed), the identity changed or the client closed. */
   ended: (err: RealtimeError) => void;
   status: (status: SubscriptionStatus) => void;
 };
+
+/** Local filters of one subscription. */
+export interface SubscriptionFilter {
+  readonly types?: readonly DeliveryClass[];
+  readonly events?: readonly string[];
+}
 
 /**
  * A handle on one topic's events. Several handles on the same topic share
  * one wire subscription. Handlers run in order, one at a time; the cursor
  * advances after each handler settles.
  */
-export class Subscription<T = unknown> extends Emitter<SubscriptionEvents<T>> implements TopicListener {
+export class Subscription<M extends Message = Message> extends Emitter<SubscriptionEvents<M>> implements TopicListener {
+  /** @internal Delivery types this handle receives (empty: all). */
+  readonly types?: readonly DeliveryClass[];
   /** Resolves when the node confirmed the subscription; rejects if it refused it. */
   readonly ready: Promise<void>;
   private statusValue: SubscriptionStatus = 'pending';
-  private classValue?: DeliveryClassName;
+  private allowed: readonly DeliveryClass[] = [];
+  private topicClass = DeliveryClass.Unspecified;
+  private readonly events?: ReadonlySet<string>;
   private cursorValue?: Cursor;
   private resolveReady!: () => void;
   private rejectReady!: (e: RealtimeError) => void;
@@ -58,10 +55,13 @@ export class Subscription<T = unknown> extends Emitter<SubscriptionEvents<T>> im
     readonly topic: string,
     private readonly engine: Engine,
     spec: Parameters<Engine['subscribe']>[1],
-    private readonly handler: MessageHandler<T> | undefined,
+    private readonly handler: MessageHandler<M> | undefined,
     private readonly signalTtlMs: number,
+    filter: SubscriptionFilter = {},
   ) {
     super();
+    this.types = filter.types?.length ? filter.types : undefined;
+    this.events = filter.events?.length ? new Set(filter.events) : undefined;
     this.ready = new Promise<void>((resolve, reject) => {
       this.resolveReady = resolve;
       this.rejectReady = reject;
@@ -75,9 +75,10 @@ export class Subscription<T = unknown> extends Emitter<SubscriptionEvents<T>> im
     return this.statusValue;
   }
 
-  /** Known after the first confirmation. */
-  get deliveryClass(): DeliveryClassName | undefined {
-    return this.classValue;
+  /** Delivery types the topic allows, known after the first confirmation. */
+  get deliveries(): readonly Delivery[] {
+    if (this.allowed.length > 0) return this.allowed.map(deliveryName);
+    return this.topicClass === DeliveryClass.Unspecified ? [] : [deliveryName(this.topicClass)];
   }
 
   /** The last event this handle finished handling. */
@@ -89,16 +90,16 @@ export class Subscription<T = unknown> extends Emitter<SubscriptionEvents<T>> im
    * Current values: LastValue topics by key, Ephemeral topics by publisher
    * (signals younger than `signalTtlMs`). Empty for Durable topics.
    */
-  get values(): Map<string, Message<T>> {
-    const out = new Map<string, Message<T>>();
+  get values(): Map<string, M> {
+    const out = new Map<string, M>();
     const { kv, signals } = this.engine.values(this.entry);
     const cutoff = Date.now() - this.signalTtlMs;
     for (const byKey of kv.values()) {
-      for (const [k, v] of byKey) out.set(k, toMessage<T>({ topic: this.topic, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true }));
+      for (const [k, v] of byKey) out.set(k, toMessage({ topic: this.topic, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true }) as M);
     }
     for (const byPublisher of signals.values()) {
       for (const [k, v] of byPublisher) {
-        if (v.receivedAt >= cutoff) out.set(k, toMessage<T>({ topic: this.topic, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true }));
+        if (v.receivedAt >= cutoff) out.set(k, toMessage({ topic: this.topic, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true }) as M);
       }
     }
     return out;
@@ -113,8 +114,8 @@ export class Subscription<T = unknown> extends Emitter<SubscriptionEvents<T>> im
   }
 
   /** `for await (const msg of sub)` — ends when the subscription does. */
-  async *[Symbol.asyncIterator](): AsyncIterator<Message<T>> {
-    const queue: Message<T>[] = [];
+  async *[Symbol.asyncIterator](): AsyncIterator<M> {
+    const queue: M[] = [];
     let wake: (() => void) | undefined;
     let done = this.isTerminal();
     const offs = [
@@ -149,24 +150,25 @@ export class Subscription<T = unknown> extends Emitter<SubscriptionEvents<T>> im
   /** @internal */
   onActive(info: ActiveInfo): void {
     if (this.isTerminal()) return;
-    this.classValue = deliveryClassName(info.deliveryClass);
+    this.allowed = info.deliveries;
+    this.topicClass = info.deliveryClass;
     this.setStatus('active');
     this.resolveReady();
   }
 
   /** @internal */
   async onEvent(d: DeliveredEvent): Promise<void> {
-    if (this.isTerminal()) return;
-    const m = toMessage<T>(d);
+    if (this.isTerminal() || !this.wants(d)) return;
+    const m = toMessage(d) as M;
     await this.deliver(m);
-    this.cursorValue = m.cursor;
+    if (m.cursor) this.cursorValue = m.cursor;
     this.emit('message', m);
   }
 
   /** @internal */
   async onSnapshot(events: DeliveredEvent[]): Promise<void> {
     if (this.isTerminal()) return;
-    const messages = events.map((d) => toMessage<T>(d));
+    const messages = events.filter((d) => this.wants(d)).map((d) => toMessage(d) as M);
     for (const m of messages) await this.deliver(m);
     this.emit('snapshot', messages);
   }
@@ -175,6 +177,7 @@ export class Subscription<T = unknown> extends Emitter<SubscriptionEvents<T>> im
   onGap(g: GapInfo): void {
     if (this.isTerminal()) return;
     this.emit('gap', {
+      topic: this.topic,
       reason: gapReasonName(g.reason),
       requested: g.requested,
       oldest: g.oldest,
@@ -205,7 +208,11 @@ export class Subscription<T = unknown> extends Emitter<SubscriptionEvents<T>> im
     this.emit('ended', err);
   }
 
-  private async deliver(m: Message<T>): Promise<void> {
+  private wants(d: DeliveredEvent): boolean {
+    return !this.events || this.events.has(d.event.name ?? '');
+  }
+
+  private async deliver(m: M): Promise<void> {
     if (!this.handler) return;
     try {
       await this.handler(m);
