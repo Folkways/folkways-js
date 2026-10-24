@@ -3,6 +3,7 @@ import { RealtimeError, localError } from '../shared/errors';
 import type { Logger } from '../shared/logger';
 import type { PubAck, PublishBody } from '../transport';
 import { Backoff } from './backoff';
+import type { Outbox, OutboxItem } from './outbox';
 
 export type PublishState = 'queued' | 'inflight' | 'waiting' | 'done';
 
@@ -13,6 +14,9 @@ export interface OutboundPublish {
   readonly body: PublishBody;
   /** False for fire-and-forget (`ack: NoAck`): settled as soon as it is written. */
   readonly wantsAck: boolean;
+  readonly createdAt: number;
+  /** Set when the publish is kept in the persistent outbox. */
+  outboxKey?: string;
   state: PublishState;
   attempts: number;
 }
@@ -33,6 +37,8 @@ export interface PublishQueueOptions {
   timeoutMs: number;
   retries: number;
   logger: Logger;
+  /** A persistent outbox: publishes survive reloads and wait out being offline. */
+  outbox?: Outbox;
 }
 
 interface Entry {
@@ -67,26 +73,53 @@ export class PublishQueue {
     return this.entries.size;
   }
 
+  /** True when stream and kv publishes are kept in a persistent outbox. */
+  get persistent(): boolean {
+    return !!this.opts.outbox?.enabled;
+  }
+
   submit(topic: string, body: PublishBody, wantsAck: boolean, signal?: AbortSignal): Promise<PubAck | undefined> {
+    return this.enqueue(topic, body, wantsAck, Date.now(), signal);
+  }
+
+  /** Resends an entry restored from the outbox (after a reload); same idempotency key. */
+  restore(item: OutboxItem): Promise<PubAck | undefined> {
+    return this.enqueue(item.topic, item.body, true, item.createdAt, undefined, item.key);
+  }
+
+  /** Outbox keys of publishes this queue holds (not to be restored twice). */
+  ownsOutboxKey(key: string): boolean {
+    return [...this.entries.values()].some((e) => e.p.outboxKey === key);
+  }
+
+  private enqueue(
+    topic: string,
+    body: PublishBody,
+    wantsAck: boolean,
+    createdAt: number,
+    signal?: AbortSignal,
+    restoredKey?: string,
+  ): Promise<PubAck | undefined> {
     if (this.closedWith) return Promise.reject(this.closedWith);
     if (signal?.aborted) return Promise.reject(localError(Code.Aborted, 'publish aborted'));
+    const outbox = wantsAck && this.persistent ? this.opts.outbox : undefined;
     const online = this.sink.canSend();
     if (!online) {
       if (!wantsAck) return Promise.resolve(undefined); // fire-and-forget is dropped while offline
       const refused = this.sink.refusal();
-      if (refused) return Promise.reject(refused);
+      if (refused && !(outbox && refused.code === Code.NotConnected)) return Promise.reject(refused);
       if (this.opts.maxQueued <= 0) return Promise.reject(localError(Code.NotConnected, 'not connected'));
       const waiting = this.queue.length + [...this.entries.values()].filter((e) => e.p.state === 'waiting').length;
       if (waiting >= this.opts.maxQueued) {
         return Promise.reject(localError(Code.QueueFull, `offline queue is full (${this.opts.maxQueued})`));
       }
     }
-    const p: OutboundPublish = { id: ++this.seq, topic, body, wantsAck, state: 'queued', attempts: 0 };
+    const p: OutboundPublish = { id: ++this.seq, topic, body, wantsAck, createdAt, state: 'queued', attempts: 0 };
+    if (outbox) p.outboxKey = restoredKey ?? outbox.keyFor(body, createdAt);
     return new Promise<PubAck | undefined>((resolve, reject) => {
-      const timer = setTimeout(
-        () => this.fail(p, localError(Code.Timeout, `no publish receipt within ${this.opts.timeoutMs} ms`)),
-        this.opts.timeoutMs,
-      );
+      // Offline with an outbox, a publish waits up to the outbox's age limit instead.
+      const waitMs = outbox && !online ? Math.max(0, createdAt + outbox.maxAgeMs - Date.now()) : this.opts.timeoutMs;
+      const timer = setTimeout(() => this.fail(p, localError(Code.Timeout, `no publish receipt within ${waitMs} ms`)), waitMs);
       const entry: Entry = { p, resolve, reject, timer, signal };
       if (signal) {
         entry.onAbort = () => {
@@ -96,6 +129,15 @@ export class PublishQueue {
         signal.addEventListener('abort', entry.onAbort, { once: true });
       }
       this.entries.set(p.id, entry);
+      if (outbox && !restoredKey) {
+        // The idempotency key is in the store before the first send.
+        void outbox.put({ key: p.outboxKey!, topic, body, createdAt }).then(() => {
+          if (p.state !== 'queued') return;
+          this.queue.push(p);
+          this.scheduleFlush();
+        });
+        return;
+      }
       this.queue.push(p);
       this.scheduleFlush();
     });
@@ -172,6 +214,23 @@ export class PublishQueue {
     this.queue.length = 0;
   }
 
+  /**
+   * The connection went offline: publishes kept in the outbox wait for the
+   * next connection (up to its age limit); the others fail with `err`.
+   */
+  goOffline(err: RealtimeError): void {
+    const outbox = this.opts.outbox;
+    for (const e of [...this.entries.values()]) {
+      if (!e.p.outboxKey || !outbox) {
+        this.fail(e.p, err);
+        continue;
+      }
+      clearTimeout(e.timer);
+      const left = Math.max(0, e.p.createdAt + outbox.maxAgeMs - Date.now());
+      e.timer = setTimeout(() => this.fail(e.p, localError(Code.Timeout, 'not sent within the outbox age limit')), left);
+    }
+  }
+
   private scheduleFlush(): void {
     if (this.flushScheduled) return;
     this.flushScheduled = true;
@@ -194,6 +253,7 @@ export class PublishQueue {
     this.entries.delete(p.id);
     p.state = 'done';
     clearTimeout(e.timer);
+    if (p.outboxKey) void this.opts.outbox?.remove(p.outboxKey);
     if (e.retryTimer) clearTimeout(e.retryTimer);
     if (e.signal && e.onAbort) e.signal.removeEventListener('abort', e.onAbort);
     const i = this.queue.indexOf(p);

@@ -8,6 +8,7 @@ import { silentLogger } from '../shared/logger';
 import { AckMode, DeliveryClass, OnGap, StartAt } from '../transport';
 import { Backoff } from './backoff';
 import { memoryCursorStore } from './cursor-store';
+import { Outbox } from './outbox';
 import { KEYS, ScopedStore, memoryStore, scopePrefix } from './store';
 import { packetize } from './packets';
 import { type OutboundPublish, PublishQueue } from './publish-queue';
@@ -102,6 +103,36 @@ describe('ScopedStore', () => {
     expect(scopePrefix('seg', undefined, true)).toBe('fw/seg/~anon/');
     await s.wipe();
     expect(await raw.keys('fw/')).toEqual([]);
+  });
+});
+
+describe('Outbox', () => {
+  it('round-trips publish bodies through the store, encrypted with the cipher', async () => {
+    const raw = { ...memoryStore(), persistent: true };
+    const scoped = new ScopedStore(raw, silentLogger);
+    scoped.setScope('fw/s/u/');
+    const cipher = { encrypt: (v: string) => `enc:${btoa(v)}`, decrypt: (v: string) => atob(v.slice(4)) };
+    const ob = new Outbox(scoped, 600_000, silentLogger, cipher);
+    const body = {
+      topic: { name: 'chat/1' },
+      name: 'message',
+      payload: new Uint8Array([0, 255, 7]),
+      delivery: DeliveryClass.Durable,
+      ack: AckMode.Accepted,
+      idempotencyKey: { hi: 1n << 63n, lo: 9n },
+      headers: [['k', 'v']] as const,
+      clientTsMs: 5,
+    };
+    const key = ob.keyFor(body, 1_000);
+    await ob.put({ key, topic: 'chat/1', body, createdAt: 1_000 });
+    expect((await raw.get(`fw/s/u/${key}`))!.startsWith('enc:')).toBe(true);
+    await raw.set('fw/s/u/o/garbage', 'not json');
+    const [item, ...rest] = await ob.load();
+    expect(rest).toEqual([]);
+    expect(item).toEqual({ key, topic: 'chat/1', createdAt: 1_000, body: { ...body, headers: [['k', 'v']] } });
+    expect(await raw.get('fw/s/u/o/garbage')).toBeUndefined();
+    expect(ob.enabled).toBe(true);
+    expect(new Outbox(new ScopedStore(memoryStore(), silentLogger), 1, silentLogger).enabled).toBe(false);
   });
 });
 

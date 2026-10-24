@@ -7,6 +7,7 @@ import {
   type TransportKind,
   type WebSocketConstructor,
   type Store,
+  type StoreCipher,
   authUrlProvider,
   memoryStore,
 } from '../engine';
@@ -67,11 +68,16 @@ export interface RealtimeOptions {
   /** Publishes kept while offline (default `{ maxSize: 1000 }`), or `false` to reject them. */
   offlineQueue?: { maxSize?: number } | false;
   /**
-   * The local store for cursors (and, in later releases of this API, recent
-   * messages, values and the outbox). Default `memoryStore()`; persistent
-   * adapters are opt-in entry points. Data is kept per segment and identity.
+   * The local store: cursors and, with a persistent adapter, an outbox
+   * that lets sends survive reloads and short outages. Default
+   * `memoryStore()`; persistent adapters are opt-in entry points. Data is
+   * kept per segment and identity.
    */
   store?: Store;
+  /** Outbox tuning. `maxAgeMs` (default 600 000, the node's idempotency window): older entries fail instead of being resent. */
+  outbox?: { maxAgeMs?: number };
+  /** Encrypts payloads written to a persistent store. */
+  cipher?: StoreCipher;
   /** How long an Ephemeral signal stays in `Subscription.values`. Default 5 000. */
   signalTtlMs?: number;
   /** HTTP long-poll tuning. */
@@ -172,6 +178,8 @@ export function resolveOptions(o: RealtimeOptions): ResolvedOptions {
     cursorAckIntervalMs: positive(o.cursorAckIntervalMs, 5_000, 'cursorAckIntervalMs'),
     offlineQueueMax: o.offlineQueue === false ? 0 : positive(o.offlineQueue?.maxSize, 1_000, 'offlineQueue.maxSize'),
     store: o.store ?? memoryStore(),
+    outboxMaxAgeMs: positive(o.outbox?.maxAgeMs, 600_000, 'outbox.maxAgeMs'),
+    cipher: o.cipher,
     longPoll: {
       waitMs: positive(o.longPoll?.waitMs, 25_000, 'longPoll.waitMs'),
       maxEvents: positive(o.longPoll?.maxEvents, 100, 'longPoll.maxEvents'),

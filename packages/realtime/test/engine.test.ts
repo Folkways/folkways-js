@@ -1200,6 +1200,76 @@ describe('local store', () => {
   });
 });
 
+describe('persistent outbox', () => {
+  const persistentStore = () => ({ ...memoryStore(), persistent: true });
+  const outboxKeys = async (store: ReturnType<typeof persistentStore>) => store.keys(`fw/${DEV_SEGMENT}/alice/o/`);
+  async function waitFor(fn: () => Promise<boolean>) {
+    for (let i = 0; i < 200 && !(await fn()); i++) await new Promise((r) => setTimeout(r, 5));
+  }
+
+  it('sends a publish left by a reload exactly once after the next connect, with the same key', async () => {
+    const store = persistentStore();
+    const down = new FakeStreamTransport();
+    down.refuse = 1_000_000;
+    const before = client(down, { store });
+    const lost = before.topic('chat/1').publish('message', 'sent during an outage').catch((e: RealtimeError) => e);
+    await waitFor(async () => (await outboxKeys(store)).length === 1);
+    expect(await outboxKeys(store)).toHaveLength(1);
+
+    // The page reloads: a new client on the same store.
+    const up = new FakeStreamTransport();
+    const after = client(up, { store });
+    const conn = await up.nextConn();
+    await conn.welcome();
+    const f = await conn.next('publish');
+    expect(f.msg.publish).toMatchObject({ topic: { name: 'chat/1' }, name: 'message' });
+    expect(new TextDecoder().decode(f.msg.publish.payload)).toBe('sent during an outage');
+    conn.reply(f.corr, { type: 'pubAck', topicId: 1n, level: AckMode.Accepted, cursor: { epoch: EPOCH, seq: 1n }, duplicate: false, serverTsMs: 1 });
+    await waitFor(async () => (await outboxKeys(store)).length === 0);
+    expect(await outboxKeys(store)).toEqual([]);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(conn.sent('publish')).toHaveLength(1);
+    void after;
+    void lost;
+  });
+
+  it('drops entries older than the idempotency window and reports them', async () => {
+    const store = persistentStore();
+    const down = new FakeStreamTransport();
+    down.refuse = 1_000_000;
+    const before = client(down, { store });
+    before.topic('chat/1').publish('message', 'too old').catch(() => {});
+    await waitFor(async () => (await outboxKeys(store)).length === 1);
+    await new Promise((r) => setTimeout(r, 30));
+    const up = new FakeStreamTransport();
+    const after = client(up, { store, outbox: { maxAgeMs: 10 } });
+    const errors: RealtimeError[] = [];
+    after.connection.on('error', (e) => errors.push(e as RealtimeError));
+    await (await up.nextConn()).welcome();
+    await until(() => errors.length === 1);
+    expect(errors[0]).toMatchObject({ code: Code.Timeout, topic: 'chat/1' });
+    expect(await outboxKeys(store)).toEqual([]);
+  });
+
+  it('keeps publishes waiting while offline instead of failing them', async () => {
+    const store = persistentStore();
+    const fake = new FakeStreamTransport();
+    const c = client(fake, { store, offlineAfterMs: 30, reconnect: { initialDelayMs: 5, maxDelayMs: 20 } });
+    await (await fake.nextConn()).welcome();
+    await c.connect();
+    fake.refuse = 1_000;
+    fake.conns[0]!.drop();
+    await until(() => c.connection.state === 'offline', 2_000);
+    const p = c.topic('chat/1').publish('message', 'while offline');
+    fake.refuse = 0;
+    const conn = await fake.nextConn(2_000);
+    await conn.welcome();
+    const f = await conn.next('publish');
+    conn.reply(f.corr, { type: 'pubAck', topicId: 1n, level: AckMode.Accepted, cursor: { epoch: EPOCH, seq: 2n }, duplicate: false, serverTsMs: 1 });
+    await expect(p).resolves.toMatchObject({ id: `${EPOCH}:2` });
+  });
+});
+
 describe('defineTopic', () => {
   type Chat = { message: { text: string }; typing: { on: boolean }; read: { upTo: string } };
   const chatRoom = defineTopic<Chat>()('chat/{room}', {

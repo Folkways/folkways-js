@@ -62,6 +62,9 @@ export class Realtime {
       this.followUserTopic();
     });
     this.engine.on('delivered', (d) => this.observe(d));
+    this.engine.on('outboxSettled', (topic, err) => {
+      if (err) this.conn.report(err.withTopic(topic));
+    });
     this.engine.on('sessionUpdated', refresh);
     this.engine.on('tokenRefreshed', refresh);
     this.engine.on('identityChanged', () => {

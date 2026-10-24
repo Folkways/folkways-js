@@ -17,7 +17,8 @@ import {
   WebSocketTransport,
 } from '../transport';
 import { Backoff, sleep } from './backoff';
-import { type Store, ScopedStore, scopePrefix } from './store';
+import { Outbox } from './outbox';
+import { type Store, type StoreCipher, ScopedStore, scopePrefix } from './store';
 import { PollSession } from './poll-session';
 import { PublishQueue } from './publish-queue';
 import { TransportSelector } from './selector';
@@ -69,6 +70,10 @@ export interface EngineConfig {
   offlineQueueMax: number;
   /** The local store port (memory unless an adapter is given). */
   store: Store;
+  /** Outbox entries older than this are never resent (the node's idempotency window). */
+  outboxMaxAgeMs: number;
+  /** Encrypts payloads written to a persistent store. */
+  cipher?: StoreCipher;
   longPoll: { waitMs: number; maxEvents: number; emptyStateRecheckMs: number };
   webSocket?: WebSocketConstructor;
   fetch?: FetchLike;
@@ -96,6 +101,8 @@ export type EngineEvents = {
   sessionUpdated: (info: SessionInfo) => void;
   /** Every event delivered on any topic (for `client.on`). */
   delivered: (e: DeliveredEvent) => void;
+  /** A publish restored from the outbox after a reload settled (`error` set when it failed or was too old). */
+  outboxSettled: (topic: string, error?: RealtimeError) => void;
   /** `updateToken()` switched identity: the old identity's local data must go. */
   identityChanged: (previous: string | undefined, next: string | undefined) => void;
 };
@@ -135,6 +142,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
   /** The current session is being replaced by a WebSocket one (not a failure). */
   private switching = false;
   private wsProbe?: ReturnType<typeof setTimeout>;
+  private readonly restoredScopes = new Set<string>();
   private readonly stopController = new AbortController();
   private wakeController = new AbortController();
   private waiters: { resolve: () => void; reject: (e: RealtimeError) => void }[] = [];
@@ -169,7 +177,13 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
           return undefined;
         },
       },
-      { maxQueued: cfg.offlineQueueMax, timeoutMs: cfg.publishTimeoutMs, retries: cfg.publishRetries, logger: cfg.logger },
+      {
+        maxQueued: cfg.offlineQueueMax,
+        timeoutMs: cfg.publishTimeoutMs,
+        retries: cfg.publishRetries,
+        logger: cfg.logger,
+        outbox: new Outbox(this.store, cfg.outboxMaxAgeMs, cfg.logger, cfg.cipher),
+      },
     );
     this.selector = new TransportSelector(
       cfg.transports,
@@ -333,6 +347,36 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     if (this.session && this.stateValue === 'connected') {
       this.switching = true;
       this.session.close(Code.Ok, 'identity changed');
+    }
+  }
+
+  /**
+   * Resends what a previous page load left in the outbox, once per scope.
+   * Entries past the age limit are dropped and reported, not resent.
+   */
+  private async restoreOutbox(): Promise<void> {
+    const outbox = new Outbox(this.store, this.cfg.outboxMaxAgeMs, this.log, this.cfg.cipher);
+    const scope = this.store.prefix;
+    if (!outbox.enabled || scope === undefined || this.restoredScopes.has(scope)) return;
+    this.restoredScopes.add(scope);
+    let items;
+    try {
+      items = await outbox.load();
+    } catch (err) {
+      this.log.warn('outbox load failed', { err });
+      return;
+    }
+    for (const item of items) {
+      if (this.publishes.ownsOutboxKey(item.key)) continue;
+      if (Date.now() - item.createdAt > this.cfg.outboxMaxAgeMs) {
+        await outbox.remove(item.key);
+        this.emit('outboxSettled', item.topic, localError(Code.Timeout, 'outbox entry older than the idempotency window; not resent'));
+        continue;
+      }
+      this.publishes.restore(item).then(
+        () => this.emit('outboxSettled', item.topic),
+        (err: RealtimeError) => this.emit('outboxSettled', item.topic, err),
+      );
     }
   }
 
@@ -513,6 +557,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       this.setState('connected');
       this.emit('connected', info);
       this.resolveWaiters();
+      void this.restoreOutbox();
       this.publishes.flush();
       this.scheduleWebSocketRetry();
 
@@ -605,7 +650,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     if (Date.now() - this.downSince < this.cfg.offlineAfterMs) return;
     this.log.info('offline', { downForMs: Date.now() - this.downSince });
     this.setState('offline', error);
-    this.publishes.rejectAll(localError(Code.NotConnected, 'offline'));
+    this.publishes.goOffline(localError(Code.NotConnected, 'offline'));
   }
 
   /**
