@@ -223,6 +223,8 @@ export interface RegistryOptions {
   logger: Logger;
   /** Called when entries were added or removed, so the session can sync. */
   onChange: () => void;
+  /** Sees every delivered event, in the topic's order, without holding it back. */
+  observe?: (e: DeliveredEvent) => void;
   now?: () => number;
 }
 
@@ -392,6 +394,7 @@ export class SubscriptionRegistry {
       entry.storeValue(event, delivery, now);
       const delivered: DeliveredEvent = { topic: entry.name, event, delivery, replayed, fromSnapshot: false };
       this.run(entry, async () => {
+        this.opts.observe?.(delivered);
         await Promise.all([...entry.listeners].filter((l) => accepts(l.types, delivery)).map((l) => l.onEvent(delivered)));
         if (numbered && delivery === DeliveryClass.Durable) await this.processed(entry, c);
       });

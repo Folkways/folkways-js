@@ -24,6 +24,7 @@ import { TransportSelector } from './selector';
 import type { CloseInfo, Session, SessionHost, SessionInfo } from './session';
 import { SocketSession } from './socket-session';
 import {
+  type DeliveredEvent,
   type StoredValue,
   type SubscribeSpec,
   type TopicListener,
@@ -92,6 +93,8 @@ export type EngineEvents = {
   tokenRefreshed: (expiresAtMs?: number) => void;
   /** The session changed without a reconnect (a token for the same identity, or anonymous → signed in). */
   sessionUpdated: (info: SessionInfo) => void;
+  /** Every event delivered on any topic (for `client.on`). */
+  delivered: (e: DeliveredEvent) => void;
   /** `updateToken()` switched identity: the old identity's local data must go. */
   identityChanged: (previous: string | undefined, next: string | undefined) => void;
 };
@@ -149,6 +152,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       cursorStore: cfg.cursorStore,
       logger: cfg.logger,
       onChange: () => this.session?.syncSubscriptions(),
+      observe: (d) => this.emit('delivered', d),
     });
     this.publishes = new PublishQueue(
       {

@@ -1073,6 +1073,100 @@ describe('topic sets', () => {
   });
 });
 
+describe('client.on and system topics', () => {
+  async function connected(welcome: Parameters<import('./support/fake-transport').FakeConn['welcome']>[0] = {}) {
+    const fake = new FakeStreamTransport();
+    const c = client(fake, { token: mintToken('alice') });
+    const conn = await fake.nextConn();
+    await conn.welcome({ identity: 'alice', ...welcome });
+    await c.connect();
+    return { c, conn };
+  }
+  const subAck = (topicId: bigint) =>
+    ({ type: 'subAck', topicId, delivery: DeliveryClass.Unspecified, catchingUp: false, snapshotFollows: false, deliveries: [DeliveryClass.Durable, DeliveryClass.Ephemeral] }) as const;
+
+  it('hears every received event, filtered by topic pattern, delivery, event, publisher and self', async () => {
+    const { c, conn } = await connected();
+    const all: string[] = [];
+    const typing: string[] = [];
+    const fromBob: string[] = [];
+    const notMine: string[] = [];
+    c.on((e) => void all.push(`${e.topic}:${e.name}`));
+    c.on({ topic: 'chat/*', delivery: 'signal', event: 'typing' }, (e) => void typing.push(e.publisher));
+    c.on({ publisher: ['bob'] }, (e) => void fromBob.push(e.name));
+    const offNotMine = c.on({ self: false, event: ['message', 'read'] }, (e) => void notMine.push(e.publisher));
+    c.topic('chat/1').subscribe();
+    c.topic('dm/9').subscribe();
+    const [s1, s2] = [await conn.next('subscribe'), await conn.next('subscribe')];
+    conn.reply(s1.corr, subAck(1n));
+    conn.reply(s2.corr, subAck(2n));
+    conn.reply(0n, {
+      type: 'deliver',
+      topicId: 1n,
+      delivery: DeliveryClass.Unspecified,
+      replayed: false,
+      events: [
+        event(1n, EPOCH, 1n, 'm', { delivery: DeliveryClass.Durable, name: 'message', publisher: 'alice' }),
+        event(1n, 0n, 0n, 't', { delivery: DeliveryClass.Ephemeral, name: 'typing', publisher: 'bob' }),
+      ],
+    });
+    conn.reply(0n, {
+      type: 'deliver',
+      topicId: 2n,
+      delivery: DeliveryClass.Unspecified,
+      replayed: false,
+      events: [event(2n, EPOCH, 1n, 'd', { delivery: DeliveryClass.Durable, name: 'message', publisher: 'bob' })],
+    });
+    await until(() => all.length === 3);
+    // In order within a topic; no order across topics.
+    expect(all.filter((x) => x.startsWith('chat/1'))).toEqual(['chat/1:message', 'chat/1:typing']);
+    expect(all).toContain('dm/9:message');
+    expect(typing).toEqual(['bob']);
+    expect(fromBob.sort()).toEqual(['message', 'typing']);
+    expect(notMine).toEqual(['bob']);
+    offNotMine();
+  });
+
+  it('reports listener errors on client.connection and keeps delivering', async () => {
+    const { c, conn } = await connected();
+    const errors: unknown[] = [];
+    c.connection.on('error', (e) => errors.push(e));
+    c.on(() => {
+      throw new Error('boom');
+    });
+    const got: string[] = [];
+    c.topic('chat/1').subscribe((m) => void got.push(m.data as string));
+    conn.reply((await conn.next('subscribe')).corr, subAck(1n));
+    conn.reply(0n, { type: 'deliver', topicId: 1n, delivery: DeliveryClass.Durable, replayed: false, events: [event(1n, EPOCH, 1n, 'x')] });
+    await until(() => got.length === 1);
+    expect(errors).toHaveLength(1);
+  });
+
+  it('accepts the readable system topics and rejects other $ names', async () => {
+    const { c } = await connected();
+    expect(c.topic('$presence/chat/1').name).toBe('$presence/chat/1');
+    expect(c.topic('$online/user:7').name).toBe('$online/user:7');
+    expect(c.topic('$user/alice').name).toBe('$user/alice');
+    expect(() => c.topic('$conn/1')).toThrow(/reserved/);
+    expect(() => c.topic('$presence/')).toThrow(RealtimeError);
+  });
+
+  it('follows its own $user topic when the node offers user-topics', async () => {
+    const { conn } = await connected({ features: ['user-topics'] });
+    const s = await conn.next('subscribe');
+    expect(s.msg.subscribe.topic).toEqual({ name: '$user/alice' });
+  });
+
+  it('does not follow $user without the feature, or when anonymous', async () => {
+    const plain = await connected();
+    const anon = await connected({ features: ['user-topics'], identity: 'anon:1', anonymous: true });
+    expect(anon.c.session).toMatchObject({ identity: null, anonymous: true });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(plain.conn.sent('subscribe')).toHaveLength(0);
+    expect(anon.conn.sent('subscribe')).toHaveLength(0);
+  });
+});
+
 describe('http long-poll', () => {
   it('probes a new topic, then long-polls after the last cursor, and publishes by POST', async () => {
     let published = 0;

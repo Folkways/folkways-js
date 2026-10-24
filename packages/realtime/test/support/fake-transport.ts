@@ -88,6 +88,7 @@ export class FakeConn implements StreamConnection {
       limits?: Partial<Limits>;
       expiresAtMs?: number;
       features?: string[];
+      anonymous?: boolean;
       segmentId?: string;
       environment?: string;
       capabilities?: WireCapability[];
@@ -105,7 +106,7 @@ export class FakeConn implements StreamConnection {
       expiresAtMs: opts.expiresAtMs ?? Date.now() + 600_000,
       limits: { ...DEFAULT_LIMITS, ...opts.limits },
       features: opts.features ?? [],
-      anonymous: false,
+      anonymous: opts.anonymous ?? false,
       segmentId: opts.segmentId ?? '',
       environment: opts.environment ?? '',
       capabilities: opts.capabilities ?? [],

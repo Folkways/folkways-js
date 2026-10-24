@@ -12,10 +12,20 @@ const LEVEL = /^[A-Za-z0-9._~:@=+-]+$/;
  * ASCII, `/`-separated levels of `A-Z a-z 0-9 . _ ~ : @ = + -`, at most 16
  * levels and 255 bytes; names starting with `$` are reserved.
  */
-export function topicError(name: string, maxBytes = MAX_TOPIC_BYTES): string | undefined {
+/** System topics apps may read: kept by the node (ADR-001 D3, D8). */
+export const SYSTEM_PREFIXES = ['$user/', '$online/', '$presence/'] as const;
+
+export function isSystemTopic(name: string): boolean {
+  return SYSTEM_PREFIXES.some((p) => name.startsWith(p));
+}
+
+export function topicError(name: string, maxBytes = MAX_TOPIC_BYTES, allowSystem = false): string | undefined {
   if (typeof name !== 'string' || name.length === 0) return 'topic name is empty';
   if (name.length > maxBytes) return `topic name is longer than ${maxBytes} bytes`;
-  if (name.startsWith('$')) return 'topic names starting with $ are reserved';
+  if (name.startsWith('$')) {
+    if (!allowSystem || !isSystemTopic(name)) return 'topic names starting with $ are reserved ($user/, $online/ and $presence/ are readable)';
+    name = name.slice(1);
+  }
   const levels = name.split('/');
   if (levels.length > MAX_TOPIC_LEVELS) return `topic has more than ${MAX_TOPIC_LEVELS} levels`;
   for (const level of levels) {
@@ -28,8 +38,8 @@ export function topicError(name: string, maxBytes = MAX_TOPIC_BYTES): string | u
   return undefined;
 }
 
-export function assertTopic(name: string, maxBytes?: number): void {
-  const err = topicError(name, maxBytes);
+export function assertTopic(name: string, maxBytes?: number, allowSystem = false): void {
+  const err = topicError(name, maxBytes, allowSystem);
   if (err) throw new RealtimeError(Code.InvalidTopic, { message: err, topic: String(name), local: true });
 }
 

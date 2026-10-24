@@ -1,5 +1,5 @@
 export { Folkways, connect } from './folkways';
-export { Realtime } from './realtime';
+export { Realtime, USER_TOPICS_FEATURE } from './realtime';
 export type {
   CloseOptions,
   ConnectOptions,
@@ -10,6 +10,7 @@ export type {
   ConnectionState,
   ContentTypeName,
   Delivery,
+  EventFilter,
   EventMap,
   GapEvent,
   GapReasonName,
