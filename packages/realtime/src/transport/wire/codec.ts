@@ -74,6 +74,7 @@ function encodeBody(b: Builder, msg: ClientMsg): [fb.ClientBody, Offset] {
       const h = msg.hello;
       const token = b.createString(h.token);
       const client = h.client ? b.createString(h.client) : 0;
+      const device = h.device ? b.createString(h.device) : 0;
       const features = h.features?.length
         ? fb.Hello.createFeaturesVector(
             b,
@@ -86,6 +87,7 @@ function encodeBody(b: Builder, msg: ClientMsg): [fb.ClientBody, Offset] {
       fb.Hello.addToken(b, token);
       if (h.maxFrameBytes) fb.Hello.addMaxFrameBytes(b, h.maxFrameBytes);
       if (features) fb.Hello.addFeatures(b, features);
+      if (device) fb.Hello.addDevice(b, device);
       return [fb.ClientBody.Hello, fb.Hello.endHello(b)];
     }
     case 'reauth':
@@ -254,6 +256,7 @@ function decodeServerBody(f: fb.ServerFrame, total: number): ServerMsg {
         expiresAtMs: ms(b.expiresAtMs()),
         limits: decodeLimits(b.limits()),
         features,
+        anonymous: b.anonymous(),
       };
     }
     case B.TokenExpiring: {

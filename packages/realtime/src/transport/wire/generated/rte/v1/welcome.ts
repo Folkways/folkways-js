@@ -97,8 +97,13 @@ featuresLength():number {
   return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
 }
 
+anonymous():boolean {
+  const offset = this.bb!.__offset(this.bb_pos, 24);
+  return offset ? !!this.bb!.readInt8(this.bb_pos + offset) : false;
+}
+
 static startWelcome(builder:flatbuffers.Builder) {
-  builder.startObject(10);
+  builder.startObject(11);
 }
 
 static addProtoMinor(builder:flatbuffers.Builder, protoMinor:number) {
@@ -163,6 +168,10 @@ static createFeaturesVector(builder:flatbuffers.Builder, data:flatbuffers.Offset
 
 static startFeaturesVector(builder:flatbuffers.Builder, numElems:number) {
   builder.startVector(4, numElems, 4);
+}
+
+static addAnonymous(builder:flatbuffers.Builder, anonymous:boolean) {
+  builder.addFieldInt8(10, +anonymous, +false);
 }
 
 static endWelcome(builder:flatbuffers.Builder):flatbuffers.Offset {

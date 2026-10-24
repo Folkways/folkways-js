@@ -83,6 +83,7 @@ enum Code : ushort {
   Forbidden = 203,
   Suspended = 204,
   ResumeRejected = 205,
+  Replaced = 206,
 
   RateLimited = 300,
   QuotaExceeded = 301,
@@ -188,6 +189,9 @@ table Hello {
   resume_token: [ubyte];
   max_frame_bytes: uint;
   features: [string];
+  // Optional label for the device or app instance, e.g. "ios", "web-chrome".
+  // Descriptive only: it is never used for authorization.
+  device: string;
 }
 
 table Reauth {
@@ -247,6 +251,9 @@ table Welcome {
   expires_at_ms: ulong;
   limits: Limits (required);
   features: [string];
+  // True when the token named no user: `identity` is then the node-assigned
+  // "anon:<session_id>" label, valid for this connection only.
+  anonymous: bool;
 }
 
 table TokenExpiring {

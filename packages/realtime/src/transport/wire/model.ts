@@ -82,6 +82,8 @@ export interface Hello {
   readonly protoMinor?: number;
   readonly maxFrameBytes?: number;
   readonly features?: readonly string[];
+  /** Descriptive label of the device or app instance; never used for authorization. */
+  readonly device?: string;
 }
 
 export interface PublishBody {
@@ -149,6 +151,8 @@ export interface Welcome {
   readonly expiresAtMs: number;
   readonly limits: Limits;
   readonly features: readonly string[];
+  /** The token named no user; `identity` is the node-assigned `anon:<session_id>` label. */
+  readonly anonymous: boolean;
 }
 
 export interface PubAck {

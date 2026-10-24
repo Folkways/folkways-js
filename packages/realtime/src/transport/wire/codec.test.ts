@@ -13,7 +13,7 @@ describe('client packets', () => {
     { type: 'ping', nonce: BIG, tsMs: 1_700_000_000_123 },
     { type: 'pong', nonce: 7n, tsMs: 1 },
     { type: 'close', code: Code.Ok, reason: 'bye' },
-    { type: 'hello', hello: { token: 'a.b.c', client: 'folkways-js/test', protoMinor: 0, maxFrameBytes: 1024, features: ['x'] } },
+    { type: 'hello', hello: { token: 'a.b.c', client: 'folkways-js/test', protoMinor: 0, maxFrameBytes: 1024, features: ['x'], device: 'web-chrome' } },
     { type: 'reauth', token: 't2' },
     {
       type: 'publish',
@@ -95,6 +95,7 @@ describe('server packets', () => {
       expiresAtMs: 1_700_000_600_000,
       limits: { ...DEFAULT_LIMITS, heartbeatMs: 1_000 },
       features: [],
+      anonymous: true,
     },
     { type: 'tokenExpiring', expiresAtMs: 99 },
     { type: 'opOk' },

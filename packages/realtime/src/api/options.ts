@@ -28,6 +28,8 @@ export interface ClientOptions {
   transports?: TransportKind[];
   /** Sent in `Hello.client` for troubleshooting. Default `folkways-js/<version>`. */
   clientName?: string;
+  /** Sent in `Hello.device`, e.g. `ios` or `web-chrome`. Descriptive only; never used for authorization. */
+  device?: string;
   /** `createClient` only: connect at once (default true). */
   autoConnect?: boolean;
   /** `connect()` rejects with `Timeout` after this long (the client keeps trying). Default 15 000; 0 waits forever. */
@@ -130,6 +132,7 @@ export function resolveOptions(o: ClientOptions): ResolvedOptions {
     token: o.token,
     transports,
     clientName: o.clientName ?? `folkways-js/${VERSION}`,
+    device: o.device,
     openTimeoutMs: positive(o.openTimeoutMs, 10_000, 'openTimeoutMs'),
     requestTimeoutMs: positive(o.requestTimeoutMs, 10_000, 'requestTimeoutMs'),
     publishTimeoutMs: positive(o.publishTimeoutMs, 30_000, 'publishTimeoutMs'),

@@ -95,6 +95,7 @@ export class FakeConn implements StreamConnection {
       expiresAtMs: opts.expiresAtMs ?? Date.now() + 600_000,
       limits: { ...DEFAULT_LIMITS, ...opts.limits },
       features: [],
+      anonymous: false,
     });
     return hello;
   }

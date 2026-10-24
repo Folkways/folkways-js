@@ -17,6 +17,7 @@ export enum Code {
   Forbidden = 203,
   Suspended = 204,
   ResumeRejected = 205,
+  Replaced = 206,
   RateLimited = 300,
   QuotaExceeded = 301,
   PayloadTooLarge = 302,

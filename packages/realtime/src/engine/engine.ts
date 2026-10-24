@@ -47,6 +47,7 @@ export interface EngineConfig {
   token: TokenSource;
   transports: readonly TransportKind[];
   clientName: string;
+  device?: string;
   openTimeoutMs: number;
   requestTimeoutMs: number;
   publishTimeoutMs: number;
@@ -400,6 +401,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       return new SocketSession(this, this.ws, {
         url: this.cfg.endpoints.websocket!,
         clientName: this.cfg.clientName,
+        device: this.cfg.device,
         openTimeoutMs: this.cfg.openTimeoutMs,
         pongTimeoutMs: this.cfg.pongTimeoutMs,
         cursorAckIntervalMs: this.cfg.cursorAckIntervalMs,

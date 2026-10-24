@@ -24,6 +24,7 @@ export const Code = {
   Forbidden: 203,
   Suspended: 204,
   ResumeRejected: 205,
+  Replaced: 206,
 
   RateLimited: 300,
   QuotaExceeded: 301,
@@ -88,6 +89,8 @@ const TABLE: ReadonlyMap<number, CodeInfo> = new Map<number, CodeInfo>([
   [Code.Forbidden, info('Forbidden', 403, 'never', false)],
   [Code.Suspended, info('Suspended', 403, 'never', true)],
   [Code.ResumeRejected, info('ResumeRejected', 409, 'never', false)],
+  // A newer connection for the same identity took this one's place.
+  [Code.Replaced, info('Replaced', 409, 'never', true)],
 
   [Code.RateLimited, info('RateLimited', 429, 'backoff', false)],
   [Code.QuotaExceeded, info('QuotaExceeded', 429, 'backoff', false)],
@@ -133,6 +136,7 @@ export function isFatalCloseCode(code: number): boolean {
   switch (code) {
     case Code.AuthInvalid:
     case Code.Suspended:
+    case Code.Replaced:
     case Code.BadFrame:
     case Code.UnsupportedVersion:
     case Code.HelloRequired:

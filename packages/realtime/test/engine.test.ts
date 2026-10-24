@@ -43,6 +43,25 @@ describe('connection', () => {
     expect(c.identity).toBe('alice');
   });
 
+  it('sends the device label in Hello', async () => {
+    const fake = new FakeStreamTransport();
+    client(fake, { device: 'web-chrome' });
+    const hello = await (await fake.nextConn()).welcome();
+    expect(hello.msg).toMatchObject({ type: 'hello', hello: { device: 'web-chrome' } });
+  });
+
+  it('does not reconnect after Replaced (a newer connection took over)', async () => {
+    const fake = new FakeStreamTransport();
+    const c = client(fake);
+    const conn = await fake.nextConn();
+    await conn.welcome();
+    await c.connect();
+    conn.serverClose(Code.Replaced, 'replaced by a newer connection');
+    await until(() => c.state === 'closed');
+    expect(c.error?.code).toBe(Code.Replaced);
+    expect(fake.conns).toHaveLength(1);
+  });
+
   it('rejects connect and closes on AuthInvalid with a static token', async () => {
     const fake = new FakeStreamTransport();
     const c = client(fake);

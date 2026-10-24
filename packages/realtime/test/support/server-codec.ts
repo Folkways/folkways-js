@@ -88,6 +88,7 @@ function body(b: B, m: ServerMsg): [fb.ServerBody, number] {
       fb.Welcome.addIdentity(b, identity);
       fb.Welcome.addExpiresAtMs(b, BigInt(m.expiresAtMs));
       fb.Welcome.addLimits(b, limits);
+      if (m.anonymous) fb.Welcome.addAnonymous(b, true);
       return [S.Welcome, fb.Welcome.endWelcome(b)];
     }
     case 'tokenExpiring':
@@ -198,6 +199,7 @@ function msg(f: fb.ClientFrame): ClientMsg {
           protoMinor: h.protoMinor(),
           maxFrameBytes: h.maxFrameBytes(),
           features,
+          device: h.device() ?? undefined,
         },
       };
     }

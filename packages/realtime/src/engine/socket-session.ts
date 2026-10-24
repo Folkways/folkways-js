@@ -25,6 +25,7 @@ import { peekJwt } from './token';
 export interface SocketSessionOptions {
   url: string;
   clientName: string;
+  device?: string;
   openTimeoutMs: number;
   pongTimeoutMs: number;
   cursorAckIntervalMs: number;
@@ -95,7 +96,7 @@ export class SocketSession implements Session {
     const t0 = Date.now();
     const hello: ClientMsg = {
       type: 'hello',
-      hello: { token, client: this.opts.clientName, protoMinor: PROTO_MINOR },
+      hello: { token, client: this.opts.clientName, device: this.opts.device, protoMinor: PROTO_MINOR },
     };
     this.writeNow([{ corr: this.corr(), msg: hello }]);
 
