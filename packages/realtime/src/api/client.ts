@@ -1,4 +1,4 @@
-import { type CloseInfo, type ConnectionState, Engine, type Limits, type ReconnectInfo, type TransportKind } from '../engine';
+import { type CloseInfo, type ConnectionState, Engine, type Limits, type ReconnectInfo, type TokenSource, type TransportKind } from '../engine';
 import { Code } from '../shared/codes';
 import { Emitter } from '../shared/emitter';
 import { type RealtimeError, localError } from '../shared/errors';
@@ -115,6 +115,16 @@ export class RealtimeClient extends Emitter<ClientEvents> {
       clearTimeout(timer);
     }
     return this;
+  }
+
+  /**
+   * Swaps the token (or provider). The same identity keeps its connection
+   * and subscriptions (`Reauth`); a different identity reconnects and ends
+   * every subscription with `IdentityChanged`. Rejects with
+   * `SegmentMismatch` for a token of another segment.
+   */
+  updateToken(token: TokenSource): Promise<void> {
+    return this.engine.updateToken(token);
   }
 
   /** Closes the client for good. Queued publishes reject with `ClientClosed`. */

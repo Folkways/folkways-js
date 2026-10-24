@@ -30,7 +30,7 @@ import {
   SubscriptionRegistry,
   TopicEntry,
 } from './subscriptions';
-import { type TokenSource, TokenManager } from './token';
+import { type TokenSource, TokenManager, peekJwt } from './token';
 
 /**
  * `offline`: reconnecting has failed for `offlineAfterMs`; retries go on at
@@ -90,6 +90,10 @@ export type EngineEvents = {
   error: (err: RealtimeError) => void;
   tokenExpiring: (expiresAtMs: number) => void;
   tokenRefreshed: (expiresAtMs?: number) => void;
+  /** The session changed without a reconnect (a token for the same identity, or anonymous → signed in). */
+  sessionUpdated: (info: SessionInfo) => void;
+  /** `updateToken()` switched identity: the old identity's local data must go. */
+  identityChanged: (previous: string | undefined, next: string | undefined) => void;
 };
 
 interface Decision {
@@ -266,6 +270,56 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     await this.loop;
   }
 
+  /**
+   * Swaps the token source. The same identity (or anonymous → signed in)
+   * gets `Reauth` on the live connection and keeps its subscriptions; a
+   * different identity reconnects, and every subscription ends with
+   * `IdentityChanged`. A token for another segment is refused.
+   */
+  async updateToken(source: TokenSource): Promise<void> {
+    if (this.closedForGood) throw this.fatalError ?? localError(Code.ClientClosed, 'client closed');
+    // Fetch the new token first, so a failure leaves the current one in place.
+    const fresh = new TokenManager(source);
+    const token = await fresh.get();
+    const claims = peekJwt(token);
+    const info = this.sessionInfo;
+    const segment = info?.segmentId ?? peekJwt(this.tokens.current ?? '').seg;
+    if (segment && claims.seg && claims.seg !== segment) {
+      throw localError(Code.SegmentMismatch, 'the new token is for another segment; a client never changes segment');
+    }
+    this.tokens.setSource(source);
+    this.tokens.adopt(token);
+    const previous = info?.identity;
+    const sameIdentity = !info || info.anonymous || claims.sub === undefined || claims.sub === previous;
+    if (sameIdentity) {
+      if (this.stateValue === 'connected' && this.session) {
+        await this.session.reauth(token);
+        if (claims.exp) this.tokens.setExpiry(claims.exp);
+        if (info) {
+          this.sessionInfo = {
+            ...info,
+            identity: claims.sub ?? info.identity,
+            anonymous: claims.sub ? false : info.anonymous,
+            expiresAtMs: claims.exp ?? info.expiresAtMs,
+            capabilities: claims.cap ?? info.capabilities,
+          };
+          this.emit('sessionUpdated', this.sessionInfo);
+        }
+        this.emit('tokenRefreshed', claims.exp);
+      }
+      return;
+    }
+    this.log.info('identity changed; reconnecting');
+    const err = localError(Code.IdentityChanged, 'the token is for another identity');
+    this.publishes.rejectAll(err);
+    this.registry.close(err);
+    this.emit('identityChanged', previous, claims.sub);
+    if (this.session && this.stateValue === 'connected') {
+      this.switching = true;
+      this.session.close(Code.Ok, 'identity changed');
+    }
+  }
+
   // ------------------------------------------------------- layer 1 API
 
   publish(topic: string, body: PublishBody, wantsAck: boolean, signal?: AbortSignal): Promise<PubAck | undefined> {
@@ -436,7 +490,6 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       if (this.stopped) return;
       if (this.switching) {
         this.switching = false;
-        this.log.info('switching to WebSocket');
         this.setState('reconnecting');
         continue;
       }
@@ -478,6 +531,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     }
     if (this.session !== session || this.stopped) return;
     this.selector.moveBack('websocket');
+    this.log.info('switching to WebSocket');
     this.switching = true;
     session.close(Code.Ok, 'switching to WebSocket');
   }

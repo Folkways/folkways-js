@@ -11,7 +11,7 @@ import { localStorageCursorStore, memoryCursorStore } from './cursor-store';
 import { packetize } from './packets';
 import { type OutboundPublish, PublishQueue } from './publish-queue';
 import { SubscriptionRegistry, type TopicListener } from './subscriptions';
-import { TokenManager, peekJwt } from './token';
+import { TokenManager, authUrlProvider, peekJwt } from './token';
 
 describe('Backoff', () => {
   it('grows exponentially with full jitter, capped, floored at retry_after', () => {
@@ -26,7 +26,7 @@ describe('Backoff', () => {
 describe('TokenManager', () => {
   it('reads exp and sub from a JWT', () => {
     const t = mintToken('carol', { ttlSecs: 300, now: 1_700_000_000_000 });
-    expect(peekJwt(t)).toEqual({ exp: 1_700_000_300_000, sub: 'carol' });
+    expect(peekJwt(t)).toMatchObject({ exp: 1_700_000_300_000, sub: 'carol' });
     expect(peekJwt('garbage')).toEqual({});
   });
 
@@ -38,11 +38,40 @@ describe('TokenManager', () => {
     const a = await tm.get();
     expect(await tm.get()).toBe(a);
     now += 61_000; // within 60 s of exp
-    const [b, c] = await Promise.all([tm.get(), tm.refresh('refresh')]);
+    const [b, c] = await Promise.all([tm.get(), tm.refresh('expiring')]);
     expect(b).toBe(c);
     expect(b).not.toBe(a);
     expect(provider).toHaveBeenCalledTimes(2);
-    expect(provider.mock.calls[1]![0]).toEqual({ reason: 'refresh' });
+    expect(provider.mock.calls.map((c) => c[0].reason)).toEqual(['initial', 'expiring']);
+    tm.invalidate();
+    await tm.get();
+    expect(provider.mock.calls[2]![0]).toEqual({ reason: 'rejected' });
+  });
+
+  it('reads seg, kind and cap without verifying', () => {
+    const t = mintToken('dan', { seg: 'seg-1', cap: [{ topic: 'chat/*', ops: ['publish', 'subscribe'] }] });
+    expect(peekJwt(t)).toMatchObject({ sub: 'dan', seg: 'seg-1', cap: [{ topic: 'chat/*', ops: ['publish', 'subscribe'] }] });
+  });
+
+  it('fetches tokens from authUrl as JSON or text, with extra headers', async () => {
+    const calls: { url: string; headers: Record<string, string>; body: string }[] = [];
+    const reply = (status: number, type: string, body: string) => ({
+      status,
+      headers: { get: (n: string) => (n === 'content-type' ? type : null) },
+      arrayBuffer: async () => new TextEncoder().encode(body).buffer as ArrayBuffer,
+    });
+    let next = reply(200, 'application/json', JSON.stringify({ token: 'tok-json' }));
+    const fetchFn = async (url: string, init: { headers: Record<string, string>; body: Uint8Array }) => {
+      calls.push({ url, headers: init.headers, body: new TextDecoder().decode(init.body) });
+      return next;
+    };
+    const p = authUrlProvider('/api/rte-token', { 'x-app': 'yes' }, fetchFn);
+    expect(await p({ reason: 'initial' })).toBe('tok-json');
+    expect(calls[0]).toMatchObject({ url: '/api/rte-token', headers: { 'x-app': 'yes' }, body: '{"reason":"initial"}' });
+    next = reply(200, 'text/plain', ' tok-text\n');
+    expect(await p({ reason: 'expiring' })).toBe('tok-text');
+    next = reply(403, 'text/plain', 'no');
+    await expect(p({ reason: 'rejected' })).rejects.toMatchObject({ code: Code.AuthRequired, local: true });
   });
 
   it('reports provider failures as AuthRequired', async () => {

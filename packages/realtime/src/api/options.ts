@@ -7,6 +7,7 @@ import {
   type TokenSource,
   type TransportKind,
   type WebSocketConstructor,
+  authUrlProvider,
   memoryCursorStore,
 } from '../engine';
 import { Code } from '../shared/codes';
@@ -22,8 +23,19 @@ export interface ClientOptions {
   url?: string;
   /** Explicit endpoints; each overrides what `url` gives. */
   endpoints?: { websocket?: string; http?: string };
-  /** A token, or a function that fetches one (called again to refresh). */
-  token: TokenSource;
+  /**
+   * A token, or a function that fetches one; called again with
+   * `{ reason: 'expiring' | 'rejected' }` to refresh. Give this or `authUrl`.
+   */
+  token?: TokenSource;
+  /**
+   * Shorthand for a token provider: your backend's endpoint that trades its
+   * API key for a short-lived token. POSTed `{ reason }`; answers `{ token }`
+   * JSON or the token as text.
+   */
+  authUrl?: string;
+  /** Extra headers for `authUrl` (e.g. your app's session), or a function returning them. */
+  authHeaders?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
   /** Transports in order of preference. Default `['websocket', 'http']`. */
   transports?: TransportKind[];
   /** Sent in `Hello.client` for troubleshooting. Default `folkways-js/<version>`. */
@@ -111,10 +123,20 @@ const positive = (v: number | undefined, d: number, name: string): number => {
 };
 
 export function resolveOptions(o: ClientOptions): ResolvedOptions {
-  if (!o || (typeof o.token !== 'string' && typeof o.token !== 'function')) {
-    throw invalid('options.token must be a token string or a function returning one');
+  if (!o) throw invalid('options are required');
+  let token: TokenSource;
+  if (o.token !== undefined) {
+    if (typeof o.token !== 'string' && typeof o.token !== 'function') {
+      throw invalid('options.token must be a token string or a function returning one');
+    }
+    if (typeof o.token === 'string' && o.token.length === 0) throw invalid('options.token is empty');
+    if (o.authUrl !== undefined) throw invalid('give options.token or options.authUrl, not both');
+    token = o.token;
+  } else if (typeof o.authUrl === 'string' && o.authUrl.length > 0) {
+    token = authUrlProvider(o.authUrl, o.authHeaders, o.fetch);
+  } else {
+    throw invalid('give options.token (a token or a provider) or options.authUrl');
   }
-  if (typeof o.token === 'string' && o.token.length === 0) throw invalid('options.token is empty');
   const fromUrl = o.url ? endpointsFromUrl(o.url) : {};
   const endpoints = { ...fromUrl, ...(o.endpoints ?? {}) };
   if (!endpoints.websocket && !endpoints.http) throw invalid('give options.url or options.endpoints');
@@ -133,7 +155,7 @@ export function resolveOptions(o: ClientOptions): ResolvedOptions {
         };
   const engine: EngineConfig = {
     endpoints,
-    token: o.token,
+    token,
     transports,
     clientName: o.clientName ?? `folkways-js/${VERSION}`,
     device: o.device,

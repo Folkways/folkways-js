@@ -6,7 +6,7 @@ export { Engine, type ConnectionState, type EngineConfig, type EngineEvents, typ
 export type { CloseInfo, SessionInfo } from './session';
 export type { ActiveInfo, DeliveredEvent, GapInfo, StoredValue, SubscribeSpec, TopicEntry, TopicListener, ValueMaps } from './subscriptions';
 export { type CursorStore, memoryCursorStore, localStorageCursorStore } from './cursor-store';
-export { type TokenProvider, type TokenReason, type TokenSource, peekJwt } from './token';
+export { type PeekedClaims, type TokenProvider, type TokenReason, type TokenSource, authUrlProvider, peekJwt } from './token';
 export {
   AckMode,
   ContentType,

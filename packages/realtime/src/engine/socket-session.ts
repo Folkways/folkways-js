@@ -82,7 +82,7 @@ export class SocketSession implements Session {
   // ------------------------------------------------------------------ open
 
   async open(signal: AbortSignal): Promise<SessionInfo> {
-    const token = await this.host.tokens.get('connect');
+    const token = await this.host.tokens.get();
     const conn = await this.transport.connect(this.opts.url, signal);
     this.conn = conn;
     conn.onPacket = (b) => this.onPacket(b);
@@ -121,6 +121,7 @@ export class SocketSession implements Session {
       this.host.tokens.setExpiry(w.expiresAtMs);
       this.startTimers();
       this.syncSubscriptions();
+      const claims = peekJwt(token);
       return {
         kind: 'websocket',
         identity: w.identity,
@@ -128,6 +129,11 @@ export class SocketSession implements Session {
         limits: w.limits,
         expiresAtMs: w.expiresAtMs,
         server: w.server,
+        anonymous: w.anonymous,
+        segmentId: w.segmentId || claims.seg,
+        environment: w.environment || undefined,
+        capabilities: w.capabilities.length ? w.capabilities : (claims.cap ?? []),
+        features: w.features,
       };
     } catch (e) {
       this.waiter = undefined;
@@ -400,7 +406,7 @@ export class SocketSession implements Session {
     try {
       while (!this.ended && Date.now() < expiresAtMs) {
         try {
-          const token = await tokens.refresh('refresh');
+          const token = await tokens.refresh('expiring');
           await this.reauth(token);
           const exp = peekJwt(token).exp;
           if (exp) tokens.setExpiry(exp);
@@ -416,7 +422,7 @@ export class SocketSession implements Session {
     }
   }
 
-  private reauth(token: string): Promise<void> {
+  reauth(token: string): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.ended) {
         reject(localError(Code.NotConnected, 'session ended'));

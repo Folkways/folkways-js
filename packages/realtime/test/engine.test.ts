@@ -91,7 +91,7 @@ describe('connection', () => {
     conn2.serverClose(Code.AuthInvalid);
     const err = await c.connect().catch((e) => e);
     expect(err.code).toBe(Code.AuthInvalid);
-    expect(reasons).toEqual(['connect', 'connect']);
+    expect(reasons).toEqual(['initial', 'rejected']);
     expect(fake.conns).toHaveLength(2);
   });
 
@@ -162,7 +162,7 @@ describe('connection', () => {
     const reauth = await conn.next('reauth');
     conn.reply(reauth.corr, { type: 'opOk' });
     await refreshed;
-    expect(reasons).toEqual(['connect', 'refresh']);
+    expect(reasons).toEqual(['initial', 'expiring']);
   });
 
   it('ends with AuthExpired when a static token expires', async () => {
@@ -175,6 +175,85 @@ describe('connection', () => {
     conn.serverClose(Code.AuthExpired, 'token expired');
     expect((await failed).code).toBe(Code.AuthExpired);
     expect(c.state).toBe('failed');
+  });
+});
+
+describe('updateToken', () => {
+  async function connected(fake: FakeStreamTransport, identity = 'alice', opts: Partial<ClientOptions> = {}) {
+    const c = client(fake, { token: mintToken(identity), ...opts });
+    const conn = await fake.nextConn();
+    await conn.welcome({ identity });
+    await c.connect();
+    return { c, conn };
+  }
+
+  it('sends Reauth for the same identity and keeps the connection and subscriptions', async () => {
+    const fake = new FakeStreamTransport();
+    const { c, conn } = await connected(fake);
+    const sub = c.topic('chat/a').subscribe();
+    const s = await conn.next('subscribe');
+    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
+    await sub.ready;
+    const fresh = mintToken('alice', { ttlSecs: 900 });
+    const done = c.updateToken(fresh);
+    const reauth = await conn.next('reauth');
+    expect(reauth.msg.token).toBe(fresh);
+    conn.reply(reauth.corr, { type: 'opOk' });
+    await done;
+    expect(fake.conns).toHaveLength(1);
+    expect(sub.status).toBe('active');
+  });
+
+  it('rejects when the node refuses the Reauth', async () => {
+    const fake = new FakeStreamTransport();
+    const { c, conn } = await connected(fake);
+    const done = c.updateToken(mintToken('alice'));
+    const reauth = await conn.next('reauth');
+    conn.reply(reauth.corr, { type: 'opError', code: Code.AuthInvalid, message: 'bad token', retryAfterMs: 0, topicId: 0n });
+    await expect(done).rejects.toMatchObject({ code: Code.AuthInvalid });
+  });
+
+  it('reconnects for another identity and ends every subscription with IdentityChanged', async () => {
+    const fake = new FakeStreamTransport();
+    const { c, conn } = await connected(fake);
+    const sub = c.topic('chat/a').subscribe();
+    const ended = new Promise<RealtimeError>((r) => sub.on('ended', r));
+    await conn.next('subscribe');
+    await c.updateToken(mintToken('bob'));
+    expect((await ended).code).toBe(Code.IdentityChanged);
+    const conn2 = await fake.nextConn();
+    const hello = await conn2.welcome({ identity: 'bob' });
+    expect(hello.msg).toMatchObject({ hello: { token: expect.any(String) } });
+    await until(() => c.identity === 'bob');
+    expect(conn.closed).toBe(true);
+  });
+
+  it('refuses a token for another segment and keeps the current one', async () => {
+    const fake = new FakeStreamTransport();
+    const { c } = await connected(fake);
+    await expect(c.updateToken(mintToken('alice', { seg: 'another-segment' }))).rejects.toMatchObject({
+      code: Code.SegmentMismatch,
+      local: true,
+    });
+    expect(fake.conns).toHaveLength(1);
+  });
+
+  it('connects with a token from authUrl', async () => {
+    const fake = new FakeStreamTransport();
+    const token = mintToken('alice');
+    const seen: string[] = [];
+    const fetchFn = async (url: string) => {
+      seen.push(url);
+      return {
+        status: 200,
+        headers: { get: () => 'application/json' },
+        arrayBuffer: async () => new TextEncoder().encode(JSON.stringify({ token })).buffer as ArrayBuffer,
+      };
+    };
+    client(fake, { token: undefined, authUrl: 'https://app.example/api/rte-token', fetch: fetchFn });
+    const hello = await (await fake.nextConn()).welcome();
+    expect(hello.msg).toMatchObject({ hello: { token } });
+    expect(seen).toEqual(['https://app.example/api/rte-token']);
   });
 });
 

@@ -18,6 +18,7 @@ import { packetize } from './packets';
 import { type OutboundPublish, opError } from './publish-queue';
 import type { CloseInfo, Session, SessionHost, SessionInfo } from './session';
 import type { TopicEntry } from './subscriptions';
+import { peekJwt } from './token';
 
 export interface PollSessionOptions {
   baseUrl: string;
@@ -102,11 +103,16 @@ export class PollSession implements Session {
     if (pong?.msg.type === 'pong') this.host.clockSample(pong.msg.tsMs, (t0 + t1) / 2, t1 - t0);
     this.opened = true;
     void this.pollLoop();
+    const claims = peekJwt(this.host.tokens.current ?? '');
     return {
       kind: 'http',
-      identity: this.host.tokens.subject,
+      identity: claims.sub,
       limits: this.limits,
       expiresAtMs: this.host.tokens.expiresAtMs,
+      anonymous: claims.kind === 'anonymous' || !claims.sub,
+      segmentId: claims.seg,
+      capabilities: claims.cap ?? [],
+      features: [],
     };
   }
 
@@ -381,7 +387,7 @@ export class PollSession implements Session {
     const { tokens } = this.host;
     let refreshed = false;
     for (;;) {
-      const token = await tokens.get('connect');
+      const token = await tokens.get();
       const reply = await this.transport.request(this.opts.baseUrl, path, token, packet, signal);
       const frames = reply.packets.flatMap((p) => decodeServerPacket(p));
       if (reply.status === 200) return frames;
@@ -390,7 +396,7 @@ export class PollSession implements Session {
       const code = c?.code ?? codeForStatus(reply.status);
       if ((code === Code.AuthExpired || code === Code.AuthRequired) && !refreshed && tokens.refreshable) {
         tokens.invalidate();
-        await tokens.refresh('expired');
+        await tokens.refresh('rejected');
         refreshed = true;
         continue;
       }
@@ -425,6 +431,11 @@ export class PollSession implements Session {
     }
     this.finish({ code: Code.Internal, reason: String(e), transportFailure: false, local: true });
     return false;
+  }
+
+  /** Each HTTP request carries the current token, so nothing is sent. */
+  reauth(): Promise<void> {
+    return Promise.resolve();
   }
 
   close(code: number, reason: string): void {

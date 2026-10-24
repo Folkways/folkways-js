@@ -1,5 +1,5 @@
 import type { Logger } from '../shared/logger';
-import type { Limits, TransportKind, Uuid128 } from '../transport';
+import type { Limits, TransportKind, Uuid128, WireCapability } from '../transport';
 import type { PublishQueue, OutboundPublish } from './publish-queue';
 import type { SubscriptionRegistry } from './subscriptions';
 import type { TokenManager } from './token';
@@ -12,6 +12,13 @@ export interface SessionInfo {
   readonly limits: Limits;
   readonly expiresAtMs?: number;
   readonly server?: string;
+  readonly anonymous: boolean;
+  /** From Welcome (rte#19), else the token's `seg` claim. */
+  readonly segmentId?: string;
+  readonly environment?: string;
+  /** From Welcome (rte#19), else the token's `cap` claim. */
+  readonly capabilities: readonly WireCapability[];
+  readonly features: readonly string[];
 }
 
 /** Why a session ended. */
@@ -38,6 +45,8 @@ export interface Session {
   sendPublishes(items: OutboundPublish[]): void;
   /** The registry changed: subscribe new entries, unsubscribe removed ones. */
   syncSubscriptions(): void;
+  /** Hands the node a new token for the same identity (`Reauth`). */
+  reauth(token: string): Promise<void>;
   /** Ends the session (sends `Close` where the transport has one). */
   close(code: number, reason: string): void;
 }

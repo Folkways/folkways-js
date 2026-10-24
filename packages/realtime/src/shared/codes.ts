@@ -49,6 +49,10 @@ export const Code = {
   TransportUnavailable: 1002,
   Aborted: 1003,
   NotConnected: 1004,
+  /** A token for another segment than the one asserted or connected to. */
+  SegmentMismatch: 1005,
+  /** `updateToken()` switched to another identity: subscriptions ended. */
+  IdentityChanged: 1006,
 } as const;
 
 export type CodeName = keyof typeof Code;
@@ -114,6 +118,8 @@ const TABLE: ReadonlyMap<number, CodeInfo> = new Map<number, CodeInfo>([
   [Code.TransportUnavailable, info('TransportUnavailable', 0, 'never', true)],
   [Code.Aborted, info('Aborted', 0, 'never', false)],
   [Code.NotConnected, info('NotConnected', 0, 'backoff', false)],
+  [Code.SegmentMismatch, info('SegmentMismatch', 0, 'never', false)],
+  [Code.IdentityChanged, info('IdentityChanged', 0, 'never', false)],
 ]);
 
 /** Every RTE wire code (excludes SDK-local codes). */
