@@ -52,7 +52,7 @@ export async function startNode(env: Record<string, string> = {}): Promise<RteNo
       RTE__ADAPTERS__WEBSOCKET__PORT: String(wsPort),
       RTE__ADAPTERS__HTTP__PORT: String(httpPort),
       RTE__MONITORING__METRICS_PORT: String(metricsPort),
-      RTE__CORE__SEGMENTS_FILE: resolve(dir, 'seeds/workspaces.json'),
+      RTE__CORE__SEGMENTS_FILE: resolve(dir, 'seeds/segments.json'),
       ...env,
     },
     stdio: ['ignore', 'inherit', 'inherit'],
