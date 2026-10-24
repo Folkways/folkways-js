@@ -352,7 +352,7 @@ export class PollSession implements Session {
     if (e.latest) return { topic, start: StartAt.After, cursor: e.latest, onGap, snapshot: true };
     // An empty Durable topic: everything it will hold is new to us.
     if (!e.isState) return { topic, start: StartAt.Oldest, onGap, snapshot: true };
-    // An empty state topic has no cursor to poll after; see ARCHITECTURE.md §11.
+    // An empty state topic has no cursor to poll after, so every other poll asks for a fresh snapshot.
     return { topic, start: StartAt.Latest, onGap, snapshot: recheck };
   }
 

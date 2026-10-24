@@ -4,7 +4,7 @@
  *   import { Folkways } from '@folkways/realtime';
  *   const client = await Folkways.connect({ url, token });
  *
- * Layers (see docs/ARCHITECTURE.md): api (this surface) → engine → transport.
+ * Layers: api (this surface) → engine → transport.
  */
 export * from './api';
 export {

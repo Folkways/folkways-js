@@ -57,7 +57,7 @@ await client.close();
 | `subscription` | `ready`, `status`, `cursor`, `values`, `deliveryClass`, events `message` `snapshot` `gap` `error` `ended`, `unsubscribe()`, `for await` |
 | errors | `RealtimeError { code, codeName, retry, retryAfterMs, topic, local }`; codes in `Code` |
 
-Every option and behaviour is specified in [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
+Every option is documented on `ClientOptions` ([src/api/options.ts](./src/api/options.ts)) and ships in the type definitions.
 
 ### Endpoints for a local dev node
 
