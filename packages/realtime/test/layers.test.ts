@@ -11,6 +11,8 @@ const ALLOWED: Record<string, string[]> = {
   transport: ['shared'],
   shared: [],
   stores: ['engine'],
+  // The backend entry reuses the payload and receipt helpers and the wire codec.
+  server: ['api', 'transport', 'shared'],
 };
 
 function files(dir: string): string[] {
