@@ -320,6 +320,11 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     }
   }
 
+  /** Fails the connection with `err` (a check made by layer 1, such as a segment assertion). */
+  failWith(err: RealtimeError): void {
+    this.fail(err);
+  }
+
   // ------------------------------------------------------- layer 1 API
 
   publish(topic: string, body: PublishBody, wantsAck: boolean, signal?: AbortSignal): Promise<PubAck | undefined> {

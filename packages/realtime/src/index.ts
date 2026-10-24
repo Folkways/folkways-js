@@ -2,19 +2,15 @@
  * @folkways/realtime: the client SDK for the Folkways Realtime Transport Engine.
  *
  *   import { Folkways } from '@folkways/realtime';
- *   const client = await Folkways.connect({ url, token });
+ *   const client = new Folkways.Realtime({ url, authUrl: '/api/rte-token' });
+ *   const session = await client.connect();
  *
  * Layers: api (this surface) → engine → transport.
  */
 export * from './api';
 export {
-  type ConnectionState,
   type CursorStore,
   type Limits,
-  type ReconnectInfo,
-  type TokenProvider,
-  type TokenReason,
-  type TokenSource,
   type TransportKind,
   type WebSocketConstructor,
   type FetchLike,

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Folkways, type Message, type RealtimeClient } from '@folkways/realtime';
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { Folkways, type Message, type Realtime } from '@folkways/realtime';
 import './App.css';
 
 // Dev node defaults (rte `make dev`). Get a token with `make -s token SUB=alice` in the rte repo.
@@ -14,15 +14,14 @@ interface ChatMessage {
   text: string;
 }
 
-function Chat({ client }: { client: RealtimeClient }) {
+function Chat({ client }: { client: Realtime }) {
   const [messages, setMessages] = useState<Message<ChatMessage>[]>([]);
   const [typing, setTyping] = useState<string[]>([]);
-  const [state, setState] = useState(client.state);
+  const { state, transport } = useSyncExternalStore(client.connection.subscribe, client.connection.getSnapshot);
+  const identity = client.session?.identity;
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string>();
   const lastSignal = useRef(0);
-
-  useEffect(() => client.on('state', setState), [client]);
 
   useEffect(() => {
     const sub = client.topic(ROOM).subscribe<ChatMessage>((m) => setMessages((prev) => [...prev, m]), { from: { last: 50 } });
@@ -34,7 +33,7 @@ function Chat({ client }: { client: RealtimeClient }) {
     const sub = client.topic(TYPING).subscribe<{ typing: boolean }>();
     const refresh = () =>
       setTyping(
-        [...sub.values.values()].filter((m) => m.data?.typing && m.publisher !== client.identity).map((m) => m.publisher),
+        [...sub.values.values()].filter((m) => m.data?.typing && m.publisher !== identity).map((m) => m.publisher),
       );
     const off = sub.on('message', refresh);
     const timer = setInterval(refresh, 1_000);
@@ -43,7 +42,7 @@ function Chat({ client }: { client: RealtimeClient }) {
       clearInterval(timer);
       void sub.unsubscribe();
     };
-  }, [client]);
+  }, [client, identity]);
 
   async function send(e: FormEvent) {
     e.preventDefault();
@@ -69,12 +68,12 @@ function Chat({ client }: { client: RealtimeClient }) {
   return (
     <div className="chat">
       <header>
-        <strong>{ROOM}</strong> · {client.identity} · <span className={`state ${state}`}>{state}</span>
-        {client.transport && <span className="transport"> via {client.transport}</span>}
+        <strong>{ROOM}</strong> · {identity} · <span className={`state ${state}`}>{state}</span>
+        {transport && <span className="transport"> via {transport}</span>}
       </header>
       <ul className="messages">
         {messages.map((m) => (
-          <li key={m.id} className={m.publisher === client.identity ? 'mine' : ''}>
+          <li key={m.id} className={m.publisher === identity ? 'mine' : ''}>
             <b>{m.publisher}</b> {m.data?.text ?? String(m.data)}
           </li>
         ))}
@@ -91,7 +90,7 @@ function Chat({ client }: { client: RealtimeClient }) {
 
 function App() {
   const [token, setToken] = useState(import.meta.env.VITE_RTE_TOKEN ?? '');
-  const [client, setClient] = useState<RealtimeClient>();
+  const [client, setClient] = useState<Realtime>();
   const [error, setError] = useState<string>();
 
   useEffect(() => () => void client?.close(), [client]);

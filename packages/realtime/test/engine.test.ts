@@ -1,16 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { type ClientOptions, Code, type Message, RealtimeClient, RealtimeError, createClient } from '../src';
+import { Code, Folkways, type Message, Realtime, RealtimeError, type RealtimeOptions } from '../src';
 import { AckMode, ContentType, DeliveryClass, GapReason, OnGap, StartAt } from '../src/transport/wire/model';
 import { FakeRequestTransport, FakeStreamTransport, until } from './support/fake-transport';
 import { event } from './support/server-codec';
 import { mintToken } from './support/token';
 
 const EPOCH = 1879046969544933376n;
-const clients: RealtimeClient[] = [];
+const clients: Realtime[] = [];
 
-function client(fake: FakeStreamTransport, opts: Partial<ClientOptions> = {}): RealtimeClient {
-  const c = createClient({
+/** A client that starts connecting at once, like an app calling connect() without awaiting it. */
+function client(fake: FakeStreamTransport, opts: Partial<RealtimeOptions> = {}): Realtime {
+  const c = new Realtime({
     endpoints: { websocket: 'ws://fake/v1/ws' },
     transports: ['websocket'],
     token: mintToken('alice'),
@@ -19,6 +20,7 @@ function client(fake: FakeStreamTransport, opts: Partial<ClientOptions> = {}): R
     transportOverrides: { stream: fake },
     ...opts,
   });
+  c.connect().catch(() => {});
   clients.push(c);
   return c;
 }
@@ -38,9 +40,9 @@ describe('connection', () => {
     expect(hello.corr).not.toBe(0n);
     expect(hello.msg).toMatchObject({ type: 'hello', hello: { token, client: 'test-app/1.0' } });
     await c.connect();
-    expect(c.state).toBe('connected');
-    expect(c.transport).toBe('websocket');
-    expect(c.identity).toBe('alice');
+    expect(c.connection.state).toBe('connected');
+    expect(c.connection.transport).toBe('websocket');
+    expect(c.session?.identity).toBe('alice');
   });
 
   it('sends the device label in Hello', async () => {
@@ -57,8 +59,8 @@ describe('connection', () => {
     await conn.welcome();
     await c.connect();
     conn.serverClose(Code.Replaced, 'replaced by a newer connection');
-    await until(() => c.state === 'failed');
-    expect(c.error?.code).toBe(Code.Replaced);
+    await until(() => c.connection.state === 'failed');
+    expect(c.connection.error?.code).toBe(Code.Replaced);
     expect(fake.conns).toHaveLength(1);
   });
 
@@ -71,7 +73,7 @@ describe('connection', () => {
     const err = await c.connect().catch((e) => e);
     expect(err).toBeInstanceOf(RealtimeError);
     expect(err.code).toBe(Code.AuthInvalid);
-    expect(c.state).toBe('failed');
+    expect(c.connection.state).toBe('failed');
   });
 
   it('asks the provider for a fresh token once after AuthInvalid, then gives up', async () => {
@@ -99,16 +101,16 @@ describe('connection', () => {
     const fake = new FakeStreamTransport();
     const c = client(fake);
     const states: string[] = [];
-    c.on('state', (s) => states.push(s));
+    c.connection.on('change', ({ current }) => states.push(current));
     await (await fake.nextConn()).welcome();
     await c.connect();
     fake.conns[0]!.drop();
     await (await fake.nextConn()).welcome();
-    await until(() => c.state === 'connected' && fake.conns.length === 2);
+    await until(() => c.connection.state === 'connected' && fake.conns.length === 2);
     fake.conns[1]!.serverClose(Code.Draining, 'node draining', 20);
     const t0 = Date.now();
     await (await fake.nextConn()).welcome();
-    await until(() => c.state === 'connected' && fake.conns.length === 3);
+    await until(() => c.connection.state === 'connected' && fake.conns.length === 3);
     expect(Date.now() - t0).toBeGreaterThanOrEqual(15);
     expect(states).toContain('reconnecting');
   });
@@ -125,7 +127,7 @@ describe('connection', () => {
       transportOverrides: { stream: fake, request: http },
     });
     await c.connect();
-    expect(c.transport).toBe('http');
+    expect(c.connection.transport).toBe('http');
     expect(fake.attempts).toBe(2);
     expect(http.calls[0]!.path).toBe('/v1/publish');
     expect(http.calls[0]!.frames[0]!.msg.type).toBe('ping');
@@ -157,7 +159,7 @@ describe('connection', () => {
     const conn = await fake.nextConn();
     await conn.welcome();
     await c.connect();
-    const refreshed = new Promise((r) => c.once('tokenRefreshed', r));
+    const refreshed = new Promise((r) => c.sessionView.subscribe(() => r(undefined)));
     conn.reply(0n, { type: 'tokenExpiring', expiresAtMs: Date.now() + 60_000 });
     const reauth = await conn.next('reauth');
     conn.reply(reauth.corr, { type: 'opOk' });
@@ -171,15 +173,118 @@ describe('connection', () => {
     const conn = await fake.nextConn();
     await conn.welcome();
     await c.connect();
-    const failed = new Promise<RealtimeError>((r) => c.on('error', r));
+    const failed = new Promise<RealtimeError>((r) => c.connection.on('change', ({ current, reason }) => current === 'failed' && r(reason!)));
     conn.serverClose(Code.AuthExpired, 'token expired');
     expect((await failed).code).toBe(Code.AuthExpired);
-    expect(c.state).toBe('failed');
+    expect(c.connection.state).toBe('failed');
+  });
+});
+
+describe('session', () => {
+  it('resolves connect() with the session from Welcome: identity, segment, permissions, limits', async () => {
+    const fake = new FakeStreamTransport();
+    const c = new Realtime({
+      endpoints: { websocket: 'ws://fake/v1/ws' },
+      transports: ['websocket'],
+      token: mintToken('user:42'),
+      connectTimeoutMs: 0,
+      transportOverrides: { stream: fake },
+    });
+    clients.push(c);
+    const connecting = c.connect();
+    await (await fake.nextConn()).welcome({
+      identity: 'user:42',
+      segmentId: 'seg_8f2c',
+      environment: 'production',
+      capabilities: [
+        { topic: 'chat/*', ops: ['publish', 'subscribe', 'set', 'signal'] },
+        { topic: 'notes/>', ops: ['subscribe', 'not-an-op'] },
+      ],
+      limits: { maxSubscriptions: 50 },
+      features: ['user-topics'],
+    });
+    const session = await connecting;
+    expect(session).toBe(c.session);
+    expect(session).toMatchObject({
+      identity: 'user:42',
+      anonymous: false,
+      id: '00000000000000010000000000000002',
+      segment: { id: 'seg_8f2c', environment: 'production' },
+      transport: 'websocket',
+      features: ['user-topics'],
+      permissions: [
+        { topics: 'chat/*', ops: ['publish', 'subscribe', 'set', 'signal'] },
+        { topics: 'notes/>', ops: ['subscribe'] },
+      ],
+    });
+    expect(session.limits.maxSubscriptions).toBe(50);
+    expect(session.can('publish', 'chat/45')).toBe(true);
+    expect(session.can('publish', 'chat/45/typing')).toBe(false);
+    expect(session.can('subscribe', 'notes/a/b')).toBe(true);
+    expect(session.can('subscribe', 'notes')).toBe(false);
+    expect(session.can('presence', 'chat/45')).toBe(false);
+    expect(Object.isFrozen(session)).toBe(true);
+  });
+
+  it('falls back to the token claims when the node does not send segment and permissions', async () => {
+    const fake = new FakeStreamTransport();
+    const c = client(fake, { token: mintToken('alice', { seg: 'seg-from-token', cap: [{ topic: 'rooms/*', ops: ['subscribe'] }] }) });
+    await (await fake.nextConn()).welcome();
+    const session = await c.connect();
+    expect(session.segment).toEqual({ id: 'seg-from-token', environment: null });
+    expect(session.permissions).toEqual([{ topics: 'rooms/*', ops: ['subscribe'] }]);
+  });
+
+  it('checks connect({ segment }) locally and never sends a mismatching token', async () => {
+    const fake = new FakeStreamTransport();
+    const c = new Realtime({
+      endpoints: { websocket: 'ws://fake/v1/ws' },
+      transports: ['websocket'],
+      token: mintToken('alice', { seg: 'staging' }),
+      transportOverrides: { stream: fake },
+    });
+    clients.push(c);
+    await expect(c.connect({ segment: 'production' })).rejects.toMatchObject({ code: Code.SegmentMismatch, local: true });
+    expect(fake.attempts).toBe(0);
+  });
+
+  it('Folkways.connect() resolves with a connected client and closes it on failure', async () => {
+    const fake = new FakeStreamTransport();
+    const base = { endpoints: { websocket: 'ws://fake/v1/ws' }, transports: ['websocket' as const], transportOverrides: { stream: fake } };
+    const ok = Folkways.connect({ ...base, token: mintToken('alice') });
+    await (await fake.nextConn()).welcome();
+    const c = await ok;
+    clients.push(c);
+    expect(c.connection.state).toBe('connected');
+    expect(c.session?.identity).toBe('alice');
+
+    const bad = Folkways.connect({ ...base, token: mintToken('alice') });
+    const conn = await fake.nextConn();
+    await conn.next('hello');
+    conn.serverClose(Code.Suspended, 'segment suspended');
+    await expect(bad).rejects.toMatchObject({ code: Code.Suspended });
+  });
+
+  it('reports state changes with their cause on client.connection', async () => {
+    const fake = new FakeStreamTransport();
+    const c = client(fake);
+    const changes: string[] = [];
+    let snapshots = 0;
+    c.connection.subscribe(() => snapshots++);
+    c.connection.on('change', ({ previous, current, reason }) => changes.push(`${previous}>${current}${reason ? `:${reason.codeName}` : ''}`));
+    const conn = await fake.nextConn();
+    await conn.welcome();
+    await c.connection.whenConnected();
+    conn.serverClose(Code.AuthInvalid);
+    await until(() => c.connection.state === 'failed');
+    expect(changes).toEqual(['connecting>connected', 'connected>failed:AuthInvalid']);
+    expect(c.connection.getSnapshot()).toMatchObject({ state: 'failed', error: { code: Code.AuthInvalid } });
+    expect(snapshots).toBeGreaterThanOrEqual(2);
   });
 });
 
 describe('updateToken', () => {
-  async function connected(fake: FakeStreamTransport, identity = 'alice', opts: Partial<ClientOptions> = {}) {
+  async function connected(fake: FakeStreamTransport, identity = 'alice', opts: Partial<RealtimeOptions> = {}) {
     const c = client(fake, { token: mintToken(identity), ...opts });
     const conn = await fake.nextConn();
     await conn.welcome({ identity });
@@ -224,7 +329,7 @@ describe('updateToken', () => {
     const conn2 = await fake.nextConn();
     const hello = await conn2.welcome({ identity: 'bob' });
     expect(hello.msg).toMatchObject({ hello: { token: expect.any(String) } });
-    await until(() => c.identity === 'bob');
+    await until(() => c.session?.identity === 'bob');
     expect(conn.closed).toBe(true);
   });
 
@@ -262,18 +367,18 @@ describe('connection states', () => {
     const fake = new FakeStreamTransport();
     const c = client(fake, { offlineAfterMs: 50, reconnect: { initialDelayMs: 5, maxDelayMs: 20 } });
     const states: string[] = [];
-    c.on('state', (s) => states.push(s));
+    c.connection.on('change', ({ current }) => states.push(current));
     await (await fake.nextConn()).welcome();
     await c.connect();
     fake.refuse = 1_000;
     fake.conns[0]!.drop();
     const queued = c.topic('chat/a').publish('queued while reconnecting').catch((e: RealtimeError) => e);
-    await until(() => c.state === 'offline', 2_000, 'offline');
+    await until(() => c.connection.state === 'offline', 2_000, 'offline');
     expect(await queued).toMatchObject({ code: Code.NotConnected });
     await expect(c.topic('chat/a').publish('while offline')).rejects.toMatchObject({ code: Code.NotConnected });
     fake.refuse = 0;
     await (await fake.nextConn(2_000)).welcome();
-    await until(() => c.state === 'connected', 2_000, 'connected');
+    await until(() => c.connection.state === 'connected', 2_000, 'connected');
     expect(states).toEqual(['connected', 'reconnecting', 'offline', 'connected']);
   });
 
@@ -290,7 +395,7 @@ describe('connection states', () => {
     conn.push({ corr: 0n, msg: { type: 'deliver', topicId: 7n, delivery: DeliveryClass.Durable, replayed: false, events: [event(7n, EPOCH, 3n, 'x')] } });
     await until(() => sub.cursor?.seq === 3n);
     conn.serverClose(Code.AuthInvalid);
-    await until(() => c.state === 'failed');
+    await until(() => c.connection.state === 'failed');
     expect(sub.status).toBe('resyncing');
     await expect(c.topic('chat/a').publish('nope')).rejects.toMatchObject({ code: Code.AuthInvalid });
 
@@ -316,13 +421,13 @@ describe('connection states', () => {
       await (await fake.nextConn()).welcome();
       await c.connect();
       fake.conns[0]!.drop();
-      await until(() => c.state === 'reconnecting');
+      await until(() => c.connection.state === 'reconnecting');
       await new Promise((r) => setTimeout(r, 20));
       expect(fake.attempts).toBe(1);
       doc.visibilityState = 'visible';
       listeners.visibilitychange!();
       await (await fake.nextConn(1_000)).welcome();
-      await until(() => c.state === 'connected');
+      await until(() => c.connection.state === 'connected');
     } finally {
       vi.unstubAllGlobals();
     }
@@ -342,11 +447,11 @@ describe('connection states', () => {
       webSocketRetryMs: 30,
     });
     await c.connect();
-    expect(c.transport).toBe('http');
+    expect(c.connection.transport).toBe('http');
     // The probe opens a socket and closes it; then the real WebSocket session follows.
     await until(() => fake.conns.length === 2, 2_000, 'websocket session');
     await fake.conns[1]!.welcome();
-    await until(() => c.transport === 'websocket', 2_000, 'websocket transport');
+    await until(() => c.connection.transport === 'websocket', 2_000, 'websocket transport');
     expect(fake.conns[0]!.closed).toBe(true);
   });
 });
@@ -458,7 +563,7 @@ describe('publish', () => {
 });
 
 describe('subscribe', () => {
-  async function connected(opts: Partial<ClientOptions> = {}) {
+  async function connected(opts: Partial<RealtimeOptions> = {}) {
     const fake = new FakeStreamTransport();
     const c = client(fake, opts);
     const conn = await fake.nextConn();
@@ -732,7 +837,7 @@ describe('http long-poll', () => {
       await new Promise<void>((r) => signal?.addEventListener('abort', () => r()));
       return { frames: [] };
     });
-    const c = createClient({
+    const c = new Realtime({
       endpoints: { http: 'http://fake' },
       transports: ['http'],
       token: mintToken('alice'),
@@ -741,7 +846,7 @@ describe('http long-poll', () => {
     });
     clients.push(c);
     await c.connect();
-    expect(c.identity).toBe('alice');
+    expect(c.session?.identity).toBe('alice');
     const got: Message<string>[] = [];
     const sub = c.subscribe<string>('chat/lobby', (m) => {
       got.push(m);
@@ -767,7 +872,7 @@ describe('http long-poll', () => {
       }
       return { frames: frames.map((f) => ({ corr: f.corr, msg: { type: 'pong', nonce: 1n, tsMs: Date.now() } as const })) };
     });
-    const c = createClient({
+    const c = new Realtime({
       endpoints: { http: 'http://fake' },
       transports: ['http'],
       token: () => tokens[i++]!,

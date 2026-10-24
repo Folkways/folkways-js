@@ -32,3 +32,19 @@ export function assertTopic(name: string, maxBytes?: number): void {
   const err = topicError(name, maxBytes);
   if (err) throw new RealtimeError(Code.InvalidTopic, { message: err, topic: String(name), local: true });
 }
+
+/**
+ * True when `topic` matches `pattern` with the node's rules: levels split
+ * on `/`, `*` matches exactly one level, a trailing `>` one or more.
+ */
+export function topicMatches(pattern: string, topic: string): boolean {
+  const want = pattern.split('/');
+  const have = topic.split('/');
+  for (let i = 0; i < want.length; i++) {
+    const w = want[i]!;
+    if (w === '>' && i === want.length - 1) return have.length > i;
+    if (i >= have.length) return false;
+    if (w !== '*' && w !== have[i]) return false;
+  }
+  return have.length === want.length;
+}

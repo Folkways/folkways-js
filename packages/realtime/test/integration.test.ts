@@ -8,10 +8,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
-  type ClientOptions,
   Code,
   type Message,
-  RealtimeClient,
+  Realtime,
+  type RealtimeOptions,
   type StreamTransport,
   connect,
 } from '../src';
@@ -22,7 +22,7 @@ import { type RteNode, startNode } from './support/rte-node';
 import { mintToken } from './support/token';
 
 let node: RteNode | undefined;
-const clients: RealtimeClient[] = [];
+const clients: Realtime[] = [];
 let run = 0;
 
 beforeAll(async () => {
@@ -52,7 +52,7 @@ class KillableWs implements StreamTransport {
   }
 }
 
-async function open(sub: string, opts: Partial<ClientOptions> = {}): Promise<RealtimeClient> {
+async function open(sub: string, opts: Partial<RealtimeOptions> = {}): Promise<Realtime> {
   const c = await connect({
     endpoints: { websocket: node!.ws, http: node!.http },
     token: () => mintToken(sub),
@@ -73,7 +73,7 @@ for (const transport of ['websocket', 'http'] as const) {
     it('publishes and delivers with receipts, headers and content types', async () => {
       const topic = `chat/${uniq()}`;
       const alice = await open('alice', opts);
-      expect(alice.transport).toBe(transport);
+      expect(alice.connection.transport).toBe(transport);
       const got: Message[] = [];
       const sub = alice.subscribe(topic, (m) => {
         got.push(m);
@@ -200,10 +200,10 @@ live('resume after a dropped connection', () => {
     await until(() => got.length === 1, 8_000, 'first event');
 
     ws.conns[ws.conns.length - 1]!.close(4000, 'test drop');
-    await until(() => alice.state !== 'connected', 2_000, 'disconnect');
+    await until(() => alice.connection.state !== 'connected', 2_000, 'disconnect');
     await bob.publish(topic, 'while-away-1');
     await bob.publish(topic, 'while-away-2');
-    await until(() => alice.state === 'connected', 8_000, 'reconnect');
+    await until(() => alice.connection.state === 'connected', 8_000, 'reconnect');
     await bob.publish(topic, 'after');
     await until(() => got.length === 4, 8_000, 'all events');
     expect(got.map((m) => m.data)).toEqual(['before', 'while-away-1', 'while-away-2', 'after']);

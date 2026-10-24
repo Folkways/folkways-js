@@ -15,7 +15,7 @@ import { RealtimeError } from '../shared/errors';
 import { type Logger, silentLogger } from '../shared/logger';
 import { VERSION } from './version';
 
-export interface ClientOptions {
+export interface RealtimeOptions {
   /**
    * Base URL of the node, e.g. `https://rte.example.com`. Gives
    * `wss://rte.example.com/v1/ws` and `https://rte.example.com/v1/{publish,poll}`.
@@ -42,8 +42,6 @@ export interface ClientOptions {
   clientName?: string;
   /** Sent in `Hello.device`, e.g. `ios` or `web-chrome`. Descriptive only; never used for authorization. */
   device?: string;
-  /** `createClient` only: connect at once (default true). */
-  autoConnect?: boolean;
   /** `connect()` rejects with `Timeout` after this long (the client keeps trying). Default 15 000; 0 waits forever. */
   connectTimeoutMs?: number;
   /** One attempt: socket open + `Welcome`. Default 10 000. */
@@ -88,7 +86,6 @@ export interface ResolvedOptions {
   engine: EngineConfig;
   connectTimeoutMs: number;
   signalTtlMs: number;
-  autoConnect: boolean;
 }
 
 function invalid(message: string): RealtimeError {
@@ -122,7 +119,7 @@ const positive = (v: number | undefined, d: number, name: string): number => {
   return v;
 };
 
-export function resolveOptions(o: ClientOptions): ResolvedOptions {
+export function resolveOptions(o: RealtimeOptions): ResolvedOptions {
   if (!o) throw invalid('options are required');
   let token: TokenSource;
   if (o.token !== undefined) {
@@ -186,6 +183,5 @@ export function resolveOptions(o: ClientOptions): ResolvedOptions {
     engine,
     connectTimeoutMs: positive(o.connectTimeoutMs, 15_000, 'connectTimeoutMs'),
     signalTtlMs: positive(o.signalTtlMs, 5_000, 'signalTtlMs'),
-    autoConnect: o.autoConnect ?? true,
   };
 }

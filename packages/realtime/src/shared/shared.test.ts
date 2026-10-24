@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { cursor, formatCursor, isAfter, parseCursor } from './cursor';
 import { format128, parse128, random128 } from './random';
-import { topicError } from './topic';
+import { topicError, topicMatches } from './topic';
 
 describe('cursor', () => {
   it('formats and parses u64 pairs exactly', () => {
@@ -50,5 +50,18 @@ describe('topic grammar', () => {
     expect(topicError(Array(17).fill('a').join('/'))).toMatch(/levels/);
     expect(topicError('a'.repeat(256))).toMatch(/255/);
     expect(topicError('chat/*')).toMatch(/characters/);
+  });
+});
+
+describe('topicMatches', () => {
+  it('matches like the node: * is one level, a trailing > one or more', () => {
+    expect(topicMatches('chat/*', 'chat/45')).toBe(true);
+    expect(topicMatches('chat/*', 'chat/45/typing')).toBe(false);
+    expect(topicMatches('chat/>', 'chat/45/typing')).toBe(true);
+    expect(topicMatches('chat/>', 'chat')).toBe(false);
+    expect(topicMatches('>', 'anything/at/all')).toBe(true);
+    expect(topicMatches('$online/*', '$online/user:7')).toBe(true);
+    expect(topicMatches('a/b', 'a/b')).toBe(true);
+    expect(topicMatches('a/b', 'a/c')).toBe(false);
   });
 });
