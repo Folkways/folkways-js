@@ -142,9 +142,9 @@ export class Realtime {
     return this.engine.updateToken(token);
   }
 
-  /** Closes the client for good. Queued publishes reject with `ClientClosed`. */
-  async close(_opts: CloseOptions = {}): Promise<void> {
-    await this.engine.close();
+  /** Closes the client for good. Queued publishes reject with `ClientClosed`; `{ clear: true }` also wipes this identity's local data. */
+  async close(opts: CloseOptions = {}): Promise<void> {
+    await this.engine.close(opts);
   }
 
   /**

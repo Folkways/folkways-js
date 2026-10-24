@@ -17,7 +17,7 @@ import {
   WebSocketTransport,
 } from '../transport';
 import { Backoff, sleep } from './backoff';
-import type { CursorStore } from './cursor-store';
+import { type Store, ScopedStore, scopePrefix } from './store';
 import { PollSession } from './poll-session';
 import { PublishQueue } from './publish-queue';
 import { TransportSelector } from './selector';
@@ -67,7 +67,8 @@ export interface EngineConfig {
   pongTimeoutMs: number;
   cursorAckIntervalMs: number;
   offlineQueueMax: number;
-  cursorStore: CursorStore;
+  /** The local store port (memory unless an adapter is given). */
+  store: Store;
   longPoll: { waitMs: number; maxEvents: number; emptyStateRecheckMs: number };
   webSocket?: WebSocketConstructor;
   fetch?: FetchLike;
@@ -113,6 +114,8 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
   readonly registry: SubscriptionRegistry;
   readonly publishes: PublishQueue;
   readonly tokens: TokenManager;
+  /** The local store, under the current segment/identity scope. */
+  readonly store: ScopedStore;
   readonly log: Logger;
   readonly requestTimeoutMs: number;
 
@@ -146,10 +149,12 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     this.log = cfg.logger;
     this.requestTimeoutMs = cfg.requestTimeoutMs;
     this.tokens = new TokenManager(cfg.token);
+    this.store = new ScopedStore(cfg.store, cfg.logger);
+    if (this.tokens.current) this.scopeFromToken(this.tokens.current);
     this.ws = cfg.streamTransport ?? new WebSocketTransport(cfg.webSocket);
     this.http = cfg.requestTransport ?? new HttpTransport(cfg.fetch);
     this.registry = new SubscriptionRegistry({
-      cursorStore: cfg.cursorStore,
+      cursorStore: this.store.cursors(),
       logger: cfg.logger,
       onChange: () => this.session?.syncSubscriptions(),
       observe: (d) => this.emit('delivered', d),
@@ -253,7 +258,9 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
   }
 
   /** Closes the connection for good. Pending publishes reject with `ClientClosed`. */
-  async close(): Promise<void> {
+  /** Closes the connection for good; with `clear`, also wipes this identity's local data. */
+  async close(opts: { clear?: boolean } = {}): Promise<void> {
+    if (opts.clear) await this.store.wipe();
     if (this.closedForGood) {
       await this.loop;
       return;
@@ -317,11 +324,28 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     const err = localError(Code.IdentityChanged, 'the token is for another identity');
     this.publishes.rejectAll(err);
     this.registry.close(err);
+    // One user never sees another's cache on a shared device.
+    const old = this.store.prefix;
+    this.store.unsetScope();
+    await this.store.wipe(old);
+    this.scopeFromToken(token);
     this.emit('identityChanged', previous, claims.sub);
     if (this.session && this.stateValue === 'connected') {
       this.switching = true;
       this.session.close(Code.Ok, 'identity changed');
     }
+  }
+
+  /** The scope from a token's claims, when it can be read. */
+  private scopeFromToken(token: string): void {
+    const c = peekJwt(token);
+    if (c.seg) this.store.setScope(scopePrefix(c.seg, c.sub, c.kind === 'anonymous' || !c.sub));
+  }
+
+  /** The scope from what the node confirmed (wins over the token). */
+  private scopeFromInfo(info: SessionInfo): void {
+    if (!info.segmentId && this.store.prefix !== undefined) return;
+    this.store.setScope(scopePrefix(info.segmentId, info.identity, info.anonymous));
   }
 
   /** Fails the connection with `err` (a check made by layer 1, such as a segment assertion). */
@@ -353,7 +377,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
   subscribe(topic: string, spec: SubscribeSpec, listener: TopicListener): TopicEntry {
     if (this.closedForGood) {
       const err = this.fatalError ?? localError(Code.ClientClosed, 'client closed');
-      const entry = new TopicEntry(topic, spec, this.cfg.cursorStore, this.log);
+      const entry = new TopicEntry(topic, spec, this.store.cursors(), this.log);
       entry.removed = true;
       queueMicrotask(() => listener.onEnded(err));
       return entry;
@@ -483,6 +507,8 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       authRetried = false;
       this.selector.opened();
       this.everConnected = true;
+      this.scopeFromInfo(info);
+      void this.store.prune(info.capabilities).catch((err) => this.log.warn('store prune failed', { err }));
       this.log.info('connected', { transport: kind, identity: info.identity, server: info.server });
       this.setState('connected');
       this.emit('connected', info);

@@ -1,5 +1,4 @@
 import {
-  type CursorStore,
   type EngineConfig,
   type FetchLike,
   type RequestTransport,
@@ -7,8 +6,9 @@ import {
   type TokenSource,
   type TransportKind,
   type WebSocketConstructor,
+  type Store,
   authUrlProvider,
-  memoryCursorStore,
+  memoryStore,
 } from '../engine';
 import { Code } from '../shared/codes';
 import { RealtimeError } from '../shared/errors';
@@ -66,8 +66,12 @@ export interface RealtimeOptions {
   cursorAckIntervalMs?: number;
   /** Publishes kept while offline (default `{ maxSize: 1000 }`), or `false` to reject them. */
   offlineQueue?: { maxSize?: number } | false;
-  /** Where processed cursors are kept. Default: in memory for the client's lifetime. */
-  cursorStore?: CursorStore;
+  /**
+   * The local store for cursors (and, in later releases of this API, recent
+   * messages, values and the outbox). Default `memoryStore()`; persistent
+   * adapters are opt-in entry points. Data is kept per segment and identity.
+   */
+  store?: Store;
   /** How long an Ephemeral signal stays in `Subscription.values`. Default 5 000. */
   signalTtlMs?: number;
   /** HTTP long-poll tuning. */
@@ -167,7 +171,7 @@ export function resolveOptions(o: RealtimeOptions): ResolvedOptions {
     pongTimeoutMs: positive(o.pongTimeoutMs, 10_000, 'pongTimeoutMs'),
     cursorAckIntervalMs: positive(o.cursorAckIntervalMs, 5_000, 'cursorAckIntervalMs'),
     offlineQueueMax: o.offlineQueue === false ? 0 : positive(o.offlineQueue?.maxSize, 1_000, 'offlineQueue.maxSize'),
-    cursorStore: o.cursorStore ?? memoryCursorStore(),
+    store: o.store ?? memoryStore(),
     longPoll: {
       waitMs: positive(o.longPoll?.waitMs, 25_000, 'longPoll.waitMs'),
       maxEvents: positive(o.longPoll?.maxEvents, 100, 'longPoll.maxEvents'),

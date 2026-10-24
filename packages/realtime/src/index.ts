@@ -9,15 +9,15 @@
  */
 export * from './api';
 export {
-  type CursorStore,
   type Limits,
   type TransportKind,
   type WebSocketConstructor,
   type FetchLike,
   type StreamTransport,
   type RequestTransport,
-  localStorageCursorStore,
-  memoryCursorStore,
+  type Store,
+  type StoreCipher,
+  memoryStore,
 } from './engine';
 export { Code, codeInfo, codeName, type CodeInfo, type RetryClass } from './shared/codes';
 export { RealtimeError, isRealtimeError } from './shared/errors';

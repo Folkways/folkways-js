@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { Code, Folkways, type Message, Realtime, RealtimeError, type RealtimeOptions, defineTopic } from '../src';
+import { Code, Folkways, type Message, Realtime, RealtimeError, type RealtimeOptions, defineTopic, memoryStore } from '../src';
 import { AckMode, ContentType, DeliveryClass, GapReason, OnGap, StartAt } from '../src/transport/wire/model';
 import { FakeRequestTransport, FakeStreamTransport, until } from './support/fake-transport';
 import { event } from './support/server-codec';
-import { mintToken } from './support/token';
+import { DEV_SEGMENT, mintToken } from './support/token';
 
 const EPOCH = 1879046969544933376n;
 const clients: Realtime[] = [];
@@ -670,9 +670,9 @@ describe('subscribe', () => {
   });
 
   it('correlates a Gap that takes the corr with the SubAck that follows on corr 0', async () => {
-    const { c, conn } = await connected({
-      cursorStore: { get: () => ({ epoch: 1n, seq: 3n }), set: () => {} },
-    });
+    const store = memoryStore();
+    await store.set(`fw/${DEV_SEGMENT}/alice/c/chat%2Flobby`, '1:3');
+    const { c, conn } = await connected({ store });
     const sub = c.topic('chat/lobby').subscribe();
     const gaps: unknown[] = [];
     sub.on('gap', (g) => gaps.push(g));
@@ -858,15 +858,16 @@ describe('subscribe', () => {
     expect(ack.msg.acks).toEqual([{ topicId: 7n, cursor: { epoch: EPOCH, seq: 9n } }]);
   });
 
-  it('persists processed Durable cursors to the cursor store', async () => {
-    const set = vi.fn();
-    const { c, conn } = await connected({ cursorStore: { get: () => undefined, set } });
+  it('saves processed stream cursors in the store, under the segment and identity', async () => {
+    const store = memoryStore();
+    const set = vi.spyOn(store, 'set');
+    const { c, conn } = await connected({ store });
     c.topic('chat/lobby').subscribe(() => {});
     const s = await conn.next('subscribe');
     conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
     conn.reply(0n, { type: 'deliver', topicId: 7n, delivery: DeliveryClass.Durable, replayed: false, events: [event(7n, EPOCH, 4n, 'x')] });
     await until(() => set.mock.calls.length === 1);
-    expect(set).toHaveBeenCalledWith('chat/lobby', { epoch: EPOCH, seq: 4n });
+    expect(set).toHaveBeenCalledWith(`fw/${DEV_SEGMENT}/alice/c/chat%2Flobby`, `${EPOCH}:4`);
   });
 
   it('supports for-await iteration', async () => {
@@ -1164,6 +1165,38 @@ describe('client.on and system topics', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(plain.conn.sent('subscribe')).toHaveLength(0);
     expect(anon.conn.sent('subscribe')).toHaveLength(0);
+  });
+});
+
+describe('local store', () => {
+  it('wipes the old identity\'s data when the identity changes, and on close({ clear: true })', async () => {
+    const store = memoryStore();
+    await store.set(`fw/${DEV_SEGMENT}/alice/c/chat%2Fa`, '1:1');
+    await store.set(`fw/${DEV_SEGMENT}/carol/c/chat%2Fa`, '1:1');
+    const fake = new FakeStreamTransport();
+    const c = client(fake, { store });
+    await (await fake.nextConn()).welcome();
+    await c.connect();
+    await c.updateToken(mintToken('bob'));
+    expect(await store.keys(`fw/${DEV_SEGMENT}/alice/`)).toEqual([]);
+    await (await fake.nextConn()).welcome({ identity: 'bob' });
+    await until(() => c.session?.identity === 'bob');
+    await store.set(`fw/${DEV_SEGMENT}/bob/c/x`, '1:1');
+    await c.close({ clear: true });
+    expect(await store.keys(`fw/${DEV_SEGMENT}/bob/`)).toEqual([]);
+    expect(await store.keys(`fw/${DEV_SEGMENT}/carol/`)).toHaveLength(1); // other identities untouched
+  });
+
+  it('drops stored data of topics the token no longer grants', async () => {
+    const store = memoryStore();
+    await store.set(`fw/${DEV_SEGMENT}/alice/c/chat%2Fa`, '1:1');
+    await store.set(`fw/${DEV_SEGMENT}/alice/c/secret%2Fx`, '1:1');
+    const fake = new FakeStreamTransport();
+    const c = client(fake, { store, token: mintToken('alice', { cap: [{ topic: 'chat/*', ops: ['subscribe'] }] }) });
+    await (await fake.nextConn()).welcome();
+    await c.connect();
+    for (let i = 0; i < 100 && (await store.keys(`fw/${DEV_SEGMENT}/alice/`)).length !== 1; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(await store.keys(`fw/${DEV_SEGMENT}/alice/`)).toEqual([`fw/${DEV_SEGMENT}/alice/c/chat%2Fa`]);
   });
 });
 

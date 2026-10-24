@@ -1,8 +1,9 @@
-import { type Cursor, formatCursor, parseCursor } from '../shared/cursor';
+import type { Cursor } from '../shared/cursor';
 
 /**
  * Where the last processed cursor of each topic is kept, so a subscription
- * can resume after a reconnect or a reload. Methods may be async.
+ * can resume after a reconnect or a reload. Methods may be async. Backed by
+ * the store port (`ScopedStore.cursors()`).
  */
 export interface CursorStore {
   get(topic: string): Cursor | undefined | Promise<Cursor | undefined>;
@@ -10,7 +11,7 @@ export interface CursorStore {
   delete?(topic: string): void | Promise<void>;
 }
 
-/** Keeps cursors for the lifetime of the client (the default). */
+/** Keeps cursors in memory (tests). */
 export function memoryCursorStore(): CursorStore {
   const map = new Map<string, Cursor>();
   return {
@@ -20,45 +21,6 @@ export function memoryCursorStore(): CursorStore {
     },
     delete: (topic) => {
       map.delete(topic);
-    },
-  };
-}
-
-interface StorageLike {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-  removeItem(key: string): void;
-}
-
-/**
- * Persists cursors in `localStorage` (or any Storage-like object) as
- * `"epoch:seq"` under `<prefix>:<topic>`, so subscriptions resume across reloads.
- */
-export function localStorageCursorStore(prefix = 'folkways:cursor', storage?: StorageLike): CursorStore {
-  const s = storage ?? (globalThis as { localStorage?: StorageLike }).localStorage;
-  if (!s) return memoryCursorStore();
-  const k = (topic: string) => `${prefix}:${topic}`;
-  return {
-    get: (topic) => {
-      try {
-        return parseCursor(s.getItem(k(topic)));
-      } catch {
-        return undefined;
-      }
-    },
-    set: (topic, c) => {
-      try {
-        s.setItem(k(topic), formatCursor(c));
-      } catch {
-        // Quota or privacy mode: resuming falls back to the in-memory cursor.
-      }
-    },
-    delete: (topic) => {
-      try {
-        s.removeItem(k(topic));
-      } catch {
-        /* ignore */
-      }
     },
   };
 }

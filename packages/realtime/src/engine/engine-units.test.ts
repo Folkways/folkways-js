@@ -7,7 +7,8 @@ import { RealtimeError, localError } from '../shared/errors';
 import { silentLogger } from '../shared/logger';
 import { AckMode, DeliveryClass, OnGap, StartAt } from '../transport';
 import { Backoff } from './backoff';
-import { localStorageCursorStore, memoryCursorStore } from './cursor-store';
+import { memoryCursorStore } from './cursor-store';
+import { KEYS, ScopedStore, memoryStore, scopePrefix } from './store';
 import { packetize } from './packets';
 import { type OutboundPublish, PublishQueue } from './publish-queue';
 import { SubscriptionRegistry, type TopicListener } from './subscriptions';
@@ -82,20 +83,25 @@ describe('TokenManager', () => {
   });
 });
 
-describe('cursor stores', () => {
-  it('persists "epoch:seq" in a Storage', async () => {
-    const data = new Map<string, string>();
-    const storage = {
-      getItem: (k: string) => data.get(k) ?? null,
-      setItem: (k: string, v: string) => void data.set(k, v),
-      removeItem: (k: string) => void data.delete(k),
-    };
-    const s = localStorageCursorStore('app', storage);
-    await s.set('chat/lobby', { epoch: 18446744073709551615n, seq: 3n });
-    expect(data.get('app:chat/lobby')).toBe('18446744073709551615:3');
-    expect(await s.get('chat/lobby')).toEqual({ epoch: 18446744073709551615n, seq: 3n });
-    const m = memoryCursorStore();
-    expect(await m.get('x')).toBeUndefined();
+describe('ScopedStore', () => {
+  it('waits for the scope, keeps cursors forward-only and prunes topics no longer granted', async () => {
+    const raw = memoryStore();
+    const s = new ScopedStore(raw, silentLogger);
+    const cursors = s.cursors();
+    const pending = cursors.set('chat/a', { epoch: 1n, seq: 5n });
+    s.setScope(scopePrefix('seg', 'user:7', false));
+    await pending;
+    expect(await raw.get('fw/seg/user%3A7/c/chat%2Fa')).toBe('1:5');
+    await cursors.set('chat/a', { epoch: 1n, seq: 3n }); // behind: another tab is ahead
+    expect(await cursors.get('chat/a')).toEqual({ epoch: 1n, seq: 5n });
+    await cursors.set('chat/a', { epoch: 2n, seq: 1n }); // a new epoch always wins
+    expect(await cursors.get('chat/a')).toEqual({ epoch: 2n, seq: 1n });
+    await cursors.set('secret/x', { epoch: 1n, seq: 1n });
+    await s.prune([{ topic: 'chat/*', ops: ['subscribe'] }]);
+    expect(await s.keys(KEYS.cursor)).toEqual(['c/chat%2Fa']);
+    expect(scopePrefix('seg', undefined, true)).toBe('fw/seg/~anon/');
+    await s.wipe();
+    expect(await raw.keys('fw/')).toEqual([]);
   });
 });
 

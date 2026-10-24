@@ -254,28 +254,8 @@ export interface EventFilter {
 
 // ------------------------------------------------------------------ store
 
-/**
- * The local store port: a small string key-value interface. Methods may be
- * async. `memoryStore()` is the default; persistent adapters are opt-in
- * entry points. Only the engine writes to it.
- */
-export interface Store {
-  get(key: string): string | undefined | Promise<string | undefined>;
-  set(key: string, value: string): void | Promise<void>;
-  delete(key: string): void | Promise<void>;
-  /** Every key starting with `prefix`. */
-  keys(prefix: string): string[] | Promise<string[]>;
-  /** Deletes every key starting with `prefix`. */
-  clear(prefix: string): void | Promise<void>;
-  /** True when data survives a reload (enables the persistent outbox). */
-  readonly persistent: boolean;
-}
-
-/** Optional encryption at rest for payloads written to a persistent store. */
-export interface StoreCipher {
-  encrypt(plain: string): string | Promise<string>;
-  decrypt(cipher: string): string | Promise<string>;
-}
+/** The local store port and its cipher hook live in the engine; re-exported here. */
+export type { Store, StoreCipher } from '../engine';
 
 // ------------------------------------------------------------------- auth
 
