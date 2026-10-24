@@ -56,8 +56,23 @@ snapshotFollows():boolean {
   return offset ? !!this.bb!.readInt8(this.bb_pos + offset) : false;
 }
 
+deliveries(index: number):DeliveryClass|null {
+  const offset = this.bb!.__offset(this.bb_pos, 16);
+  return offset ? this.bb!.readUint8(this.bb!.__vector(this.bb_pos + offset) + index) : 0;
+}
+
+deliveriesLength():number {
+  const offset = this.bb!.__offset(this.bb_pos, 16);
+  return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
+}
+
+deliveriesArray():Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 16);
+  return offset ? new Uint8Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
+}
+
 static startSubAck(builder:flatbuffers.Builder) {
-  builder.startObject(6);
+  builder.startObject(7);
 }
 
 static addTopicId(builder:flatbuffers.Builder, topicId:bigint) {
@@ -82,6 +97,22 @@ static addLatest(builder:flatbuffers.Builder, latestOffset:flatbuffers.Offset) {
 
 static addSnapshotFollows(builder:flatbuffers.Builder, snapshotFollows:boolean) {
   builder.addFieldInt8(5, +snapshotFollows, +false);
+}
+
+static addDeliveries(builder:flatbuffers.Builder, deliveriesOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(6, deliveriesOffset, 0);
+}
+
+static createDeliveriesVector(builder:flatbuffers.Builder, data:DeliveryClass[]):flatbuffers.Offset {
+  builder.startVector(1, data.length, 1);
+  for (let i = data.length - 1; i >= 0; i--) {
+    builder.addInt8(data[i]!);
+  }
+  return builder.endVector();
+}
+
+static startDeliveriesVector(builder:flatbuffers.Builder, numElems:number) {
+  builder.startVector(1, numElems, 1);
 }
 
 static endSubAck(builder:flatbuffers.Builder):flatbuffers.Offset {

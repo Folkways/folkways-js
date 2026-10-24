@@ -32,6 +32,7 @@ function events(b: B, evs: readonly WireEvent[], create: (b: B, offs: number[]) 
         )
       : 0;
     const payload = e.payload.length ? fb.Event.createPayloadVector(b, e.payload) : 0;
+    const name = str(b, e.name);
     fb.Event.startEvent(b);
     fb.Event.addTopicId(b, e.topicId);
     fb.Event.addEpoch(b, e.epoch);
@@ -44,6 +45,9 @@ function events(b: B, evs: readonly WireEvent[], create: (b: B, offs: number[]) 
     if (e.contentType) fb.Event.addContentType(b, e.contentType);
     if (headers) fb.Event.addHeaders(b, headers);
     if (payload) fb.Event.addPayload(b, payload);
+    if (e.delivery) fb.Event.addDelivery(b, e.delivery);
+    if (name) fb.Event.addName(b, name);
+    if (e.uid) fb.Event.addUid(b, fb.Uuid128.createUuid128(b, e.uid.hi, e.uid.lo));
     return fb.Event.endEvent(b);
   });
   return create(b, offs);
@@ -67,6 +71,29 @@ function body(b: B, m: ServerMsg): [fb.ServerBody, number] {
     case 'welcome': {
       const server = b.createString(m.server);
       const identity = b.createString(m.identity);
+      const segmentId = m.segmentId ? b.createString(m.segmentId) : 0;
+      const environment = m.environment ? b.createString(m.environment) : 0;
+      const features = m.features.length
+        ? fb.Welcome.createFeaturesVector(
+            b,
+            m.features.map((f) => b.createString(f)),
+          )
+        : 0;
+      const caps = m.capabilities.length
+        ? fb.Welcome.createCapabilitiesVector(
+            b,
+            m.capabilities.map((c) =>
+              fb.Capability.createCapability(
+                b,
+                b.createString(c.topic),
+                fb.Capability.createOpsVector(
+                  b,
+                  c.ops.map((o) => b.createString(o)),
+                ),
+              ),
+            ),
+          )
+        : 0;
       const l = m.limits;
       const limits = fb.Limits.createLimits(
         b,
@@ -88,7 +115,11 @@ function body(b: B, m: ServerMsg): [fb.ServerBody, number] {
       fb.Welcome.addIdentity(b, identity);
       fb.Welcome.addExpiresAtMs(b, BigInt(m.expiresAtMs));
       fb.Welcome.addLimits(b, limits);
+      if (features) fb.Welcome.addFeatures(b, features);
       if (m.anonymous) fb.Welcome.addAnonymous(b, true);
+      if (segmentId) fb.Welcome.addSegmentId(b, segmentId);
+      if (environment) fb.Welcome.addEnvironment(b, environment);
+      if (caps) fb.Welcome.addCapabilities(b, caps);
       return [S.Welcome, fb.Welcome.endWelcome(b)];
     }
     case 'tokenExpiring':
@@ -99,11 +130,17 @@ function body(b: B, m: ServerMsg): [fb.ServerBody, number] {
     case 'opError':
       return [S.OpError, fb.OpError.createOpError(b, m.code, b.createString(m.message), m.retryAfterMs, m.topicId)];
     case 'pubAck':
-      return [
-        S.PubAck,
-        fb.PubAck.createPubAck(b, m.topicId, m.level, m.cursor.epoch, m.cursor.seq, m.duplicate, BigInt(m.serverTsMs)),
-      ];
-    case 'subAck':
+      fb.PubAck.startPubAck(b);
+      fb.PubAck.addTopicId(b, m.topicId);
+      fb.PubAck.addLevel(b, m.level);
+      fb.PubAck.addEpoch(b, m.cursor.epoch);
+      fb.PubAck.addSeq(b, m.cursor.seq);
+      fb.PubAck.addDuplicate(b, m.duplicate);
+      fb.PubAck.addServerTsMs(b, BigInt(m.serverTsMs));
+      if (m.uid) fb.PubAck.addUid(b, fb.Uuid128.createUuid128(b, m.uid.hi, m.uid.lo));
+      return [S.PubAck, fb.PubAck.endPubAck(b)];
+    case 'subAck': {
+      const deliveries = m.deliveries.length ? fb.SubAck.createDeliveriesVector(b, [...m.deliveries]) : 0;
       fb.SubAck.startSubAck(b);
       fb.SubAck.addTopicId(b, m.topicId);
       fb.SubAck.addDelivery(b, m.delivery);
@@ -111,7 +148,9 @@ function body(b: B, m: ServerMsg): [fb.ServerBody, number] {
       cursorField(b, fb.SubAck.addOldest, m.oldest);
       cursorField(b, fb.SubAck.addLatest, m.latest);
       fb.SubAck.addSnapshotFollows(b, m.snapshotFollows);
+      if (deliveries) fb.SubAck.addDeliveries(b, deliveries);
       return [S.SubAck, fb.SubAck.endSubAck(b)];
+    }
     case 'gap':
       fb.Gap.startGap(b);
       fb.Gap.addTopicId(b, m.topicId);
@@ -169,6 +208,7 @@ function subscribe(s: fb.Subscribe): SubscribeBody {
     lastN: s.lastN(),
     onGap: s.onGap(),
     snapshot: s.snapshot(),
+    types: Array.from(s.typesArray() ?? []),
   };
 }
 
@@ -227,6 +267,7 @@ function msg(f: fb.ClientFrame): ClientMsg {
           ttlMs: p.ttlMs(),
           clientTsMs: Number(p.clientTsMs()),
           headers,
+          name: p.name() ?? undefined,
         },
       };
     }
@@ -280,6 +321,7 @@ export function event(topicId: bigint, epoch: bigint, seq: bigint, payload: stri
     contentType: fb.ContentType.Text,
     headers: [],
     payload: new TextEncoder().encode(payload),
+    delivery: fb.DeliveryClass.Unspecified,
     ...extra,
   };
 }

@@ -5,6 +5,7 @@
 import * as flatbuffers from 'flatbuffers';
 
 import { Cursor } from '../../rte/v1/cursor.js';
+import { DeliveryClass } from '../../rte/v1/delivery-class.js';
 import { OnGap } from '../../rte/v1/on-gap.js';
 import { StartAt } from '../../rte/v1/start-at.js';
 
@@ -64,8 +65,23 @@ snapshot():boolean {
   return offset ? !!this.bb!.readInt8(this.bb_pos + offset) : true;
 }
 
+types(index: number):DeliveryClass|null {
+  const offset = this.bb!.__offset(this.bb_pos, 18);
+  return offset ? this.bb!.readUint8(this.bb!.__vector(this.bb_pos + offset) + index) : 0;
+}
+
+typesLength():number {
+  const offset = this.bb!.__offset(this.bb_pos, 18);
+  return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
+}
+
+typesArray():Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 18);
+  return offset ? new Uint8Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
+}
+
 static startSubscribe(builder:flatbuffers.Builder) {
-  builder.startObject(7);
+  builder.startObject(8);
 }
 
 static addTopic(builder:flatbuffers.Builder, topicOffset:flatbuffers.Offset) {
@@ -94,6 +110,22 @@ static addOnGap(builder:flatbuffers.Builder, onGap:OnGap) {
 
 static addSnapshot(builder:flatbuffers.Builder, snapshot:boolean) {
   builder.addFieldInt8(6, +snapshot, +true);
+}
+
+static addTypes(builder:flatbuffers.Builder, typesOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(7, typesOffset, 0);
+}
+
+static createTypesVector(builder:flatbuffers.Builder, data:DeliveryClass[]):flatbuffers.Offset {
+  builder.startVector(1, data.length, 1);
+  for (let i = data.length - 1; i >= 0; i--) {
+    builder.addInt8(data[i]!);
+  }
+  return builder.endVector();
+}
+
+static startTypesVector(builder:flatbuffers.Builder, numElems:number) {
+  builder.startVector(1, numElems, 1);
 }
 
 static endSubscribe(builder:flatbuffers.Builder):flatbuffers.Offset {

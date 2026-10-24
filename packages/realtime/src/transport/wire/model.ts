@@ -72,6 +72,18 @@ export interface WireEvent {
   readonly contentType: number;
   readonly headers: readonly Header[];
   readonly payload: Uint8Array;
+  /** This event's own type; `Unspecified` from nodes before ADR-001 (use the topic's). */
+  readonly delivery: DeliveryClass;
+  /** Event name chosen by the publisher; absent from nodes before ADR-001. */
+  readonly name?: string;
+  /** Stable id minted by the topic owner (AiraID); absent from nodes before ADR-001. */
+  readonly uid?: Uuid128;
+}
+
+/** A right granted by the node: `ops` on the topics `topic` (a pattern) matches. */
+export interface WireCapability {
+  readonly topic: string;
+  readonly ops: readonly string[];
 }
 
 // ---------------------------------------------------------------- client
@@ -98,6 +110,8 @@ export interface PublishBody {
   readonly ttlMs?: number;
   readonly clientTsMs?: number;
   readonly headers?: readonly Header[];
+  /** Event name (ADR-001); ignored by nodes before it. */
+  readonly name?: string;
 }
 
 export interface SubscribeBody {
@@ -108,6 +122,8 @@ export interface SubscribeBody {
   readonly onGap?: OnGap;
   /** Defaults to true, as in the schema. */
   readonly snapshot?: boolean;
+  /** Event types to receive (ADR-001); empty or absent means all. Ignored by nodes before it. */
+  readonly types?: readonly DeliveryClass[];
 }
 
 export interface PollBody {
@@ -153,6 +169,12 @@ export interface Welcome {
   readonly features: readonly string[];
   /** The token named no user; `identity` is the node-assigned `anon:<session_id>` label. */
   readonly anonymous: boolean;
+  /** The verified segment (ADR-001, rte#19); empty from older nodes. */
+  readonly segmentId: string;
+  /** The segment's environment, e.g. `production`; empty from older nodes. */
+  readonly environment: string;
+  /** The rights granted to this connection; empty from older nodes. */
+  readonly capabilities: readonly WireCapability[];
 }
 
 export interface PubAck {
@@ -161,6 +183,8 @@ export interface PubAck {
   readonly cursor: Cursor;
   readonly duplicate: boolean;
   readonly serverTsMs: number;
+  /** The event's stable id (ADR-001); absent from older nodes. */
+  readonly uid?: Uuid128;
 }
 
 export interface SubAck {
@@ -170,6 +194,8 @@ export interface SubAck {
   readonly oldest?: Cursor;
   readonly latest?: Cursor;
   readonly snapshotFollows: boolean;
+  /** Event types the topic's rule allows (ADR-001); empty from older nodes. */
+  readonly deliveries: readonly DeliveryClass[];
 }
 
 export interface Gap {

@@ -4,6 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
+import { Capability } from '../../rte/v1/capability.js';
 import { Limits } from '../../rte/v1/limits.js';
 import { Uuid128 } from '../../rte/v1/uuid128.js';
 
@@ -102,8 +103,32 @@ anonymous():boolean {
   return offset ? !!this.bb!.readInt8(this.bb_pos + offset) : false;
 }
 
+segmentId():string|null
+segmentId(optionalEncoding:flatbuffers.Encoding):string|Uint8Array|null
+segmentId(optionalEncoding?:any):string|Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 26);
+  return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
+}
+
+environment():string|null
+environment(optionalEncoding:flatbuffers.Encoding):string|Uint8Array|null
+environment(optionalEncoding?:any):string|Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 28);
+  return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
+}
+
+capabilities(index: number, obj?:Capability):Capability|null {
+  const offset = this.bb!.__offset(this.bb_pos, 30);
+  return offset ? (obj || new Capability()).__init(this.bb!.__indirect(this.bb!.__vector(this.bb_pos + offset) + index * 4), this.bb!) : null;
+}
+
+capabilitiesLength():number {
+  const offset = this.bb!.__offset(this.bb_pos, 30);
+  return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
+}
+
 static startWelcome(builder:flatbuffers.Builder) {
-  builder.startObject(11);
+  builder.startObject(14);
 }
 
 static addProtoMinor(builder:flatbuffers.Builder, protoMinor:number) {
@@ -172,6 +197,30 @@ static startFeaturesVector(builder:flatbuffers.Builder, numElems:number) {
 
 static addAnonymous(builder:flatbuffers.Builder, anonymous:boolean) {
   builder.addFieldInt8(10, +anonymous, +false);
+}
+
+static addSegmentId(builder:flatbuffers.Builder, segmentIdOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(11, segmentIdOffset, 0);
+}
+
+static addEnvironment(builder:flatbuffers.Builder, environmentOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(12, environmentOffset, 0);
+}
+
+static addCapabilities(builder:flatbuffers.Builder, capabilitiesOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(13, capabilitiesOffset, 0);
+}
+
+static createCapabilitiesVector(builder:flatbuffers.Builder, data:flatbuffers.Offset[]):flatbuffers.Offset {
+  builder.startVector(4, data.length, 4);
+  for (let i = data.length - 1; i >= 0; i--) {
+    builder.addOffset(data[i]!);
+  }
+  return builder.endVector();
+}
+
+static startCapabilitiesVector(builder:flatbuffers.Builder, numElems:number) {
+  builder.startVector(4, numElems, 4);
 }
 
 static endWelcome(builder:flatbuffers.Builder):flatbuffers.Offset {

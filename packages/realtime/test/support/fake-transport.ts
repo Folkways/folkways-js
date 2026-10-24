@@ -2,7 +2,7 @@
  * In-memory transports with a scriptable "node" side, for engine tests.
  */
 import type { ClientFrame, ClientMsg, ServerFrame, ServerMsg } from '../../src/transport/wire/model';
-import { DEFAULT_LIMITS, type Limits } from '../../src/transport/wire/model';
+import { DEFAULT_LIMITS, type Limits, type WireCapability } from '../../src/transport/wire/model';
 import {
   type HttpPath,
   type HttpReply,
@@ -82,7 +82,17 @@ export class FakeConn implements StreamConnection {
   }
 
   /** Answers the Hello with a Welcome. */
-  async welcome(opts: { identity?: string; limits?: Partial<Limits>; expiresAtMs?: number } = {}): Promise<ClientFrame> {
+  async welcome(
+    opts: {
+      identity?: string;
+      limits?: Partial<Limits>;
+      expiresAtMs?: number;
+      features?: string[];
+      segmentId?: string;
+      environment?: string;
+      capabilities?: WireCapability[];
+    } = {},
+  ): Promise<ClientFrame> {
     const hello = await this.next('hello');
     this.reply(hello.corr, {
       type: 'welcome',
@@ -94,8 +104,11 @@ export class FakeConn implements StreamConnection {
       identity: opts.identity ?? 'alice',
       expiresAtMs: opts.expiresAtMs ?? Date.now() + 600_000,
       limits: { ...DEFAULT_LIMITS, ...opts.limits },
-      features: [],
+      features: opts.features ?? [],
       anonymous: false,
+      segmentId: opts.segmentId ?? '',
+      environment: opts.environment ?? '',
+      capabilities: opts.capabilities ?? [],
     });
     return hello;
   }

@@ -29,11 +29,20 @@ describe('client packets', () => {
         ttlMs: 30_000,
         clientTsMs: 1_700_000_000_000,
         headers: [['trace', 'abc']],
+        name: 'message',
       },
     },
     {
       type: 'subscribe',
-      subscribe: { topic: { id: 9n }, start: StartAt.After, cursor: { epoch: BIG, seq: 5n }, lastN: 0, onGap: OnGap.Fail, snapshot: false },
+      subscribe: {
+        topic: { id: 9n },
+        start: StartAt.After,
+        cursor: { epoch: BIG, seq: 5n },
+        lastN: 0,
+        onGap: OnGap.Fail,
+        snapshot: false,
+        types: [DeliveryClass.Durable],
+      },
     },
     { type: 'unsubscribe', topic: { name: 'chat/lobby' } },
     { type: 'cursorAck', acks: [{ topicId: 3n, cursor: { epoch: BIG, seq: 99n } }] },
@@ -61,13 +70,14 @@ describe('client packets', () => {
     const pub = back[5]!.msg;
     expect(pub).toMatchObject({ type: 'publish', publish: { key: 'k', tombstone: true, ttlMs: 30_000, idempotencyKey: { hi: BIG, lo: 42n } } });
     expect(back[6]!.msg).toEqual(msgs[6]);
+    expect(pub).toMatchObject({ publish: { name: 'message' } });
     expect(back[8]!.msg).toEqual(msgs[8]);
     expect(back[9]!.msg).toMatchObject({ type: 'poll', poll: { maxEvents: 50, waitMs: 25_000 } });
   });
 
   it('snapshot defaults to true and is only written when false', () => {
     const [f] = decodeClientPacket(encodeClientPacket([{ corr: 1n, msg: { type: 'subscribe', subscribe: { topic: { name: 'a' } } } }]));
-    expect(f!.msg).toMatchObject({ subscribe: { start: StartAt.Latest, onGap: OnGap.FromOldest, snapshot: true } });
+    expect(f!.msg).toMatchObject({ subscribe: { start: StartAt.Latest, onGap: OnGap.FromOldest, snapshot: true, types: [] } });
   });
 
   it('refuses empty and oversized frame lists', () => {
@@ -78,7 +88,14 @@ describe('client packets', () => {
 });
 
 describe('server packets', () => {
-  const ev = event(4n, BIG, 1n, 'hi', { headers: [['h', 'v']], key: 'driver-7', clientTsMs: 5 });
+  const ev = event(4n, BIG, 1n, 'hi', {
+    headers: [['h', 'v']],
+    key: 'driver-7',
+    clientTsMs: 5,
+    delivery: DeliveryClass.LastValue,
+    name: 'location',
+    uid: { hi: BIG, lo: 3n },
+  });
   const msgs: ServerMsg[] = [
     { type: 'ping', nonce: 1n, tsMs: 2 },
     { type: 'pong', nonce: BIG, tsMs: 3 },
@@ -94,13 +111,19 @@ describe('server packets', () => {
       identity: 'alice',
       expiresAtMs: 1_700_000_600_000,
       limits: { ...DEFAULT_LIMITS, heartbeatMs: 1_000 },
-      features: [],
+      features: ['user-topics'],
       anonymous: true,
+      segmentId: '9b2c3f1e-0000-4000-8000-000000000001',
+      environment: 'production',
+      capabilities: [
+        { topic: 'chat/*', ops: ['subscribe', 'publish', 'set', 'signal'] },
+        { topic: '$online/>', ops: ['presence'] },
+      ],
     },
     { type: 'tokenExpiring', expiresAtMs: 99 },
     { type: 'opOk' },
     { type: 'opError', code: Code.RateLimited, message: 'slow down', retryAfterMs: 10, topicId: 3n },
-    { type: 'pubAck', topicId: 3n, level: AckMode.Accepted, cursor: { epoch: BIG, seq: 8n }, duplicate: true, serverTsMs: 4 },
+    { type: 'pubAck', topicId: 3n, level: AckMode.Accepted, cursor: { epoch: BIG, seq: 8n }, duplicate: true, serverTsMs: 4, uid: { hi: 1n, lo: BIG } },
     {
       type: 'subAck',
       topicId: 3n,
@@ -109,6 +132,7 @@ describe('server packets', () => {
       oldest: { epoch: BIG, seq: 1n },
       latest: undefined,
       snapshotFollows: false,
+      deliveries: [DeliveryClass.Durable, DeliveryClass.LastValue, DeliveryClass.Ephemeral],
     },
     {
       type: 'gap',
@@ -131,6 +155,16 @@ describe('server packets', () => {
     const back = decodeServerPacket(encodeServerPacket(frames));
     expect(back.map((f) => f.corr)).toEqual(frames.map((f) => f.corr));
     for (let i = 0; i < msgs.length; i++) expect(back[i]!.msg).toEqual(msgs[i]);
+  });
+
+  it('decodes frames from a node before ADR-001 with the safe defaults', () => {
+    const old = event(4n, BIG, 2n, 'x');
+    const [d] = decodeServerPacket(
+      encodeServerPacket([{ corr: 0n, msg: { type: 'deliver', topicId: 4n, delivery: DeliveryClass.Durable, replayed: false, events: [old] } }]),
+    );
+    expect(d!.msg).toMatchObject({ events: [{ delivery: DeliveryClass.Unspecified, name: undefined, uid: undefined }] });
+    const [w] = decodeServerPacket(encodeServerPacket([{ corr: 1n, msg: { ...(msgs[4] as Extract<ServerMsg, { type: 'welcome' }>), segmentId: '', environment: '', capabilities: [] } }]));
+    expect(w!.msg).toMatchObject({ segmentId: '', environment: '', capabilities: [] });
   });
 
   it('rejects a client packet, a missing identifier and short buffers with BadFrame', () => {

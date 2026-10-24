@@ -142,6 +142,21 @@ table Event {
   content_type: ContentType;
   headers: [Header];
   payload: [ubyte];
+  // ADR-001: this event's own type, so one topic can mix types.
+  // Unspecified means the topic's type (nodes before ADR-001).
+  delivery: DeliveryClass;
+  // Event name chosen by the publisher, e.g. "message", "typing", "read".
+  name: string;
+  // Stable id minted by the topic owner (AiraID); survives node restarts.
+  uid: Uuid128;
+}
+
+// A right the node granted: operations on the topics a pattern matches.
+// `ops` are strings ("subscribe", "publish", "set", "signal", "presence",
+// "history") so a new operation needs no schema change.
+table Capability {
+  topic: string;
+  ops: [string];
 }
 
 table Limits {
@@ -211,6 +226,8 @@ table Publish {
   ttl_ms: uint;
   client_ts_ms: ulong;
   headers: [Header];
+  // ADR-001: event name; `delivery` above becomes the event's type.
+  name: string;
 }
 
 table Subscribe {
@@ -221,6 +238,8 @@ table Subscribe {
   last_n: uint;
   on_gap: OnGap;
   snapshot: bool = true;
+  // ADR-001: the event types this subscriber receives; empty means all.
+  types: [DeliveryClass];
 }
 
 table Unsubscribe {
@@ -254,6 +273,12 @@ table Welcome {
   // True when the token named no user: `identity` is then the node-assigned
   // "anon:<session_id>" label, valid for this connection only.
   anonymous: bool;
+  // ADR-001: the verified segment and its environment, taken from the
+  // token, never from the client.
+  segment_id: string;
+  environment: string;
+  // The rights the node granted this connection.
+  capabilities: [Capability];
 }
 
 table TokenExpiring {
@@ -276,6 +301,9 @@ table PubAck {
   seq: ulong;
   duplicate: bool;
   server_ts_ms: ulong;
+  // ADR-001: the uid the owner minted for this event (stream and kv), so
+  // a sender can point at its own message before it is delivered back.
+  uid: Uuid128;
 }
 
 table SubAck {
@@ -285,6 +313,8 @@ table SubAck {
   oldest: Cursor;
   latest: Cursor;
   snapshot_follows: bool;
+  // ADR-001: the event types the topic's rule allows.
+  deliveries: [DeliveryClass];
 }
 
 table Gap {

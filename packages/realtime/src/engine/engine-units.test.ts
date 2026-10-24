@@ -186,7 +186,7 @@ describe('SubscriptionRegistry', () => {
     const r = new SubscriptionRegistry({ cursorStore: memoryCursorStore(), logger: silentLogger, onChange: () => {} });
     const { l, calls } = listener();
     const e = r.add('chat/a', spec, l);
-    r.onSubAck(e, { topicId: 1n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false });
+    r.onSubAck(e, { topicId: 1n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
     const d = (epoch: bigint, ...seqs: bigint[]) => ({
       topicId: 1n,
       delivery: DeliveryClass.Durable,

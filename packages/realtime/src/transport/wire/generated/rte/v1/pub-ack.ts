@@ -5,6 +5,7 @@
 import * as flatbuffers from 'flatbuffers';
 
 import { AckMode } from '../../rte/v1/ack-mode.js';
+import { Uuid128 } from '../../rte/v1/uuid128.js';
 
 
 export class PubAck {
@@ -55,8 +56,13 @@ serverTsMs():bigint {
   return offset ? this.bb!.readUint64(this.bb_pos + offset) : BigInt('0');
 }
 
+uid(obj?:Uuid128):Uuid128|null {
+  const offset = this.bb!.__offset(this.bb_pos, 16);
+  return offset ? (obj || new Uuid128()).__init(this.bb_pos + offset, this.bb!) : null;
+}
+
 static startPubAck(builder:flatbuffers.Builder) {
-  builder.startObject(6);
+  builder.startObject(7);
 }
 
 static addTopicId(builder:flatbuffers.Builder, topicId:bigint) {
@@ -83,19 +89,13 @@ static addServerTsMs(builder:flatbuffers.Builder, serverTsMs:bigint) {
   builder.addFieldInt64(5, serverTsMs, BigInt('0'));
 }
 
+static addUid(builder:flatbuffers.Builder, uidOffset:flatbuffers.Offset) {
+  builder.addFieldStruct(6, uidOffset, 0);
+}
+
 static endPubAck(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   return offset;
 }
 
-static createPubAck(builder:flatbuffers.Builder, topicId:bigint, level:AckMode, epoch:bigint, seq:bigint, duplicate:boolean, serverTsMs:bigint):flatbuffers.Offset {
-  PubAck.startPubAck(builder);
-  PubAck.addTopicId(builder, topicId);
-  PubAck.addLevel(builder, level);
-  PubAck.addEpoch(builder, epoch);
-  PubAck.addSeq(builder, seq);
-  PubAck.addDuplicate(builder, duplicate);
-  PubAck.addServerTsMs(builder, serverTsMs);
-  return PubAck.endPubAck(builder);
-}
 }

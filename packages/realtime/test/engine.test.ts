@@ -303,7 +303,7 @@ describe('subscribe', () => {
     });
     const s = await conn.next('subscribe');
     expect(s.msg.subscribe).toMatchObject({ topic: { name: 'chat/lobby' }, start: StartAt.Latest, onGap: OnGap.FromOldest });
-    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false });
+    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
     await sub.ready;
     expect(sub.deliveryClass).toBe('durable');
     conn.reply(0n, {
@@ -327,7 +327,7 @@ describe('subscribe', () => {
       got.push(m);
     });
     const s = await conn.next('subscribe');
-    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false });
+    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
     conn.reply(0n, { type: 'deliver', topicId: 7n, delivery: DeliveryClass.Durable, replayed: false, events: [event(7n, EPOCH, 5n, 'a')] });
     await until(() => got.length === 1);
     conn.drop();
@@ -336,7 +336,7 @@ describe('subscribe', () => {
     await conn2.welcome();
     const s2 = await conn2.next('subscribe');
     expect(s2.msg.subscribe).toMatchObject({ start: StartAt.After, cursor: { epoch: EPOCH, seq: 5n } });
-    conn2.reply(s2.corr, { type: 'subAck', topicId: 8n, delivery: DeliveryClass.Durable, catchingUp: true, snapshotFollows: false });
+    conn2.reply(s2.corr, { type: 'subAck', topicId: 8n, delivery: DeliveryClass.Durable, catchingUp: true, snapshotFollows: false, deliveries: [] });
     conn2.reply(0n, {
       type: 'deliver',
       topicId: 8n,
@@ -372,7 +372,7 @@ describe('subscribe', () => {
           resumed: true,
         },
       },
-      { corr: 0n, msg: { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: true, snapshotFollows: false } },
+      { corr: 0n, msg: { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: true, snapshotFollows: false, deliveries: [] } },
     );
     await sub.ready;
     expect(gaps).toEqual([{ reason: 'epoch-lost', requested: { epoch: 1n, seq: 3n }, oldest: { epoch: EPOCH, seq: 1n }, latest: { epoch: EPOCH, seq: 4n }, resumed: true }]);
@@ -403,7 +403,7 @@ describe('subscribe', () => {
     sub.on('snapshot', (ms) => snapshots.push(ms));
     const s = await conn.next('subscribe');
     conn.push(
-      { corr: s.corr, msg: { type: 'subAck', topicId: 3n, delivery: DeliveryClass.LastValue, catchingUp: false, snapshotFollows: true } },
+      { corr: s.corr, msg: { type: 'subAck', topicId: 3n, delivery: DeliveryClass.LastValue, catchingUp: false, snapshotFollows: true, deliveries: [] } },
       {
         corr: 0n,
         msg: { type: 'snapshot', topicId: 3n, snapshotId: 1n, chunk: 0, lastChunk: false, events: [event(3n, EPOCH, 1n, 'a', { key: 'd1' })] },
@@ -448,7 +448,7 @@ describe('subscribe', () => {
     const { c, conn } = await connected();
     const sub = c.topic('chat/lobby').subscribe();
     const s = await conn.next('subscribe');
-    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false });
+    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
     await sub.ready;
     const ended = new Promise<RealtimeError>((r) => sub.on('ended', r));
     conn.reply(0n, { type: 'subEnded', topicId: 7n, code: Code.Forbidden, message: 'rights changed' });
@@ -460,7 +460,7 @@ describe('subscribe', () => {
     const { c, conn } = await connected();
     const a = c.topic('chat/lobby').subscribe();
     const s = await conn.next('subscribe');
-    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false });
+    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
     await a.ready;
     // StrictMode-style unmount/remount: no wire traffic.
     await a.unsubscribe();
@@ -478,7 +478,7 @@ describe('subscribe', () => {
     const { c, conn } = await connected({ cursorAckIntervalMs: 20 });
     c.topic('chat/lobby').subscribe();
     const s = await conn.next('subscribe');
-    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false });
+    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
     conn.reply(0n, { type: 'deliver', topicId: 7n, delivery: DeliveryClass.Durable, replayed: false, events: [event(7n, EPOCH, 9n, 'x')] });
     const ack = await conn.next('cursorAck', 1_000);
     expect(ack.msg.acks).toEqual([{ topicId: 7n, cursor: { epoch: EPOCH, seq: 9n } }]);
@@ -489,7 +489,7 @@ describe('subscribe', () => {
     const { c, conn } = await connected({ cursorStore: { get: () => undefined, set } });
     c.topic('chat/lobby').subscribe(() => {});
     const s = await conn.next('subscribe');
-    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false });
+    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
     conn.reply(0n, { type: 'deliver', topicId: 7n, delivery: DeliveryClass.Durable, replayed: false, events: [event(7n, EPOCH, 4n, 'x')] });
     await until(() => set.mock.calls.length === 1);
     expect(set).toHaveBeenCalledWith('chat/lobby', { epoch: EPOCH, seq: 4n });
@@ -499,7 +499,7 @@ describe('subscribe', () => {
     const { c, conn } = await connected();
     const sub = c.topic('chat/lobby').subscribe<string>();
     const s = await conn.next('subscribe');
-    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false });
+    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
     conn.reply(0n, {
       type: 'deliver',
       topicId: 7n,
@@ -539,7 +539,7 @@ describe('http long-poll', () => {
         expect(t).toMatchObject({ topic: { name: 'chat/lobby' }, start: StartAt.Oldest });
         return {
           frames: [
-            { corr: f.corr, msg: { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, latest: { epoch: EPOCH, seq: 1n }, snapshotFollows: false } },
+            { corr: f.corr, msg: { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, latest: { epoch: EPOCH, seq: 1n }, snapshotFollows: false, deliveries: [] } },
             { corr: f.corr, msg: { type: 'deliver', topicId: 7n, delivery: DeliveryClass.Durable, replayed: true, events: [event(7n, EPOCH, 1n, 'first')] } },
             { corr: f.corr, msg: { type: 'pollEnd', timedOut: false, more: false } },
           ],
@@ -549,7 +549,7 @@ describe('http long-poll', () => {
         expect(t).toMatchObject({ start: StartAt.After, cursor: { epoch: EPOCH, seq: 1n } });
         return {
           frames: [
-            { corr: f.corr, msg: { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, latest: { epoch: EPOCH, seq: 2n }, snapshotFollows: false } },
+            { corr: f.corr, msg: { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, latest: { epoch: EPOCH, seq: 2n }, snapshotFollows: false, deliveries: [] } },
             { corr: f.corr, msg: { type: 'deliver', topicId: 7n, delivery: DeliveryClass.Durable, replayed: true, events: [event(7n, EPOCH, 2n, 'second')] } },
             { corr: f.corr, msg: { type: 'pollEnd', timedOut: false, more: false } },
           ],

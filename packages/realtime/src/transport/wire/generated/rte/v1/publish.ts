@@ -108,8 +108,15 @@ headersLength():number {
   return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
 }
 
+name():string|null
+name(optionalEncoding:flatbuffers.Encoding):string|Uint8Array|null
+name(optionalEncoding?:any):string|Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 28);
+  return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
+}
+
 static startPublish(builder:flatbuffers.Builder) {
-  builder.startObject(12);
+  builder.startObject(13);
 }
 
 static addTopic(builder:flatbuffers.Builder, topicOffset:flatbuffers.Offset) {
@@ -182,6 +189,10 @@ static createHeadersVector(builder:flatbuffers.Builder, data:flatbuffers.Offset[
 
 static startHeadersVector(builder:flatbuffers.Builder, numElems:number) {
   builder.startVector(4, numElems, 4);
+}
+
+static addName(builder:flatbuffers.Builder, nameOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(12, nameOffset, 0);
 }
 
 static endPublish(builder:flatbuffers.Builder):flatbuffers.Offset {

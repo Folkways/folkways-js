@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
 export { AckMode } from './v1/ack-mode.js';
+export { Capability } from './v1/capability.js';
 export { ClientBody } from './v1/client-body.js';
 export { ClientFrame } from './v1/client-frame.js';
 export { ClientPacket } from './v1/client-packet.js';

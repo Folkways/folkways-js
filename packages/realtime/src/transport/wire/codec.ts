@@ -23,6 +23,7 @@ import {
   type ServerMsg,
   type SubscribeBody,
   type TopicRef,
+  type WireCapability,
   type WireEvent,
   CLIENT_IDENT,
   MAX_FRAMES_PER_PACKET,
@@ -49,6 +50,7 @@ function headersVector(b: Builder, headers: readonly Header[] | undefined): Offs
 
 function encodeSubscribe(b: Builder, s: SubscribeBody): Offset {
   const t = topicFields(b, s.topic);
+  const types = s.types?.length ? fb.Subscribe.createTypesVector(b, [...s.types]) : 0;
   fb.Subscribe.startSubscribe(b);
   if (t.name) fb.Subscribe.addTopic(b, t.name);
   if (t.id) fb.Subscribe.addTopicId(b, t.id);
@@ -57,6 +59,7 @@ function encodeSubscribe(b: Builder, s: SubscribeBody): Offset {
   if (s.lastN) fb.Subscribe.addLastN(b, s.lastN);
   fb.Subscribe.addOnGap(b, s.onGap ?? fb.OnGap.FromOldest);
   fb.Subscribe.addSnapshot(b, s.snapshot ?? true);
+  if (types) fb.Subscribe.addTypes(b, types);
   return fb.Subscribe.endSubscribe(b);
 }
 
@@ -98,6 +101,7 @@ function encodeBody(b: Builder, msg: ClientMsg): [fb.ClientBody, Offset] {
       const payload = p.payload.length ? fb.Publish.createPayloadVector(b, p.payload) : 0;
       const key = p.key !== undefined ? b.createString(p.key) : 0;
       const headers = headersVector(b, p.headers);
+      const name = p.name ? b.createString(p.name) : 0;
       fb.Publish.startPublish(b);
       if (t.name) fb.Publish.addTopic(b, t.name);
       if (t.id) fb.Publish.addTopicId(b, t.id);
@@ -113,6 +117,7 @@ function encodeBody(b: Builder, msg: ClientMsg): [fb.ClientBody, Offset] {
       if (p.ttlMs) fb.Publish.addTtlMs(b, p.ttlMs);
       if (p.clientTsMs) fb.Publish.addClientTsMs(b, u64(p.clientTsMs));
       if (headers) fb.Publish.addHeaders(b, headers);
+      if (name) fb.Publish.addName(b, name);
       return [fb.ClientBody.Publish, fb.Publish.endPublish(b)];
     }
     case 'subscribe':
@@ -182,6 +187,10 @@ function decodeEvent(e: fb.Event | null, total: number): WireEvent {
   }
   checkLen(e.payloadLength(), 1, total);
   const key = e.key();
+  const name = e.name();
+  const uid = e.uid();
+  const uidHi = uid?.hi() ?? 0n;
+  const uidLo = uid?.lo() ?? 0n;
   return {
     topicId: e.topicId(),
     epoch: e.epoch(),
@@ -194,7 +203,31 @@ function decodeEvent(e: fb.Event | null, total: number): WireEvent {
     contentType: e.contentType(),
     headers,
     payload: e.payloadArray() ?? new Uint8Array(0),
+    delivery: e.delivery(),
+    name: name === null || name === '' ? undefined : name,
+    uid: uidHi === 0n && uidLo === 0n ? undefined : { hi: uidHi, lo: uidLo },
   };
+}
+
+function decodeDeliveries(len: number, get: (i: number) => number | null, total: number): fb.DeliveryClass[] {
+  const n = checkLen(len, 1, total);
+  const out: fb.DeliveryClass[] = [];
+  for (let i = 0; i < n; i++) out.push(get(i) ?? 0);
+  return out;
+}
+
+function decodeCapabilities(w: fb.Welcome, total: number): WireCapability[] {
+  const n = checkLen(w.capabilitiesLength(), 4, total);
+  const out: WireCapability[] = [];
+  for (let i = 0; i < n; i++) {
+    const c = w.capabilities(i);
+    if (!c) throw bad('missing capability');
+    const no = checkLen(c.opsLength(), 4, total);
+    const ops: string[] = [];
+    for (let j = 0; j < no; j++) ops.push(c.ops(j) ?? '');
+    out.push({ topic: c.topic() ?? '', ops });
+  }
+  return out;
 }
 
 function decodeEvents(len: number, get: (i: number) => fb.Event | null, total: number): WireEvent[] {
@@ -257,6 +290,9 @@ function decodeServerBody(f: fb.ServerFrame, total: number): ServerMsg {
         limits: decodeLimits(b.limits()),
         features,
         anonymous: b.anonymous(),
+        segmentId: b.segmentId() ?? '',
+        environment: b.environment() ?? '',
+        capabilities: decodeCapabilities(b, total),
       };
     }
     case B.TokenExpiring: {
@@ -277,6 +313,9 @@ function decodeServerBody(f: fb.ServerFrame, total: number): ServerMsg {
     }
     case B.PubAck: {
       const b = f.body(new fb.PubAck()) as fb.PubAck;
+      const uid = b.uid();
+      const uidHi = uid?.hi() ?? 0n;
+      const uidLo = uid?.lo() ?? 0n;
       return {
         type: 'pubAck',
         topicId: b.topicId(),
@@ -284,6 +323,7 @@ function decodeServerBody(f: fb.ServerFrame, total: number): ServerMsg {
         cursor: { epoch: b.epoch(), seq: b.seq() },
         duplicate: b.duplicate(),
         serverTsMs: ms(b.serverTsMs()),
+        uid: uidHi === 0n && uidLo === 0n ? undefined : { hi: uidHi, lo: uidLo },
       };
     }
     case B.SubAck: {
@@ -296,6 +336,7 @@ function decodeServerBody(f: fb.ServerFrame, total: number): ServerMsg {
         oldest: cursorOf(b.oldest()),
         latest: cursorOf(b.latest()),
         snapshotFollows: b.snapshotFollows(),
+        deliveries: decodeDeliveries(b.deliveriesLength(), (i) => b.deliveries(i), total),
       };
     }
     case B.Gap: {

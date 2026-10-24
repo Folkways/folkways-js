@@ -5,7 +5,9 @@
 import * as flatbuffers from 'flatbuffers';
 
 import { ContentType } from '../../rte/v1/content-type.js';
+import { DeliveryClass } from '../../rte/v1/delivery-class.js';
 import { Header } from '../../rte/v1/header.js';
+import { Uuid128 } from '../../rte/v1/uuid128.js';
 
 
 export class Event {
@@ -100,8 +102,25 @@ payloadArray():Uint8Array|null {
   return offset ? new Uint8Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
 }
 
+delivery():DeliveryClass {
+  const offset = this.bb!.__offset(this.bb_pos, 26);
+  return offset ? this.bb!.readUint8(this.bb_pos + offset) : DeliveryClass.Unspecified;
+}
+
+name():string|null
+name(optionalEncoding:flatbuffers.Encoding):string|Uint8Array|null
+name(optionalEncoding?:any):string|Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 28);
+  return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
+}
+
+uid(obj?:Uuid128):Uuid128|null {
+  const offset = this.bb!.__offset(this.bb_pos, 30);
+  return offset ? (obj || new Uuid128()).__init(this.bb_pos + offset, this.bb!) : null;
+}
+
 static startEvent(builder:flatbuffers.Builder) {
-  builder.startObject(11);
+  builder.startObject(14);
 }
 
 static addTopicId(builder:flatbuffers.Builder, topicId:bigint) {
@@ -172,24 +191,21 @@ static startPayloadVector(builder:flatbuffers.Builder, numElems:number) {
   builder.startVector(1, numElems, 1);
 }
 
+static addDelivery(builder:flatbuffers.Builder, delivery:DeliveryClass) {
+  builder.addFieldInt8(11, delivery, DeliveryClass.Unspecified);
+}
+
+static addName(builder:flatbuffers.Builder, nameOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(12, nameOffset, 0);
+}
+
+static addUid(builder:flatbuffers.Builder, uidOffset:flatbuffers.Offset) {
+  builder.addFieldStruct(13, uidOffset, 0);
+}
+
 static endEvent(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   return offset;
 }
 
-static createEvent(builder:flatbuffers.Builder, topicId:bigint, epoch:bigint, seq:bigint, serverTsMs:bigint, clientTsMs:bigint, publisherOffset:flatbuffers.Offset, keyOffset:flatbuffers.Offset, tombstone:boolean, contentType:ContentType, headersOffset:flatbuffers.Offset, payloadOffset:flatbuffers.Offset):flatbuffers.Offset {
-  Event.startEvent(builder);
-  Event.addTopicId(builder, topicId);
-  Event.addEpoch(builder, epoch);
-  Event.addSeq(builder, seq);
-  Event.addServerTsMs(builder, serverTsMs);
-  Event.addClientTsMs(builder, clientTsMs);
-  Event.addPublisher(builder, publisherOffset);
-  Event.addKey(builder, keyOffset);
-  Event.addTombstone(builder, tombstone);
-  Event.addContentType(builder, contentType);
-  Event.addHeaders(builder, headersOffset);
-  Event.addPayload(builder, payloadOffset);
-  return Event.endEvent(builder);
-}
 }
