@@ -7,6 +7,7 @@ import { Live } from './live';
 import { type RealtimeOptions, type ResolvedOptions, resolveOptions } from './options';
 import { toSession } from './session';
 import { Topic } from './topic';
+import { TopicSet } from './topic-set';
 import type { CloseOptions, ConnectOptions, Connection, EventMap, LiveView, Session, TokenSource } from './types';
 
 /**
@@ -106,7 +107,15 @@ export class Realtime {
    * name. Pass an event map to type each event's data:
    * `client.topic<{ message: { text: string } }>('chat/45')`.
    */
-  topic<E extends EventMap = EventMap>(name: string): Topic<E> {
+  topic<E extends EventMap = EventMap>(name: string): Topic<E>;
+  /** A set of topics handled as one: bulk subscribe and publish (see `TopicSet`). */
+  topic<E extends EventMap = EventMap>(names: readonly string[]): TopicSet<E>;
+  topic<E extends EventMap = EventMap>(name: string | readonly string[]): Topic<E> | TopicSet<E> {
+    if (Array.isArray(name)) return new TopicSet<E>(name, (n) => this.topic<E>(n), this.engine);
+    return this.single<E>(name as string);
+  }
+
+  private single<E extends EventMap>(name: string): Topic<E> {
     let t = this.topics.get(name);
     if (!t) {
       assertTopic(name, this.engine.limits.maxTopicBytes);

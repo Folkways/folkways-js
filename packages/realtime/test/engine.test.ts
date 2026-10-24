@@ -990,6 +990,89 @@ describe('topic views', () => {
   });
 });
 
+describe('topic sets', () => {
+  async function connected(limits: Partial<import('../src').Session['limits']> = {}) {
+    const fake = new FakeStreamTransport();
+    const c = client(fake);
+    const conn = await fake.nextConn();
+    await conn.welcome({ limits });
+    await c.connect();
+    return { c, conn };
+  }
+  const subAck = (topicId: bigint) =>
+    ({ type: 'subAck', topicId, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] }) as const;
+
+  it('subscribes 200 topics in 4 packets and settles ready once every topic answered', async () => {
+    const { c, conn } = await connected();
+    const names = Array.from({ length: 200 }, (_, i) => `chat/${i}`);
+    const before = conn.packets;
+    const sub = c.topic(names).subscribe({ types: ['stream'] });
+    await until(() => conn.sent('subscribe').length === 200);
+    expect(conn.packets - before).toBe(4);
+    const frames = conn.sent('subscribe');
+    expect(frames.every((f) => f.msg.type === 'subscribe' && f.msg.subscribe.types?.[0] === DeliveryClass.Durable)).toBe(true);
+    frames.forEach((f, i) => (i === 7 ? conn.reply(f.corr, { type: 'opError', code: Code.Forbidden, message: 'no', retryAfterMs: 0, topicId: 0n }) : conn.reply(f.corr, subAck(BigInt(i + 1)))));
+    const { ok, failed } = await sub.ready;
+    expect(ok).toHaveLength(199);
+    expect(failed).toEqual([{ topic: 'chat/7', error: expect.objectContaining({ code: Code.Forbidden }) }]);
+  });
+
+  it('rejects ready with strict: true when a topic fails', async () => {
+    const { c, conn } = await connected();
+    const sub = c.topic(['a/1', 'a/2']).subscribe({ strict: true });
+    const [f1, f2] = [await conn.next('subscribe'), await conn.next('subscribe')];
+    conn.reply(f1.corr, subAck(1n));
+    conn.reply(f2.corr, { type: 'opError', code: Code.Forbidden, message: 'no', retryAfterMs: 0, topicId: 0n });
+    await expect(sub.ready).rejects.toMatchObject({ code: Code.Forbidden, topic: 'a/2' });
+  });
+
+  it('applies add and remove to the live subscription and delivers every topic to one handler', async () => {
+    const { c, conn } = await connected();
+    const got: string[] = [];
+    const inbox = c.topic(['chat/a']);
+    const sub = inbox.subscribe((m) => void got.push(`${m.topic}:${m.data}`));
+    conn.reply((await conn.next('subscribe')).corr, subAck(1n));
+    await sub.ready;
+    inbox.add('chat/b');
+    const sb = await conn.next('subscribe');
+    expect(sb.msg.subscribe.topic).toEqual({ name: 'chat/b' });
+    conn.reply(sb.corr, subAck(2n));
+    conn.reply(0n, { type: 'deliver', topicId: 1n, delivery: DeliveryClass.Durable, replayed: false, events: [event(1n, EPOCH, 1n, 'x')] });
+    conn.reply(0n, { type: 'deliver', topicId: 2n, delivery: DeliveryClass.Durable, replayed: false, events: [event(2n, EPOCH, 1n, 'y')] });
+    await until(() => got.length === 2);
+    expect(got.sort()).toEqual(['chat/a:x', 'chat/b:y']);
+    inbox.remove('chat/a');
+    const u = await conn.next('unsubscribe');
+    expect(u.msg.topic).toEqual({ id: 1n });
+    expect(sub.topics).toEqual(['chat/b']);
+    expect(inbox.get('chat/b')).toBe(c.topic('chat/b'));
+  });
+
+  it('fails topics beyond limits.maxSubscriptions locally, before sending', async () => {
+    const { c, conn } = await connected({ maxSubscriptions: 2 });
+    const sub = c.topic(['x/1', 'x/2', 'x/3']).subscribe();
+    const frames = [await conn.next('subscribe'), await conn.next('subscribe')];
+    frames.forEach((f, i) => conn.reply(f.corr, subAck(BigInt(i + 1))));
+    const { ok, failed } = await sub.ready;
+    expect(ok).toEqual(['x/1', 'x/2']);
+    expect(failed).toEqual([{ topic: 'x/3', error: expect.objectContaining({ code: Code.QuotaExceeded, local: true }) }]);
+    expect(conn.sent('subscribe')).toHaveLength(2);
+  });
+
+  it('publishes to every topic and resolves with one receipt each', async () => {
+    const { c, conn } = await connected();
+    const p = c.topic(['n/1', 'n/2']).publish('notice', 'hi');
+    const [a, b] = [await conn.next('publish'), await conn.next('publish')];
+    expect([a.msg.publish.topic, b.msg.publish.topic]).toEqual([{ name: 'n/1' }, { name: 'n/2' }]);
+    conn.reply(a.corr, { type: 'pubAck', topicId: 1n, level: AckMode.Accepted, cursor: { epoch: EPOCH, seq: 1n }, duplicate: false, serverTsMs: 1 });
+    conn.reply(b.corr, { type: 'pubAck', topicId: 2n, level: AckMode.Accepted, cursor: { epoch: EPOCH, seq: 4n }, duplicate: false, serverTsMs: 1 });
+    expect((await p).map((r) => [r.topic, r.id])).toEqual([
+      ['n/1', `${EPOCH}:1`],
+      ['n/2', `${EPOCH}:4`],
+    ]);
+  });
+});
+
 describe('http long-poll', () => {
   it('probes a new topic, then long-polls after the last cursor, and publishes by POST', async () => {
     let published = 0;
