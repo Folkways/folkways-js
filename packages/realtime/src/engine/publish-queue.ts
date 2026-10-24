@@ -23,6 +23,8 @@ export interface PublishSink {
   canSend(): boolean;
   /** Hands publishes to the current session, in order. */
   send(items: OutboundPublish[]): void;
+  /** Why new publishes are refused right now (offline, failed), if they are. */
+  refusal(): RealtimeError | undefined;
 }
 
 export interface PublishQueueOptions {
@@ -71,6 +73,8 @@ export class PublishQueue {
     const online = this.sink.canSend();
     if (!online) {
       if (!wantsAck) return Promise.resolve(undefined); // fire-and-forget is dropped while offline
+      const refused = this.sink.refusal();
+      if (refused) return Promise.reject(refused);
       if (this.opts.maxQueued <= 0) return Promise.reject(localError(Code.NotConnected, 'not connected'));
       const waiting = this.queue.length + [...this.entries.values()].filter((e) => e.p.state === 'waiting').length;
       if (waiting >= this.opts.maxQueued) {
@@ -159,6 +163,11 @@ export class PublishQueue {
   /** Rejects everything and refuses new publishes. */
   close(err: RealtimeError): void {
     this.closedWith = err;
+    this.rejectAll(err);
+  }
+
+  /** Rejects every pending publish (offline, failed); new ones are still taken. */
+  rejectAll(err: RealtimeError): void {
     for (const e of [...this.entries.values()]) this.fail(e.p, err);
     this.queue.length = 0;
   }

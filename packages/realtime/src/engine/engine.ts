@@ -32,7 +32,12 @@ import {
 } from './subscriptions';
 import { type TokenSource, TokenManager } from './token';
 
-export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed';
+/**
+ * `offline`: reconnecting has failed for `offlineAfterMs`; retries go on at
+ * the maximum delay but publishes stop waiting. `failed`: a fatal error;
+ * `start()` again (usually after a new token) reconnects. `closed`: `close()`.
+ */
+export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'failed' | 'closed';
 
 export interface ReconnectOptions {
   initialDelayMs: number;
@@ -54,6 +59,10 @@ export interface EngineConfig {
   publishRetries: number;
   reconnect: ReconnectOptions | false;
   fallbackAfterFailures: number;
+  /** Failed reconnecting this long → `offline`. */
+  offlineAfterMs: number;
+  /** While on HTTP after a fallback, try WebSocket again this often; 0 never. */
+  webSocketRetryMs: number;
   pongTimeoutMs: number;
   cursorAckIntervalMs: number;
   offlineQueueMax: number;
@@ -74,7 +83,7 @@ export interface ReconnectInfo {
 }
 
 export type EngineEvents = {
-  state: (state: ConnectionState, previous: ConnectionState) => void;
+  state: (state: ConnectionState, previous: ConnectionState, reason?: RealtimeError) => void;
   connected: (info: SessionInfo) => void;
   disconnected: (info: CloseInfo) => void;
   reconnecting: (info: ReconnectInfo) => void;
@@ -107,7 +116,15 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
   private readonly ws: StreamTransport;
   private readonly http: RequestTransport;
   private loop?: Promise<void>;
+  /** The loop must stop: set by `close()` and by a fatal error. */
   private stopped = false;
+  /** `close()` was called: nothing restarts. */
+  private closedForGood = false;
+  /** When the connection was last lost; drives `offline`. */
+  private downSince?: number;
+  /** The current session is being replaced by a WebSocket one (not a failure). */
+  private switching = false;
+  private wsProbe?: ReturnType<typeof setTimeout>;
   private readonly stopController = new AbortController();
   private wakeController = new AbortController();
   private waiters: { resolve: () => void; reject: (e: RealtimeError) => void }[] = [];
@@ -115,7 +132,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
   private clockOffset = 0;
   private bestRtt = Number.POSITIVE_INFINITY;
   private everConnected = false;
-  private readonly removeOnline?: () => void;
+  private readonly removeWakeListeners: () => void;
 
   constructor(private readonly cfg: EngineConfig) {
     super();
@@ -133,6 +150,11 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       {
         canSend: () => this.stateValue === 'connected' && !!this.session,
         send: (items) => this.session?.sendPublishes(items),
+        refusal: () => {
+          if (this.stateValue === 'failed') return this.fatalError;
+          if (this.stateValue === 'offline') return localError(Code.NotConnected, 'offline');
+          return undefined;
+        },
       },
       { maxQueued: cfg.offlineQueueMax, timeoutMs: cfg.publishTimeoutMs, retries: cfg.publishRetries, logger: cfg.logger },
     );
@@ -143,12 +165,30 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       cfg.logger,
     );
     this.onListenerError = (err) => this.log.error('event listener threw', { err });
-    const g = globalThis as { addEventListener?: (t: string, f: () => void) => void; removeEventListener?: (t: string, f: () => void) => void };
+    this.removeWakeListeners = this.listenForWake();
+  }
+
+  /** The browser coming online, or the tab becoming visible, skips the remaining backoff. */
+  private listenForWake(): () => void {
+    type Target = { addEventListener?: (t: string, f: () => void) => void; removeEventListener?: (t: string, f: () => void) => void };
+    const g = globalThis as Target & { document?: Target & { visibilityState?: string } };
+    const offs: (() => void)[] = [];
+    const wake = () => this.wakeController.abort();
     if (typeof g.addEventListener === 'function' && typeof g.removeEventListener === 'function') {
-      const onOnline = () => this.wakeController.abort();
-      g.addEventListener('online', onOnline);
-      this.removeOnline = () => g.removeEventListener!('online', onOnline);
+      g.addEventListener('online', wake);
+      offs.push(() => g.removeEventListener!('online', wake));
     }
+    const doc = g.document;
+    if (doc && typeof doc.addEventListener === 'function' && typeof doc.removeEventListener === 'function') {
+      const onVisible = () => {
+        if (doc.visibilityState === 'visible') wake();
+      };
+      doc.addEventListener('visibilitychange', onVisible);
+      offs.push(() => doc.removeEventListener!('visibilitychange', onVisible));
+    }
+    return () => {
+      for (const off of offs) off();
+    };
   }
 
   // ------------------------------------------------------------ queries
@@ -180,8 +220,16 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
 
   // ------------------------------------------------------------ control
 
-  /** Starts connecting (idempotent). Resolves when connected, rejects on a fatal error. */
+  /**
+   * Starts connecting (idempotent). Resolves when connected, rejects on a
+   * fatal error. After `failed`, starts over.
+   */
   start(): Promise<void> {
+    if (this.stateValue === 'failed' && !this.closedForGood) {
+      this.stopped = false;
+      this.fatalError = undefined;
+      this.loop = undefined;
+    }
     if (!this.loop && !this.stopped) {
       this.loop = this.run().catch((err) => {
         this.fail(err instanceof RealtimeError ? err : localError(Code.Internal, 'engine loop failed', err));
@@ -192,23 +240,25 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
 
   whenConnected(): Promise<void> {
     if (this.stateValue === 'connected') return Promise.resolve();
-    if (this.fatalError) return Promise.reject(this.fatalError);
+    if (this.fatalError && (this.stateValue === 'failed' || this.stateValue === 'closed')) return Promise.reject(this.fatalError);
     return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
   }
 
   /** Closes the connection for good. Pending publishes reject with `ClientClosed`. */
   async close(): Promise<void> {
-    if (this.stopped) {
+    if (this.closedForGood) {
       await this.loop;
       return;
     }
     this.stopped = true;
+    this.closedForGood = true;
     const err = localError(Code.ClientClosed, 'client closed');
-    this.fatalError ??= err;
+    this.fatalError = err;
+    clearTimeout(this.wsProbe);
     this.session?.close(Code.ClientClosed, 'client closed');
     this.stopController.abort();
     this.wakeController.abort();
-    this.removeOnline?.();
+    this.removeWakeListeners();
     this.publishes.close(err);
     this.registry.close(err);
     this.setState('closed');
@@ -238,7 +288,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
   }
 
   subscribe(topic: string, spec: SubscribeSpec, listener: TopicListener): TopicEntry {
-    if (this.stopped) {
+    if (this.closedForGood) {
       const err = this.fatalError ?? localError(Code.ClientClosed, 'client closed');
       const entry = new TopicEntry(topic, spec, this.cfg.cursorStore, this.log);
       entry.removed = true;
@@ -331,7 +381,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
         );
         return;
       }
-      this.setState(this.everConnected ? 'reconnecting' : 'connecting');
+      if (this.stateValue !== 'offline') this.setState(this.everConnected ? 'reconnecting' : 'connecting');
       const session = this.createSession(kind);
       this.log.debug('connecting', { transport: kind });
       let info: SessionInfo;
@@ -363,6 +413,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       this.session = session;
       this.sessionInfo = info;
       this.bestRtt = Number.POSITIVE_INFINITY;
+      this.downSince = undefined;
       backoff.reset();
       failures = 0;
       invalidStreak = 0;
@@ -374,12 +425,21 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       this.emit('connected', info);
       this.resolveWaiters();
       this.publishes.flush();
+      this.scheduleWebSocketRetry();
 
       const closed = await session.closed;
+      clearTimeout(this.wsProbe);
       this.session = undefined;
+      this.downSince = Date.now();
       this.publishes.sessionLost();
       this.registry.sessionLost();
       if (this.stopped) return;
+      if (this.switching) {
+        this.switching = false;
+        this.log.info('switching to WebSocket');
+        this.setState('reconnecting');
+        continue;
+      }
       this.log.info('disconnected', { code: closed.code, reason: closed.reason });
       this.emit('disconnected', closed);
       const err = new RealtimeError(closed.code, {
@@ -392,9 +452,34 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
         this.fail(d.fatal);
         return;
       }
-      this.setState('reconnecting');
+      this.setState('reconnecting', err);
       await this.pause(d.delayMs, failures, err);
     }
+  }
+
+  /** While on HTTP after a fallback, probe WebSocket now and then and move back when it opens. */
+  private scheduleWebSocketRetry(): void {
+    clearTimeout(this.wsProbe);
+    const ms = this.cfg.webSocketRetryMs;
+    if (!(ms > 0) || this.session?.kind !== 'http' || !this.selector.canMoveBack('websocket')) return;
+    this.wsProbe = setTimeout(() => void this.probeWebSocket(), ms);
+  }
+
+  private async probeWebSocket(): Promise<void> {
+    const session = this.session;
+    if (!session || session.kind !== 'http' || this.stopped) return;
+    try {
+      const conn = await this.ws.connect(this.cfg.endpoints.websocket!, this.stopController.signal);
+      conn.close(1000, 'probe');
+    } catch {
+      this.log.debug('WebSocket still unavailable; staying on HTTP');
+      this.scheduleWebSocketRetry();
+      return;
+    }
+    if (this.session !== session || this.stopped) return;
+    this.selector.moveBack('websocket');
+    this.switching = true;
+    session.close(Code.Ok, 'switching to WebSocket');
   }
 
   private createSession(kind: TransportKind): Session {
@@ -415,6 +500,8 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
   }
 
   private async pause(delayMs: number, attempt: number, error: RealtimeError): Promise<void> {
+    this.checkOffline(error);
+    if (this.stateValue === 'offline' && this.cfg.reconnect) delayMs = Math.max(delayMs, this.cfg.reconnect.maxDelayMs);
     if (delayMs <= 0 || this.stopped) return;
     this.emit('reconnecting', { attempt, delayMs, error });
     this.log.debug('reconnecting after delay', { delayMs, attempt });
@@ -423,25 +510,38 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     if (this.wakeController.signal.aborted && !this.stopped) this.wakeController = new AbortController();
   }
 
+  /** After `offlineAfterMs` of failed reconnecting, publishes stop waiting. */
+  private checkOffline(error: RealtimeError): void {
+    if (this.stateValue !== 'reconnecting' || this.downSince === undefined) return;
+    if (Date.now() - this.downSince < this.cfg.offlineAfterMs) return;
+    this.log.info('offline', { downForMs: Date.now() - this.downSince });
+    this.setState('offline', error);
+    this.publishes.rejectAll(localError(Code.NotConnected, 'offline'));
+  }
+
+  /**
+   * A fatal error: the loop stops and the state becomes `failed`.
+   * Publishes reject; subscriptions are kept and resume after `start()`.
+   */
   private fail(err: RealtimeError): void {
-    if (this.stopped && this.stateValue === 'closed') return;
-    this.log.error('connection failed permanently', { code: err.codeName, reason: err.message });
+    if (this.closedForGood || this.stateValue === 'failed') return;
+    this.log.error('connection failed', { code: err.codeName, reason: err.message });
     this.stopped = true;
     this.fatalError = err;
+    clearTimeout(this.wsProbe);
     this.session?.close(Code.ClientClosed, 'client failed');
-    this.removeOnline?.();
-    this.publishes.close(err);
-    this.registry.close(err);
-    this.setState('closed');
+    this.publishes.rejectAll(err);
+    this.registry.sessionLost();
+    this.setState('failed', err);
     this.rejectWaiters(err);
     this.emit('error', err);
   }
 
-  private setState(next: ConnectionState): void {
+  private setState(next: ConnectionState, reason?: RealtimeError): void {
     const prev = this.stateValue;
     if (prev === next) return;
     this.stateValue = next;
-    this.emit('state', next, prev);
+    this.emit('state', next, prev, reason);
   }
 
   private resolveWaiters(): void {

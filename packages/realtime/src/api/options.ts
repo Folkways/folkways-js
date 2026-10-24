@@ -46,6 +46,10 @@ export interface ClientOptions {
   reconnect?: Partial<{ initialDelayMs: number; maxDelayMs: number; maxAttempts: number }> | false;
   /** WebSocket failures (before any session opened) before falling back to HTTP. Default 2. */
   fallbackAfterFailures?: number;
+  /** After this long of failed reconnecting the state becomes `offline` and publishes stop waiting. Default 120 000. */
+  offlineAfterMs?: number;
+  /** While on HTTP after a fallback, try WebSocket again this often (ms); 0 never. Default 300 000. */
+  webSocketRetryMs?: number;
   /** Extra silence tolerated after a missed heartbeat. Default 10 000. */
   pongTimeoutMs?: number;
   /** How often processed cursors are hinted to the node; 0 disables. Default 5 000. */
@@ -139,6 +143,8 @@ export function resolveOptions(o: ClientOptions): ResolvedOptions {
     publishRetries: positive(o.publishRetries, 3, 'publishRetries'),
     reconnect,
     fallbackAfterFailures: positive(o.fallbackAfterFailures, 2, 'fallbackAfterFailures'),
+    offlineAfterMs: positive(o.offlineAfterMs, 120_000, 'offlineAfterMs'),
+    webSocketRetryMs: positive(o.webSocketRetryMs, 300_000, 'webSocketRetryMs'),
     pongTimeoutMs: positive(o.pongTimeoutMs, 10_000, 'pongTimeoutMs'),
     cursorAckIntervalMs: positive(o.cursorAckIntervalMs, 5_000, 'cursorAckIntervalMs'),
     offlineQueueMax: o.offlineQueue === false ? 0 : positive(o.offlineQueue?.maxSize, 1_000, 'offlineQueue.maxSize'),

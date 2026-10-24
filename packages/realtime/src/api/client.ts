@@ -14,7 +14,7 @@ export type ClientEvents = {
   connected: (info: { transport: TransportKind; identity?: string; sessionId?: string }) => void;
   disconnected: (info: { code: number; reason: string; retryAfterMs?: number }) => void;
   reconnecting: (info: ReconnectInfo) => void;
-  /** The client gave up (fatal error); it is now `closed`. */
+  /** A fatal error; the client is now `failed` until `connect()` is called again. */
   error: (err: RealtimeError) => void;
   tokenExpiring: (expiresAtMs: number) => void;
   tokenRefreshed: (expiresAtMs?: number) => void;

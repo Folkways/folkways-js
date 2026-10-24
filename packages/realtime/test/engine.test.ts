@@ -57,7 +57,7 @@ describe('connection', () => {
     await conn.welcome();
     await c.connect();
     conn.serverClose(Code.Replaced, 'replaced by a newer connection');
-    await until(() => c.state === 'closed');
+    await until(() => c.state === 'failed');
     expect(c.error?.code).toBe(Code.Replaced);
     expect(fake.conns).toHaveLength(1);
   });
@@ -71,7 +71,7 @@ describe('connection', () => {
     const err = await c.connect().catch((e) => e);
     expect(err).toBeInstanceOf(RealtimeError);
     expect(err.code).toBe(Code.AuthInvalid);
-    expect(c.state).toBe('closed');
+    expect(c.state).toBe('failed');
   });
 
   it('asks the provider for a fresh token once after AuthInvalid, then gives up', async () => {
@@ -174,7 +174,101 @@ describe('connection', () => {
     const failed = new Promise<RealtimeError>((r) => c.on('error', r));
     conn.serverClose(Code.AuthExpired, 'token expired');
     expect((await failed).code).toBe(Code.AuthExpired);
-    expect(c.state).toBe('closed');
+    expect(c.state).toBe('failed');
+  });
+});
+
+describe('connection states', () => {
+  it('goes offline after offlineAfterMs of failed reconnecting, fails queued publishes, and recovers', async () => {
+    const fake = new FakeStreamTransport();
+    const c = client(fake, { offlineAfterMs: 50, reconnect: { initialDelayMs: 5, maxDelayMs: 20 } });
+    const states: string[] = [];
+    c.on('state', (s) => states.push(s));
+    await (await fake.nextConn()).welcome();
+    await c.connect();
+    fake.refuse = 1_000;
+    fake.conns[0]!.drop();
+    const queued = c.topic('chat/a').publish('queued while reconnecting').catch((e: RealtimeError) => e);
+    await until(() => c.state === 'offline', 2_000, 'offline');
+    expect(await queued).toMatchObject({ code: Code.NotConnected });
+    await expect(c.topic('chat/a').publish('while offline')).rejects.toMatchObject({ code: Code.NotConnected });
+    fake.refuse = 0;
+    await (await fake.nextConn(2_000)).welcome();
+    await until(() => c.state === 'connected', 2_000, 'connected');
+    expect(states).toEqual(['connected', 'reconnecting', 'offline', 'connected']);
+  });
+
+  it('keeps subscriptions through failed and resumes them after connect() is called again', async () => {
+    const fake = new FakeStreamTransport();
+    const c = client(fake);
+    const conn = await fake.nextConn();
+    await conn.welcome();
+    await c.connect();
+    const sub = c.topic('chat/a').subscribe();
+    const s = await conn.next('subscribe');
+    conn.reply(s.corr, { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
+    await sub.ready;
+    conn.push({ corr: 0n, msg: { type: 'deliver', topicId: 7n, delivery: DeliveryClass.Durable, replayed: false, events: [event(7n, EPOCH, 3n, 'x')] } });
+    await until(() => sub.cursor?.seq === 3n);
+    conn.serverClose(Code.AuthInvalid);
+    await until(() => c.state === 'failed');
+    expect(sub.status).toBe('resyncing');
+    await expect(c.topic('chat/a').publish('nope')).rejects.toMatchObject({ code: Code.AuthInvalid });
+
+    const reconnected = c.connect();
+    const conn2 = await fake.nextConn();
+    await conn2.welcome();
+    await reconnected;
+    const s2 = await conn2.next('subscribe');
+    expect(s2.msg.subscribe).toMatchObject({ start: StartAt.After, cursor: { epoch: EPOCH, seq: 3n } });
+  });
+
+  it('skips the remaining backoff when the tab becomes visible', async () => {
+    const listeners: Record<string, () => void> = {};
+    const doc = {
+      visibilityState: 'hidden',
+      addEventListener: (t: string, f: () => void) => (listeners[t] = f),
+      removeEventListener: (t: string) => delete listeners[t],
+    };
+    vi.stubGlobal('document', doc);
+    try {
+      const fake = new FakeStreamTransport();
+      const c = client(fake, { reconnect: { initialDelayMs: 60_000, maxDelayMs: 60_000 } });
+      await (await fake.nextConn()).welcome();
+      await c.connect();
+      fake.conns[0]!.drop();
+      await until(() => c.state === 'reconnecting');
+      await new Promise((r) => setTimeout(r, 20));
+      expect(fake.attempts).toBe(1);
+      doc.visibilityState = 'visible';
+      listeners.visibilitychange!();
+      await (await fake.nextConn(1_000)).welcome();
+      await until(() => c.state === 'connected');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('moves back to WebSocket once a probe opens while on the HTTP fallback', async () => {
+    const fake = new FakeStreamTransport();
+    fake.refuse = 2;
+    const http = new FakeRequestTransport(async (path, _token, frames, signal) => {
+      if (path === '/v1/poll') await new Promise((r) => signal?.addEventListener('abort', r, { once: true }));
+      return { frames: frames.map((f) => ({ corr: f.corr, msg: { type: 'pong', nonce: 1n, tsMs: Date.now() } as const })) };
+    });
+    const c = client(fake, {
+      endpoints: { websocket: 'ws://fake/v1/ws', http: 'http://fake' },
+      transports: ['websocket', 'http'],
+      transportOverrides: { stream: fake, request: http },
+      webSocketRetryMs: 30,
+    });
+    await c.connect();
+    expect(c.transport).toBe('http');
+    // The probe opens a socket and closes it; then the real WebSocket session follows.
+    await until(() => fake.conns.length === 2, 2_000, 'websocket session');
+    await fake.conns[1]!.welcome();
+    await until(() => c.transport === 'websocket', 2_000, 'websocket transport');
+    expect(fake.conns[0]!.closed).toBe(true);
   });
 });
 

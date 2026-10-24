@@ -92,7 +92,7 @@ describe('PublishQueue', () => {
     const sent: OutboundPublish[][] = [];
     let online = opts.online ?? true;
     const q = new PublishQueue(
-      { canSend: () => online, send: (items) => sent.push(items) },
+      { canSend: () => online, send: (items) => sent.push(items), refusal: () => undefined },
       { maxQueued: opts.maxQueued ?? 10, timeoutMs: opts.timeoutMs ?? 1_000, retries: 2, logger: silentLogger },
     );
     return { q, sent, setOnline: (v: boolean) => (online = v) };

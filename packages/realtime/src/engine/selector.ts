@@ -48,4 +48,18 @@ export class TransportSelector {
   opened(): void {
     this.failures = 0;
   }
+
+  /** True when `kind` is preferred over the current transport and usable here. */
+  canMoveBack(kind: TransportKind): boolean {
+    const i = this.prefs.indexOf(kind);
+    return i >= 0 && i < this.index && this.usable(kind);
+  }
+
+  /** Returns to a preferred transport (a probe showed it works again). */
+  moveBack(kind: TransportKind): void {
+    if (!this.canMoveBack(kind)) return;
+    this.log.info('moving back to a preferred transport', { to: kind });
+    this.index = this.prefs.indexOf(kind);
+    this.failures = 0;
+  }
 }
