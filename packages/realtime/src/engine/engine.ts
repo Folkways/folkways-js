@@ -17,6 +17,7 @@ import {
   WebSocketTransport,
 } from '../transport';
 import { Backoff, sleep } from './backoff';
+import { type CacheLimits, MessageCache } from './cache';
 import { Outbox } from './outbox';
 import { type Store, type StoreCipher, ScopedStore, scopePrefix } from './store';
 import { PollSession } from './poll-session';
@@ -74,6 +75,8 @@ export interface EngineConfig {
   outboxMaxAgeMs: number;
   /** Encrypts payloads written to a persistent store. */
   cipher?: StoreCipher;
+  /** Recent messages and values kept in a persistent store, or false. */
+  cache: CacheLimits | false;
   longPoll: { waitMs: number; maxEvents: number; emptyStateRecheckMs: number };
   webSocket?: WebSocketConstructor;
   fetch?: FetchLike;
@@ -166,6 +169,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       logger: cfg.logger,
       onChange: () => this.session?.syncSubscriptions(),
       observe: (d) => this.emit('delivered', d),
+      cache: cfg.cache ? new MessageCache(this.store, cfg.cache, cfg.logger, cfg.cipher) : undefined,
     });
     this.publishes = new PublishQueue(
       {

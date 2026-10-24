@@ -139,6 +139,7 @@ export function eventId(cursor: Cursor | undefined, uid: string | undefined, fal
 }
 
 export function toMessage<T = unknown, E extends string = string>(d: DeliveredEvent, extra: { fromCache?: boolean } = {}): Message<T, E> {
+  const fromCache = extra.fromCache ?? d.fromCache ?? false;
   const e = d.event;
   const delivery = deliveryName(d.delivery);
   const cursor = e.seq > 0n ? { epoch: e.epoch, seq: e.seq } : undefined;
@@ -165,6 +166,6 @@ export function toMessage<T = unknown, E extends string = string>(d: DeliveredEv
     clientTime: e.clientTsMs || undefined,
     replayed: d.replayed,
     pending: false,
-    fromCache: extra.fromCache ?? false,
+    fromCache,
   };
 }

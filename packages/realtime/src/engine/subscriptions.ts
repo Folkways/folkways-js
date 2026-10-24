@@ -15,6 +15,7 @@ import {
   OnGap,
   StartAt,
 } from '../transport';
+import type { MessageCache } from './cache';
 import type { CursorStore } from './cursor-store';
 
 /** How a subscription starts when there is no cursor to resume from. */
@@ -35,6 +36,8 @@ export interface DeliveredEvent {
   readonly delivery: DeliveryClass;
   readonly replayed: boolean;
   readonly fromSnapshot: boolean;
+  /** Read from the local store, not yet confirmed by the live connection. */
+  readonly fromCache?: boolean;
 }
 
 export interface ActiveInfo {
@@ -69,6 +72,8 @@ export interface TopicListener {
   onFailed(err: RealtimeError): void | Promise<void>;
   /** Terminal: the node ended the subscription (`SubEnded`) or the client closed. */
   onEnded(err: RealtimeError): void | Promise<void>;
+  /** Stream events and values an earlier page load cached, before the node answers. */
+  onCached?(events: DeliveredEvent[]): void | Promise<void>;
 }
 
 export type WireState = 'idle' | 'subscribing' | 'active';
@@ -77,6 +82,8 @@ export interface StoredValue {
   readonly event: WireEvent;
   readonly delivery: DeliveryClass;
   readonly receivedAt: number;
+  /** Loaded from the local store; replaced by the first live snapshot. */
+  readonly cached?: boolean;
 }
 
 /** Current values by event name, then by key (kv) or publisher (signal). */
@@ -176,7 +183,7 @@ export class TopicEntry {
   }
 
   /** Records a kv or signal event in the value maps. */
-  storeValue(event: WireEvent, delivery: DeliveryClass, now: number): void {
+  storeValue(event: WireEvent, delivery: DeliveryClass, now: number, cached = false): void {
     const maps = delivery === DeliveryClass.LastValue ? this.kv : delivery === DeliveryClass.Ephemeral ? this.signals : undefined;
     if (!maps) return;
     const name = event.name ?? '';
@@ -188,7 +195,14 @@ export class TopicEntry {
       return;
     }
     if (!m) maps.set(name, (m = new Map()));
-    m.set(key, { event, delivery, receivedAt: now });
+    m.set(key, { event, delivery, receivedAt: now, cached });
+  }
+
+  /** The kv values as a flat list, for the cache. */
+  kvList(): { event: WireEvent; delivery: DeliveryClass }[] {
+    const out: { event: WireEvent; delivery: DeliveryClass }[] = [];
+    for (const byKey of this.kv.values()) for (const { event, delivery } of byKey.values()) out.push({ event, delivery });
+    return out;
   }
 
   /** Where to resume: the last received event, else the stored cursor. */
@@ -225,6 +239,8 @@ export interface RegistryOptions {
   onChange: () => void;
   /** Sees every delivered event, in the topic's order, without holding it back. */
   observe?: (e: DeliveredEvent) => void;
+  /** Recent stream events and kv values kept across reloads. */
+  cache?: MessageCache;
   now?: () => number;
 }
 
@@ -291,6 +307,7 @@ export class SubscriptionRegistry {
     entry.listeners.add(listener);
     this.byName.set(name, entry);
     this.opts.onChange();
+    this.loadCached(entry);
     return entry;
   }
 
@@ -392,6 +409,8 @@ export class SubscriptionRegistry {
         entry.received = c;
       }
       entry.storeValue(event, delivery, now);
+      if (delivery === DeliveryClass.Durable && numbered) this.opts.cache?.addMessage(entry.name, event);
+      else if (delivery === DeliveryClass.LastValue) this.opts.cache?.setValues(entry.name, entry.kvList());
       const delivered: DeliveredEvent = { topic: entry.name, event, delivery, replayed, fromSnapshot: false };
       this.run(entry, async () => {
         this.opts.observe?.(delivered);
@@ -424,6 +443,7 @@ export class SubscriptionRegistry {
       if (!top || (c.epoch === top.epoch && c.seq > top.seq)) top = c;
     }
     if (top) entry.received = top;
+    this.opts.cache?.setValues(entry.name, entry.kvList());
     this.run(entry, async () => {
       await Promise.all([...entry.listeners].map((l) => l.onSnapshot(delivered.filter((d) => accepts(l.types, d.delivery)))));
       if (top) await this.processed(entry, top);
@@ -510,6 +530,25 @@ export class SubscriptionRegistry {
   }
 
   // ------------------------------------------------------------ internals
+
+  /** Hands listeners what an earlier page load cached, until the node answers. */
+  private loadCached(entry: TopicEntry): void {
+    const cache = this.opts.cache;
+    if (!cache?.enabled) return;
+    void cache.load(entry.name).then(({ messages, values }) => {
+      if (entry.removed || (messages.length === 0 && values.length === 0)) return;
+      const now = this.now();
+      const fresh = !entry.everActive;
+      if (fresh) for (const v of values) entry.storeValue(v.event, v.delivery, now, true);
+      const delivered: DeliveredEvent[] = [
+        ...messages.map((event): DeliveredEvent => ({ topic: entry.name, event, delivery: entry.deliveryOf(event, DeliveryClass.Durable), replayed: true, fromSnapshot: false, fromCache: true })),
+        ...(fresh ? values.map((v): DeliveredEvent => ({ topic: entry.name, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true, fromCache: true })) : []),
+      ];
+      this.run(entry, async () => {
+        await Promise.all([...entry.listeners].map((l) => l.onCached?.(delivered.filter((d) => accepts(l.types, d.delivery)))));
+      });
+    });
+  }
 
   private fail(entry: TopicEntry, err: RealtimeError): void {
     this.drop(entry);

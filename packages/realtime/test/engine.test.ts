@@ -1270,6 +1270,79 @@ describe('persistent outbox', () => {
   });
 });
 
+describe('message cache', () => {
+  it('renders cached messages and values on reload, then confirms them when the node answers', async () => {
+    const store = { ...memoryStore(), persistent: true };
+    const fake = new FakeStreamTransport();
+    const first = client(fake, { store });
+    const conn = await fake.nextConn();
+    await conn.welcome();
+    await first.connect();
+    first.topic('chat/45').subscribe();
+    const s = await conn.next('subscribe');
+    conn.reply(s.corr, {
+      type: 'subAck',
+      topicId: 9n,
+      delivery: DeliveryClass.Unspecified,
+      catchingUp: false,
+      snapshotFollows: false,
+      deliveries: [DeliveryClass.Durable, DeliveryClass.LastValue, DeliveryClass.Ephemeral],
+    });
+    conn.reply(0n, {
+      type: 'deliver',
+      topicId: 9n,
+      delivery: DeliveryClass.Unspecified,
+      replayed: false,
+      events: [
+        event(9n, EPOCH, 1n, 'one', { delivery: DeliveryClass.Durable, name: 'message' }),
+        event(9n, EPOCH, 2n, 'two', { delivery: DeliveryClass.Durable, name: 'message' }),
+        event(9n, 0n, 0n, 'r', { delivery: DeliveryClass.LastValue, name: 'read', key: 'bob' }),
+        event(9n, 0n, 0n, 't', { delivery: DeliveryClass.Ephemeral, name: 'typing' }),
+      ],
+    });
+    await until(() => first.topic('chat/45').messages.getSnapshot().length === 2);
+    for (let i = 0; i < 100 && (await store.keys(`fw/${DEV_SEGMENT}/alice/v/`)).length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(await store.keys(`fw/${DEV_SEGMENT}/alice/m/`)).toEqual([`fw/${DEV_SEGMENT}/alice/m/chat%2F45`]);
+
+    // Reload: a new client renders from the cache before it is even connected.
+    const fake2 = new FakeStreamTransport();
+    const second = client(fake2, { store });
+    const room = second.topic('chat/45');
+    room.subscribe();
+    await until(() => room.messages.getSnapshot().length === 2);
+    expect(room.messages.getSnapshot().map((m) => [m.data, m.fromCache])).toEqual([
+      ['one', true],
+      ['two', true],
+    ]);
+    expect(room.values('read').get('bob')).toMatchObject({ data: 'r', fromCache: true });
+    expect(room.values('typing').size).toBe(0); // signals are never stored
+
+    const conn2 = await fake2.nextConn();
+    await conn2.welcome();
+    const s2 = await conn2.next('subscribe');
+    expect(s2.msg.subscribe).toMatchObject({ start: StartAt.After, cursor: { epoch: EPOCH, seq: 2n } });
+    conn2.reply(s2.corr, {
+      type: 'subAck',
+      topicId: 9n,
+      delivery: DeliveryClass.Unspecified,
+      catchingUp: false,
+      snapshotFollows: true,
+      deliveries: [DeliveryClass.Durable, DeliveryClass.LastValue],
+    });
+    conn2.reply(0n, {
+      type: 'snapshot',
+      topicId: 9n,
+      snapshotId: 1n,
+      chunk: 0,
+      lastChunk: true,
+      events: [event(9n, 0n, 0n, 'r2', { delivery: DeliveryClass.LastValue, name: 'read', key: 'bob' })],
+    });
+    await until(() => room.values('read').get('bob')?.data === 'r2');
+    expect(room.values('read').get('bob')!.fromCache).toBe(false);
+    expect(room.messages.getSnapshot().every((m) => !m.fromCache)).toBe(true);
+  });
+});
+
 describe('defineTopic', () => {
   type Chat = { message: { text: string }; typing: { on: boolean }; read: { upTo: string } };
   const chatRoom = defineTopic<Chat>()('chat/{room}', {

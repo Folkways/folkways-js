@@ -69,7 +69,8 @@ export interface RealtimeOptions {
   offlineQueue?: { maxSize?: number } | false;
   /**
    * The local store: cursors and, with a persistent adapter, an outbox
-   * that lets sends survive reloads and short outages. Default
+   * that lets sends survive reloads and short outages and a cache of recent
+   * messages and values. Default
    * `memoryStore()`; persistent adapters are opt-in entry points. Data is
    * kept per segment and identity.
    */
@@ -78,6 +79,12 @@ export interface RealtimeOptions {
   outbox?: { maxAgeMs?: number };
   /** Encrypts payloads written to a persistent store. */
   cipher?: StoreCipher;
+  /**
+   * With a persistent store, recent stream events and kv values are cached
+   * so a reload renders at once (marked `fromCache`). Defaults
+   * `{ messagesPerTopic: 100, maxBytes: 5 MB }`; `false` turns it off.
+   */
+  cache?: { messagesPerTopic?: number; maxBytes?: number } | false;
   /** How long an Ephemeral signal stays in `Subscription.values`. Default 5 000. */
   signalTtlMs?: number;
   /** HTTP long-poll tuning. */
@@ -180,6 +187,13 @@ export function resolveOptions(o: RealtimeOptions): ResolvedOptions {
     store: o.store ?? memoryStore(),
     outboxMaxAgeMs: positive(o.outbox?.maxAgeMs, 600_000, 'outbox.maxAgeMs'),
     cipher: o.cipher,
+    cache:
+      o.cache === false
+        ? false
+        : {
+            messagesPerTopic: positive(o.cache?.messagesPerTopic, 100, 'cache.messagesPerTopic'),
+            maxBytes: positive(o.cache?.maxBytes, 5 * 1024 * 1024, 'cache.maxBytes'),
+          },
     longPoll: {
       waitMs: positive(o.longPoll?.waitMs, 25_000, 'longPoll.waitMs'),
       maxEvents: positive(o.longPoll?.maxEvents, 100, 'longPoll.maxEvents'),

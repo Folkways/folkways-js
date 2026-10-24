@@ -7,6 +7,7 @@ export type { CloseInfo, SessionInfo } from './session';
 export type { ActiveInfo, DeliveredEvent, GapInfo, StoredValue, SubscribeSpec, TopicEntry, TopicListener, ValueMaps } from './subscriptions';
 export { type CursorStore, memoryCursorStore } from './cursor-store';
 export { KEYS, ScopedStore, type Store, type StoreCipher, memoryStore, scopePrefix } from './store';
+export { type CacheLimits, MessageCache } from './cache';
 export { type PeekedClaims, type TokenProvider, type TokenReason, type TokenSource, authUrlProvider, peekJwt } from './token';
 export {
   AckMode,

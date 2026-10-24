@@ -121,13 +121,32 @@ export class TopicViews {
       this.refreshValues();
       return;
     }
-    if (this.list.some((e) => e.id === m.id && !e.localId)) return;
+    const same = this.list.findIndex((e) => e.id === m.id && !e.localId);
+    if (same >= 0) {
+      // A live copy confirms a cached one; anything else is a duplicate.
+      if (this.list[same]!.fromCache && !m.fromCache) {
+        const next = [...this.list];
+        next[same] = { ...m, status: 'sent' };
+        this.commit(next);
+      }
+      return;
+    }
     const mine = this.list.findIndex((e) => e.ackedId === m.id || (m.uid !== undefined && e.uid === m.uid));
     const entry: Entry = { ...m, status: 'sent' };
     const next = [...this.list];
     if (mine >= 0) next[mine] = entry;
-    else next.push(entry);
+    else if (m.fromCache) {
+      // Cached history keeps its order and goes before anything live.
+      const firstLive = next.findIndex((e) => !e.fromCache);
+      next.splice(firstLive < 0 ? next.length : firstLive, 0, entry);
+    } else next.push(entry);
     this.commit(next);
+  }
+
+  /** The live subscription answered: cached messages are confirmed. */
+  confirmCached(): void {
+    if (!this.list.some((e) => e.fromCache)) return;
+    this.commit(this.list.map((e) => (e.fromCache ? { ...e, fromCache: false } : e)));
   }
 
   /** Values changed without a stream event (snapshot, resync). */
@@ -191,7 +210,7 @@ export class TopicViews {
         for (const [key, v] of byKey) {
           if (signals && v.receivedAt < cutoff) continue;
           // Across event names, keys are scoped by name: read/user:7, location/user:7.
-          out.set(event === undefined && name !== '' ? `${name}/${key}` : key, toMessage({ topic: this.topic, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true }));
+          out.set(event === undefined && name !== '' ? `${name}/${key}` : key, toMessage({ topic: this.topic, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true, fromCache: v.cached }));
         }
       }
     };

@@ -71,6 +71,10 @@ export class Subscription<M extends Message = Message> extends Emitter<Subscript
     this.ready.catch(() => {}); // reported through `error` too; never unhandled
     this.onListenerError = (err) => engine.log.error('subscription listener threw', { topic, err });
     this.entry = engine.subscribe(topic, spec, this);
+    if (this.views) {
+      this.attached = true;
+      this.views.attach(this.entry);
+    }
   }
 
   get status(): SubscriptionStatus {
@@ -135,10 +139,7 @@ export class Subscription<M extends Message = Message> extends Emitter<Subscript
     if (this.isTerminal()) return;
     this.allowed = info.deliveries;
     this.topicClass = info.deliveryClass;
-    if (!this.attached) {
-      this.attached = true;
-      this.views?.attach(this.entry);
-    }
+    this.views?.confirmCached();
     this.setStatus('active');
     this.resolveReady();
   }
@@ -173,6 +174,13 @@ export class Subscription<M extends Message = Message> extends Emitter<Subscript
       latest: g.latest,
       resumed: g.resumed,
     });
+  }
+
+  /** @internal What an earlier page load cached: shown in the topic's views, not handed to the handler. */
+  onCached(events: DeliveredEvent[]): void {
+    if (this.isTerminal() || !this.views) return;
+    for (const d of events) if (this.wants(d) && !d.fromSnapshot) this.views.ingest(toMessage(d));
+    this.views.refreshValues();
   }
 
   /** @internal */
