@@ -9,7 +9,7 @@
   "license": "ISC",
   "packageManager": "pnpm@10.20.0",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "build": "turbo run build",
@@ -19,7 +19,7 @@
     "clean": "turbo run clean",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "turbo run build --filter=@folkways/realtime-sdk && changeset publish"
+    "release": "turbo run build --filter=@folkways/realtime && changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.7",

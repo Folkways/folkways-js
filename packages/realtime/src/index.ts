@@ -1,18 +1,26 @@
-import { writeSync } from "fs";
-
-interface ClientProps {
-    token: string;
-    segment: string;
-}
-
-export function Client(props: ClientProps) {
-    const start = Date.now();
-    const encoder = new TextEncoder();
-    const tokenBytes = encoder.encode(props.token);
-    const payload = new Uint8Array(2 + tokenBytes.length);
-    payload[0] = 0x01; // AUTH type
-    payload[1] = tokenBytes.length;
-    payload.set(tokenBytes, 2);
-    const end = Date.now();
-    console.log("Client initialized with token:", props.token, "and segment:", props.segment, payload, "Initialization took", end - start, "ms");
-}
+/**
+ * @folkways/realtime: the client SDK for the Folkways Realtime Transport Engine.
+ *
+ *   import { Folkways } from '@folkways/realtime';
+ *   const client = new Folkways.Realtime({ url, authUrl: '/api/rte-token' });
+ *   const session = await client.connect();
+ *
+ * Layers: api (this surface) → engine → transport.
+ */
+export * from './api';
+export {
+  type Limits,
+  type TransportKind,
+  type WebSocketConstructor,
+  type FetchLike,
+  type StreamTransport,
+  type RequestTransport,
+  type Store,
+  type StoreCipher,
+  memoryStore,
+} from './engine';
+export { Code, codeInfo, codeName, type CodeInfo, type RetryClass } from './shared/codes';
+export { RealtimeError, isRealtimeError } from './shared/errors';
+export { type Cursor, cursor, formatCursor, parseCursor, isAfter } from './shared/cursor';
+export { type Logger, type LogLevel, consoleLogger, silentLogger } from './shared/logger';
+export { topicError } from './shared/topic';
