@@ -126,6 +126,12 @@ export class TopicEntry {
   stored?: Cursor;
   /** `SubAck.latest` of the last subscribe or poll. */
   latest?: Cursor;
+  /**
+   * Topics with several types: the latest state version applied (from
+   * `SubAck.stateLatest` and kv or signal events), which long-poll sends
+   * back as `stateAfter` so the node answers only with what changed.
+   */
+  stateLatest?: Cursor;
   loaded = false;
   readonly loading: Promise<void>;
   everActive = false;
@@ -182,8 +188,15 @@ export class TopicEntry {
     return e.delivery || frame || this.deliveryClass || DeliveryClass.Durable;
   }
 
+  /** Moves the state position forward; a position from another epoch replaces it. */
+  noteState(c: Cursor): void {
+    const s = this.stateLatest;
+    if (!s || s.epoch !== c.epoch || c.seq > s.seq) this.stateLatest = c;
+  }
+
   /** Records a kv or signal event in the value maps. */
   storeValue(event: WireEvent, delivery: DeliveryClass, now: number, cached = false): void {
+    if (event.version && !cached) this.noteState({ epoch: event.epoch, seq: event.version });
     const maps = delivery === DeliveryClass.LastValue ? this.kv : delivery === DeliveryClass.Ephemeral ? this.signals : undefined;
     if (!maps) return;
     const name = event.name ?? '';
@@ -351,6 +364,7 @@ export class SubscriptionRegistry {
     entry.deliveryClass = ack.delivery;
     entry.allowed = ack.deliveries;
     entry.latest = ack.latest;
+    if (ack.stateLatest) entry.noteState(ack.stateLatest);
     if (quiet && entry.wire === 'active') return;
     entry.wire = 'active';
     entry.everActive = true;

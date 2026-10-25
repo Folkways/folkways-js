@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Code, Folkways, type Message, Realtime, RealtimeError, type RealtimeOptions, defineTopic, memoryStore } from '../src';
-import { AckMode, ContentType, DeliveryClass, GapReason, OnGap, StartAt } from '../src/transport/wire/model';
+import { AckMode, ContentType, DeliveryClass, GapReason, OnGap, StartAt, type SubscribeBody } from '../src/transport/wire/model';
 import { FakeRequestTransport, FakeStreamTransport, until } from './support/fake-transport';
 import { event } from './support/server-codec';
 import { DEV_SEGMENT, mintToken } from './support/token';
@@ -1453,6 +1453,47 @@ describe('http long-poll', () => {
     expect(r.id).toBe(`${EPOCH}:1`);
     const call = http.calls.find((x) => x.frames[0]!.msg.type === 'publish')!;
     expect(call.token).toBe(c['engine'].tokens['token']);
+  });
+
+  it('resumes kv and signal changes of a room from the state version', async () => {
+    const ALL = [DeliveryClass.Durable, DeliveryClass.LastValue, DeliveryClass.Ephemeral];
+    const bodies: SubscribeBody[] = [];
+    const http = new FakeRequestTransport(async (_path, _token, frames, signal) => {
+      const f = frames[0]!;
+      if (f.msg.type !== 'poll') return { frames: frames.map((fr) => ({ corr: fr.corr, msg: { type: 'pong', nonce: 1n, tsMs: 0 } as const })) };
+      const t = f.msg.poll.topics[0]!;
+      bodies.push(t);
+      const ack = (state: bigint) =>
+        ({ corr: f.corr, msg: { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Unspecified, catchingUp: false, snapshotFollows: !t.stateAfter, deliveries: ALL, stateLatest: { epoch: EPOCH, seq: state } } }) as const;
+      const end = { corr: f.corr, msg: { type: 'pollEnd', timedOut: false, more: false } } as const;
+      if (bodies.length === 1) {
+        // The probe: a room with one read receipt and no messages yet.
+        const read = event(7n, EPOCH, 0n, 'm0', { delivery: DeliveryClass.LastValue, name: 'read', key: 'bob', version: 1n });
+        return { frames: [ack(1n), { corr: f.corr, msg: { type: 'snapshot', topicId: 7n, snapshotId: 1n, chunk: 0, lastChunk: true, events: [read] } }, end] };
+      }
+      if (bodies.length === 2) {
+        const read = event(7n, EPOCH, 0n, 'm1', { delivery: DeliveryClass.LastValue, name: 'read', key: 'bob', version: 2n });
+        return { frames: [ack(2n), { corr: f.corr, msg: { type: 'deliver', topicId: 7n, delivery: DeliveryClass.Unspecified, replayed: false, events: [read] } }, end] };
+      }
+      await new Promise<void>((r) => signal?.addEventListener('abort', () => r()));
+      return { frames: [] };
+    });
+    const c = new Realtime({
+      endpoints: { http: 'http://fake' },
+      transports: ['http'],
+      token: mintToken('alice'),
+      connectTimeoutMs: 0,
+      transportOverrides: { request: http },
+    });
+    clients.push(c);
+    await c.connect();
+    const room = c.topic('rooms/1');
+    await room.subscribe().ready;
+    await until(() => bodies.length >= 3);
+    expect(room.values('read').get('bob')?.data).toBe('m1');
+    // No stream events yet, so the stream part starts from the oldest; state resumes from the version.
+    expect(bodies[1]).toMatchObject({ start: StartAt.Oldest, stateAfter: { epoch: EPOCH, seq: 1n } });
+    expect(bodies[2]).toMatchObject({ stateAfter: { epoch: EPOCH, seq: 2n } });
   });
 
   it('refreshes the token once on a 401 AuthExpired', async () => {
