@@ -78,6 +78,11 @@ export interface WireEvent {
   readonly name?: string;
   /** Stable id minted by the topic owner (AiraID); absent from nodes before ADR-001. */
   readonly uid?: Uuid128;
+  /**
+   * State version of a kv or signal event in a topic with several types,
+   * where such events take no sequence number; absent otherwise.
+   */
+  readonly version?: bigint;
 }
 
 /** A right granted by the node: `ops` on the topics `topic` (a pattern) matches. */
@@ -124,6 +129,11 @@ export interface SubscribeBody {
   readonly snapshot?: boolean;
   /** Event types to receive (ADR-001); empty or absent means all. Ignored by nodes before it. */
   readonly types?: readonly DeliveryClass[];
+  /**
+   * Long-poll of a topic with several types: the last `SubAck.stateLatest`
+   * applied. The node then returns only the kv and signal changes after it.
+   */
+  readonly stateAfter?: Cursor;
 }
 
 export interface PollBody {
@@ -196,6 +206,8 @@ export interface SubAck {
   readonly snapshotFollows: boolean;
   /** Event types the topic's rule allows (ADR-001); empty from older nodes. */
   readonly deliveries: readonly DeliveryClass[];
+  /** Latest state version (epoch, version) of a topic with several types; absent otherwise. */
+  readonly stateLatest?: Cursor;
 }
 
 export interface Gap {

@@ -357,16 +357,19 @@ export class PollSession implements Session {
     const types = e.wantedTypes();
     e.wireTypes = types;
     e.retype = false;
-    if (e.received) return { topic, start: StartAt.After, cursor: e.received, onGap, snapshot: true, types };
-    if (e.latest) return { topic, start: StartAt.After, cursor: e.latest, onGap, snapshot: true, types };
-    // An empty Durable topic: everything it will hold is new to us.
-    if (!e.isState) return { topic, start: StartAt.Oldest, onGap, snapshot: true, types };
+    // Topics with several types: kv and signal changes resume from the state version.
+    const stateAfter = e.stateLatest;
+    const base = { topic, onGap, snapshot: true, types, stateAfter };
+    if (e.received) return { ...base, start: StartAt.After, cursor: e.received };
+    if (e.latest) return { ...base, start: StartAt.After, cursor: e.latest };
+    // An empty Durable topic, or a room with no stream events yet: everything it will hold is new to us.
+    if (!e.isState || stateAfter) return { ...base, start: StartAt.Oldest };
     // An empty state topic has no cursor to poll after, so every other poll asks for a fresh snapshot.
-    return { topic, start: StartAt.Latest, onGap, snapshot: recheck, types };
+    return { ...base, start: StartAt.Latest, snapshot: recheck };
   }
 
   private afterRead(e: TopicEntry): void {
-    e.poll.emptyState = e.isState && !e.received && !e.latest;
+    e.poll.emptyState = e.isState && !e.received && !e.latest && !e.stateLatest;
   }
 
   // ---------------------------------------------------------------- http

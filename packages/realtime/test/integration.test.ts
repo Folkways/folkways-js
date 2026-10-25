@@ -108,10 +108,10 @@ for (const transport of ['websocket', 'http'] as const) {
       expect(sub.deliveries).toEqual(['kv']);
 
       await bob.topic(topic).publish('location', { lat: 2 }, { delivery: 'kv', key: 'driver-2', ttlMs: 60_000 });
-      await until(() => alice.topic(topic).values().size === 2, 8_000, 'two values');
+      await until(() => alice.topic(topic).values('location').size === 2, 8_000, 'two values');
       await bob.topic(topic).publish('location', null, { delivery: 'kv', key: 'driver-1', remove: true });
-      await until(() => alice.topic(topic).values().size === 1, 8_000, 'delete applied');
-      expect([...alice.topic(topic).values().keys()]).toEqual(['driver-2']);
+      await until(() => alice.topic(topic).values('location').size === 1, 8_000, 'delete applied');
+      expect([...alice.topic(topic).values('location').keys()]).toEqual(['driver-2']);
     });
 
     it('reports Forbidden for topics without a rule or right', async () => {
@@ -166,6 +166,49 @@ for (const transport of ['websocket', 'http'] as const) {
       await until(() => got.length === 1, 8_000, 'replay after gap');
       expect(got).toEqual(['kept']);
     });
+
+    it('carries messages, read receipts and typing in one room (rooms/* in the seeds)', async () => {
+      const topic = `rooms/${uniq()}`;
+      const alice = await open('alice', opts);
+      const room = alice.topic(topic);
+      const all: Message[] = [];
+      const sub = room.subscribe((m) => void all.push(m));
+      await sub.ready;
+      expect(sub.deliveries).toEqual(['stream', 'kv', 'signal']);
+      const inbox: Message[] = [];
+      const carol = await open('carol', opts);
+      await carol.topic(topic).subscribe((m) => void inbox.push(m), { types: ['stream'] }).ready;
+
+      const bob = await open('bob', opts);
+      const msg = await bob.topic(topic).publish('message', { text: 'hi' });
+      const read = await bob.topic(topic).publish('read', { upTo: msg.uid }, { delivery: 'kv' });
+      await bob.topic(topic).publish('typing', { on: true }, { delivery: 'signal' });
+      expect(msg.uid).toMatch(/^[0-9a-f]{32}$/);
+      expect(msg.cursor!.seq).toBe(1n);
+      expect(read.cursor).toBeUndefined();
+      expect(read.uid).toMatch(/^[0-9a-f]{32}$/);
+
+      await until(() => all.length === 3, 8_000, 'message, receipt and signal');
+      expect(all.map((m) => [m.name, m.delivery, m.publisher])).toEqual([
+        ['message', 'stream', 'bob'],
+        ['read', 'kv', 'bob'],
+        ['typing', 'signal', 'bob'],
+      ]);
+      expect(room.values('read').get('bob')!.data).toEqual({ upTo: msg.uid });
+      expect(room.values('typing').get('bob')!.data).toEqual({ on: true });
+
+      // A later receipt arrives as a change, over long-poll too.
+      await bob.topic(topic).publish('read', { upTo: 'later' }, { delivery: 'kv' });
+      await until(() => (room.values('read').get('bob')?.data as { upTo: string }).upTo === 'later', 8_000, 'second receipt');
+
+      // The inbox asked for stream events only.
+      await new Promise((r) => setTimeout(r, 300));
+      expect(inbox.map((m) => m.name)).toEqual(['message']);
+
+      // The rule fixes each event's type, and read receipts belong to their publisher.
+      await expect(bob.topic(topic).publish('typing', { on: true }, { delivery: 'stream' })).rejects.toMatchObject({ code: Code.ClassMismatch });
+      await expect(alice.topic(topic).publish('read', { upTo: 'x' }, { delivery: 'kv', key: 'bob' })).rejects.toMatchObject({ code: Code.Forbidden });
+    });
   });
 }
 
@@ -178,8 +221,8 @@ live('ephemeral signals', () => {
     expect(sub.deliveries).toEqual(['signal']);
     const bob = await open('bob');
     void bob.topic(topic).publish('typing', { typing: true }, { delivery: 'signal' });
-    await until(() => alice.topic(topic).values().get('bob'), 8_000, 'signal');
-    expect(alice.topic(topic).values().get('bob')!.data).toEqual({ typing: true });
+    await until(() => alice.topic(topic).values('typing').get('bob'), 8_000, 'signal');
+    expect(alice.topic(topic).values('typing').get('bob')!.data).toEqual({ typing: true });
     // publish() on an Ephemeral topic still gets a receipt.
     await expect(bob.topic(topic).publish('typing', { typing: false }, { delivery: 'signal' })).resolves.toBeUndefined();
   });

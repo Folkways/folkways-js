@@ -80,8 +80,13 @@ typesArray():Uint8Array|null {
   return offset ? new Uint8Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
 }
 
+stateAfter(obj?:Cursor):Cursor|null {
+  const offset = this.bb!.__offset(this.bb_pos, 20);
+  return offset ? (obj || new Cursor()).__init(this.bb_pos + offset, this.bb!) : null;
+}
+
 static startSubscribe(builder:flatbuffers.Builder) {
-  builder.startObject(8);
+  builder.startObject(9);
 }
 
 static addTopic(builder:flatbuffers.Builder, topicOffset:flatbuffers.Offset) {
@@ -126,6 +131,10 @@ static createTypesVector(builder:flatbuffers.Builder, data:DeliveryClass[]):flat
 
 static startTypesVector(builder:flatbuffers.Builder, numElems:number) {
   builder.startVector(1, numElems, 1);
+}
+
+static addStateAfter(builder:flatbuffers.Builder, stateAfterOffset:flatbuffers.Offset) {
+  builder.addFieldStruct(8, stateAfterOffset, 0);
 }
 
 static endSubscribe(builder:flatbuffers.Builder):flatbuffers.Offset {
