@@ -42,6 +42,7 @@ describe('client packets', () => {
         onGap: OnGap.Fail,
         snapshot: false,
         types: [DeliveryClass.Durable],
+        stateAfter: { epoch: BIG, seq: 12n },
       },
     },
     { type: 'unsubscribe', topic: { name: 'chat/lobby' } },
@@ -95,6 +96,7 @@ describe('server packets', () => {
     delivery: DeliveryClass.LastValue,
     name: 'location',
     uid: { hi: BIG, lo: 3n },
+    version: 41n,
   });
   const msgs: ServerMsg[] = [
     { type: 'ping', nonce: 1n, tsMs: 2 },
@@ -133,6 +135,7 @@ describe('server packets', () => {
       latest: undefined,
       snapshotFollows: false,
       deliveries: [DeliveryClass.Durable, DeliveryClass.LastValue, DeliveryClass.Ephemeral],
+      stateLatest: { epoch: BIG, seq: 41n },
     },
     {
       type: 'gap',
@@ -162,7 +165,7 @@ describe('server packets', () => {
     const [d] = decodeServerPacket(
       encodeServerPacket([{ corr: 0n, msg: { type: 'deliver', topicId: 4n, delivery: DeliveryClass.Durable, replayed: false, events: [old] } }]),
     );
-    expect(d!.msg).toMatchObject({ events: [{ delivery: DeliveryClass.Unspecified, name: undefined, uid: undefined }] });
+    expect(d!.msg).toMatchObject({ events: [{ delivery: DeliveryClass.Unspecified, name: undefined, uid: undefined, version: undefined }] });
     const [w] = decodeServerPacket(encodeServerPacket([{ corr: 1n, msg: { ...(msgs[4] as Extract<ServerMsg, { type: 'welcome' }>), segmentId: '', environment: '', capabilities: [] } }]));
     expect(w!.msg).toMatchObject({ segmentId: '', environment: '', capabilities: [] });
   });

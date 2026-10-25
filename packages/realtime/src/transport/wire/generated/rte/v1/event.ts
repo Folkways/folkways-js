@@ -119,8 +119,13 @@ uid(obj?:Uuid128):Uuid128|null {
   return offset ? (obj || new Uuid128()).__init(this.bb_pos + offset, this.bb!) : null;
 }
 
+version():bigint {
+  const offset = this.bb!.__offset(this.bb_pos, 32);
+  return offset ? this.bb!.readUint64(this.bb_pos + offset) : BigInt('0');
+}
+
 static startEvent(builder:flatbuffers.Builder) {
-  builder.startObject(14);
+  builder.startObject(15);
 }
 
 static addTopicId(builder:flatbuffers.Builder, topicId:bigint) {
@@ -201,6 +206,10 @@ static addName(builder:flatbuffers.Builder, nameOffset:flatbuffers.Offset) {
 
 static addUid(builder:flatbuffers.Builder, uidOffset:flatbuffers.Offset) {
   builder.addFieldStruct(13, uidOffset, 0);
+}
+
+static addVersion(builder:flatbuffers.Builder, version:bigint) {
+  builder.addFieldInt64(14, version, BigInt('0'));
 }
 
 static endEvent(builder:flatbuffers.Builder):flatbuffers.Offset {

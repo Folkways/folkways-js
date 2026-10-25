@@ -60,6 +60,7 @@ function encodeSubscribe(b: Builder, s: SubscribeBody): Offset {
   fb.Subscribe.addOnGap(b, s.onGap ?? fb.OnGap.FromOldest);
   fb.Subscribe.addSnapshot(b, s.snapshot ?? true);
   if (types) fb.Subscribe.addTypes(b, types);
+  if (s.stateAfter) fb.Subscribe.addStateAfter(b, fb.Cursor.createCursor(b, s.stateAfter.epoch, s.stateAfter.seq));
   return fb.Subscribe.endSubscribe(b);
 }
 
@@ -191,6 +192,7 @@ function decodeEvent(e: fb.Event | null, total: number): WireEvent {
   const uid = e.uid();
   const uidHi = uid?.hi() ?? 0n;
   const uidLo = uid?.lo() ?? 0n;
+  const version = e.version();
   return {
     topicId: e.topicId(),
     epoch: e.epoch(),
@@ -206,6 +208,7 @@ function decodeEvent(e: fb.Event | null, total: number): WireEvent {
     delivery: e.delivery(),
     name: name === null || name === '' ? undefined : name,
     uid: uidHi === 0n && uidLo === 0n ? undefined : { hi: uidHi, lo: uidLo },
+    version: version === 0n ? undefined : version,
   };
 }
 
@@ -337,6 +340,7 @@ function decodeServerBody(f: fb.ServerFrame, total: number): ServerMsg {
         latest: cursorOf(b.latest()),
         snapshotFollows: b.snapshotFollows(),
         deliveries: decodeDeliveries(b.deliveriesLength(), (i) => b.deliveries(i), total),
+        stateLatest: cursorOf(b.stateLatest()),
       };
     }
     case B.Gap: {

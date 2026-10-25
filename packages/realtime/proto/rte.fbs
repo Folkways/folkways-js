@@ -149,6 +149,10 @@ table Event {
   name: string;
   // Stable id minted by the topic owner (AiraID); survives node restarts.
   uid: Uuid128;
+  // ADR-001: in a topic with several types, kv and signal events take no
+  // sequence number; they carry the topic's state version instead, which
+  // HTTP long-poll resumes from (Subscribe.state_after). 0 otherwise.
+  version: ulong;
 }
 
 // A right the node granted: operations on the topics a pattern matches.
@@ -240,6 +244,10 @@ table Subscribe {
   snapshot: bool = true;
   // ADR-001: the event types this subscriber receives; empty means all.
   types: [DeliveryClass];
+  // ADR-001: the state version (epoch and Event.version) of the last kv or
+  // signal event seen in a topic with several types. HTTP long-poll then
+  // returns only state changed after it; without it, a snapshot.
+  state_after: Cursor;
 }
 
 table Unsubscribe {
@@ -315,6 +323,10 @@ table SubAck {
   snapshot_follows: bool;
   // ADR-001: the event types the topic's rule allows.
   deliveries: [DeliveryClass];
+  // ADR-001: in a topic with several types, the latest state version
+  // (epoch and Event.version) when this answer was made. A poller sends
+  // it back as Subscribe.state_after once it has applied the answer.
+  state_latest: Cursor;
 }
 
 table Gap {

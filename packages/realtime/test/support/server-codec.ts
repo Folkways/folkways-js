@@ -48,6 +48,7 @@ function events(b: B, evs: readonly WireEvent[], create: (b: B, offs: number[]) 
     if (e.delivery) fb.Event.addDelivery(b, e.delivery);
     if (name) fb.Event.addName(b, name);
     if (e.uid) fb.Event.addUid(b, fb.Uuid128.createUuid128(b, e.uid.hi, e.uid.lo));
+    if (e.version) fb.Event.addVersion(b, e.version);
     return fb.Event.endEvent(b);
   });
   return create(b, offs);
@@ -149,6 +150,7 @@ function body(b: B, m: ServerMsg): [fb.ServerBody, number] {
       cursorField(b, fb.SubAck.addLatest, m.latest);
       fb.SubAck.addSnapshotFollows(b, m.snapshotFollows);
       if (deliveries) fb.SubAck.addDeliveries(b, deliveries);
+      cursorField(b, fb.SubAck.addStateLatest, m.stateLatest);
       return [S.SubAck, fb.SubAck.endSubAck(b)];
     }
     case 'gap':
@@ -209,6 +211,7 @@ function subscribe(s: fb.Subscribe): SubscribeBody {
     onGap: s.onGap(),
     snapshot: s.snapshot(),
     types: Array.from(s.typesArray() ?? []),
+    stateAfter: cur(s.stateAfter()),
   };
 }
 
