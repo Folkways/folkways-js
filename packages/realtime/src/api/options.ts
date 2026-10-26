@@ -10,6 +10,7 @@ import {
   type StoreCipher,
   authUrlProvider,
   memoryStore,
+  publishableKeyProvider,
 } from '../engine';
 import { Code } from '../shared/codes';
 import { RealtimeError } from '../shared/errors';
@@ -30,11 +31,17 @@ export interface RealtimeOptions {
    */
   token?: TokenSource;
   /**
-   * Shorthand for a token provider: your backend's endpoint that trades its
-   * API key for a short-lived token. POSTed `{ reason }`; answers `{ token }`
-   * JSON or the token as text.
+   * Shorthand for a token provider: your backend's endpoint that signs a
+   * short-lived token with the segment's signing key. POSTed `{ reason }`;
+   * answers `{ token }` JSON or the token as text.
    */
   authUrl?: string;
+  /**
+   * A publishable key (`rte_pk_…`) for read-only apps without a backend: the
+   * client trades it at the node (`POST /v1/token`) for anonymous tokens that
+   * may only subscribe and read history. Give this, `token` or `authUrl`.
+   */
+  publishableKey?: string;
   /** Extra headers for `authUrl` (e.g. your app's session), or a function returning them. */
   authHeaders?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
   /** Transports in order of preference. Default `['websocket', 'http']`. */
@@ -138,22 +145,33 @@ const positive = (v: number | undefined, d: number, name: string): number => {
 
 export function resolveOptions(o: RealtimeOptions): ResolvedOptions {
   if (!o) throw invalid('options are required');
+  const fromUrl = o.url ? endpointsFromUrl(o.url) : {};
+  const endpoints = { ...fromUrl, ...(o.endpoints ?? {}) };
+  if (!endpoints.websocket && !endpoints.http) throw invalid('give options.url or options.endpoints');
+  const sources = [o.token, o.authUrl, o.publishableKey].filter((s) => s !== undefined).length;
+  if (sources > 1) throw invalid('give one of options.token, options.authUrl or options.publishableKey');
   let token: TokenSource;
   if (o.token !== undefined) {
     if (typeof o.token !== 'string' && typeof o.token !== 'function') {
       throw invalid('options.token must be a token string or a function returning one');
     }
     if (typeof o.token === 'string' && o.token.length === 0) throw invalid('options.token is empty');
-    if (o.authUrl !== undefined) throw invalid('give options.token or options.authUrl, not both');
     token = o.token;
   } else if (typeof o.authUrl === 'string' && o.authUrl.length > 0) {
     token = authUrlProvider(o.authUrl, o.authHeaders, o.fetch);
+  } else if (o.publishableKey !== undefined) {
+    if (typeof o.publishableKey !== 'string' || !o.publishableKey.startsWith('rte_pk_')) {
+      throw invalid(
+        typeof o.publishableKey === 'string' && o.publishableKey.startsWith('rte_sk_')
+          ? 'secret API keys no longer exist and never belong in an app; sign tokens on your server and use authUrl'
+          : 'options.publishableKey must be a publishable key (rte_pk_…)',
+      );
+    }
+    if (!endpoints.http) throw invalid('options.publishableKey needs the node\'s HTTP endpoint (options.url or endpoints.http)');
+    token = publishableKeyProvider(endpoints.http, o.publishableKey, o.fetch);
   } else {
-    throw invalid('give options.token (a token or a provider) or options.authUrl');
+    throw invalid('give options.token (a token or a provider), options.authUrl or options.publishableKey');
   }
-  const fromUrl = o.url ? endpointsFromUrl(o.url) : {};
-  const endpoints = { ...fromUrl, ...(o.endpoints ?? {}) };
-  if (!endpoints.websocket && !endpoints.http) throw invalid('give options.url or options.endpoints');
   const transports = o.transports ?? ['websocket', 'http'];
   if (transports.length === 0 || transports.some((t) => t !== 'websocket' && t !== 'http')) {
     throw invalid('options.transports must list "websocket" and/or "http"');

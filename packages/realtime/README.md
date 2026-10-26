@@ -13,7 +13,7 @@ import { Folkways, isRealtimeError } from '@folkways/realtime';
 
 const client = new Folkways.Realtime({
   url: 'https://rte.example.com',   // wss://…/v1/ws and https://…/v1/*
-  authUrl: '/api/rte-token',        // your backend trades its API key for a short-lived token
+  authUrl: '/api/rte-token',        // your backend signs a short-lived token (see Server side)
 });
 client.connection.on('change', ({ current }) => setStatus(current));
 
@@ -128,6 +128,7 @@ chatRoom.memberOps();                  // ['subscribe', 'publish', 'signal', 'se
 - `client.connection.state`: `idle`, `connecting`, `connected`, `reconnecting`, `offline` (down for `offlineAfterMs`, default 2 min), `failed` (a fatal error; call `connect()` again, usually after `updateToken()`) and `closed`.
 - Reconnects with backoff and jitter (0.5 s to 30 s); the browser coming online or the tab becoming visible skips the wait. Falls back from WebSocket to HTTP long-poll after two failed opens, and moves back when WebSocket works again.
 - `token` takes a string or a provider `({ reason }) => token`, with `reason` `'initial'`, `'expiring'` or `'rejected'`; `authUrl` is the shorthand. Tokens are refreshed before they expire and never logged.
+- `publishableKey: 'rte_pk_…'` is for read-only apps without a backend, such as a public scoreboard or tracking page: the client trades the key at the node for anonymous tokens that may only subscribe and read history. Anyone can copy a key from an app, so it grants nothing that isn't public.
 - `client.updateToken(token)`: the same identity keeps its subscriptions; another identity reconnects, ends every subscription with `IdentityChanged` and wipes the old identity's local data.
 - `connect({ segment })` fails locally with `SegmentMismatch` when the token is for another segment.
 - Every failure is a `RealtimeError { code, codeName, retry, retryAfterMs, topic, local }`; codes are in `Code`.
@@ -158,15 +159,21 @@ The `Store` interface is five methods (`get`, `set`, `delete`, `keys(prefix)`, `
 
 ## Server side
 
+Your backend signs each user's token with one of the segment's signing keys (dashboard → segment → Signing keys). Signing happens in process: minting a token makes no network call, and the private key never leaves your server.
+
 ```ts
 import { Folkways } from '@folkways/realtime/server';
 
-const rte = new Folkways.Rest({ apiKey: process.env.RTE_SECRET_KEY!, url: 'https://rte.example.com' });
+const rte = new Folkways.Rest({
+  url: 'https://rte.example.com',
+  segment: process.env.RTE_SEGMENT!,                       // the segment's id
+  signingKey: { kid: 'backend-2026-10', privateKey: process.env.RTE_PRIVATE_KEY! },
+});
 const { token } = await rte.createToken({ identity: 'user:42', capabilities: [{ topics: 'chat/*', ops: ['subscribe', 'publish', 'signal'] }] });
-await rte.publish('chat/45', 'notice', { text: 'Payment received' });
+await rte.publish('chat/45', 'notice', { text: 'Payment received' }); // as `server`, with its own signed token
 ```
 
-`Rest` refuses to run with a secret key in a browser.
+`privateKey` is the PKCS#8 PEM the dashboard showed once (Ed25519 or P-256), or the shared secret of an HS256 key. Tokens live at most 15 minutes. `Rest` refuses to run in a browser. There are no secret API keys: `rte_sk_` keys were removed, and `Rest` refuses an API key in place of a signing key.
 
 ## Endpoints for a local dev node
 
