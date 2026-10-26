@@ -13,7 +13,8 @@ import { KEYS, ScopedStore, memoryStore, scopePrefix } from './store';
 import { packetize } from './packets';
 import { type OutboundPublish, PublishQueue } from './publish-queue';
 import { SubscriptionRegistry, type TopicListener } from './subscriptions';
-import { TokenManager, authUrlProvider, peekJwt } from './token';
+import { TokenManager, authUrlProvider, peekJwt, publishableKeyProvider } from './token';
+import { resolveOptions } from '../api/options';
 
 describe('Backoff', () => {
   it('grows exponentially with full jitter, capped, floored at retry_after', () => {
@@ -74,6 +75,34 @@ describe('TokenManager', () => {
     expect(await p({ reason: 'expiring' })).toBe('tok-text');
     next = reply(403, 'text/plain', 'no');
     await expect(p({ reason: 'rejected' })).rejects.toMatchObject({ code: Code.AuthRequired, local: true });
+  });
+
+  it('trades a publishable key at the node for anonymous tokens, keeping the node\'s refusal code', async () => {
+    const calls: { url: string; headers: Record<string, string>; body: string }[] = [];
+    let next = { status: 200, body: { token: 'anon-tok', kind: 'anonymous', identity: null } as Record<string, unknown> };
+    const fetchFn = async (url: string, init: { headers: Record<string, string>; body: Uint8Array }) => {
+      calls.push({ url, headers: init.headers, body: new TextDecoder().decode(init.body) });
+      return {
+        status: next.status,
+        headers: { get: () => 'application/json' },
+        arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(next.body)).buffer as ArrayBuffer,
+      };
+    };
+    const p = publishableKeyProvider('https://rte.example.com/', 'rte_pk_web.abc', fetchFn);
+    expect(await p({ reason: 'initial' })).toBe('anon-tok');
+    expect(calls[0]).toMatchObject({ url: 'https://rte.example.com/v1/token', headers: { authorization: 'Bearer rte_pk_web.abc' }, body: '{}' });
+    next = { status: 403, body: { code: Code.Suspended, error: 'Suspended', message: 'api key paused' } };
+    await expect(p({ reason: 'expiring' })).rejects.toMatchObject({ code: Code.Suspended, message: expect.stringContaining('api key paused') });
+  });
+
+  it('takes one token source, and never a secret API key', () => {
+    const base = { url: 'https://rte.example.com' };
+    expect(resolveOptions({ ...base, publishableKey: 'rte_pk_web.abc' }).engine.token).toBeTypeOf('function');
+    expect(() => resolveOptions({ ...base, publishableKey: 'rte_sk_backend.abc' })).toThrow(/sign tokens on your server/);
+    expect(() => resolveOptions({ ...base, publishableKey: 'nope' })).toThrow(/rte_pk_/);
+    expect(() => resolveOptions({ ...base, publishableKey: 'rte_pk_web.abc', token: 't' })).toThrow(/one of/);
+    expect(() => resolveOptions({ ...base, authUrl: '/t', token: 't' })).toThrow(/one of/);
+    expect(() => resolveOptions({ endpoints: { websocket: 'wss://rte.example.com/v1/ws' }, publishableKey: 'rte_pk_web.abc' })).toThrow(/HTTP endpoint/);
   });
 
   it('reports provider failures as AuthRequired', async () => {

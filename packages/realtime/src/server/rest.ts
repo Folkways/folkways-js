@@ -1,20 +1,24 @@
 import { deliveryCode, encodePayload } from '../api/message';
 import { toReceipt } from '../api/topic';
 import type { ContentTypeName, Delivery, Permission, PublishReceipt } from '../api/types';
-import { VERSION } from '../api/version';
 import { Code } from '../shared/codes';
 import { RealtimeError } from '../shared/errors';
 import { parse128, random128 } from '../shared/random';
 import { assertTopic } from '../shared/topic';
 import { AckMode, type FetchLike, HttpTransport, type PublishBody, decodeServerPacket, encodeClientPacket } from '../transport';
+import { type Signer, type SigningKey, importSigner, signJwt } from './sign';
 
 export interface RestOptions {
-  /** A secret (`rte_sk_…`) or publishable (`rte_pk_…`) API key. Keep secret keys on your server. */
-  apiKey: string;
   /** Base URL of the node's HTTP port, e.g. `https://rte.example.com`. */
   url: string;
-  /** Identity this server publishes as (secret keys). Default `server`. */
+  /** The segment's id (a UUID, from the dashboard). Every token names it. */
+  segment: string;
+  /** One of the segment's signing keys, with its private half. Tokens are signed here, never by the node. */
+  signingKey: SigningKey;
+  /** Identity this server publishes as. Default `server`. */
   identity?: string;
+  /** Rights of this server's own token, used by `publish()`. Default: publish on every topic. */
+  capabilities?: readonly Permission[];
   /** fetch implementation, for runtimes without a global one. */
   fetch?: FetchLike;
   /** Request timeout (ms). Default 10 000. */
@@ -24,10 +28,11 @@ export interface RestOptions {
 export interface CreateTokenOptions {
   /** Who the token is for. Required unless `kind` is `anonymous`. */
   identity?: string;
+  /** Default `user`. */
   kind?: 'user' | 'agent' | 'service' | 'anonymous';
-  /** Rights for the token, each within the key's. Default: all of the key's. */
+  /** Rights for the token. Default: none, so the token can only connect. */
   capabilities?: readonly Permission[];
-  /** Lifetime (ms). Default 600 000; the node caps it at 15 minutes. */
+  /** Lifetime (ms). Default 600 000; at most 15 minutes, the longest the node accepts. */
   ttlMs?: number;
 }
 
@@ -51,6 +56,15 @@ export interface RestPublishOptions {
 
 /** Refresh the server's own token this long before it expires. */
 const REFRESH_LEAD_MS = 60_000;
+const DEFAULT_TTL_MS = 600_000;
+/** The longest token lifetime the node accepts. */
+const MAX_TTL_MS = 900_000;
+/** The longest `sub` the node accepts, in UTF-8 bytes. */
+const MAX_IDENTITY_BYTES = 256;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SERVER_RIGHTS: readonly Permission[] = [{ topics: '>', ops: ['publish'] }];
+
+const invalid = (message: string) => new RealtimeError(Code.InvalidArgument, { message, local: true });
 
 function isBrowser(): boolean {
   const g = globalThis as { window?: unknown; document?: unknown };
@@ -58,11 +72,17 @@ function isBrowser(): boolean {
 }
 
 /**
- * The backend side of Folkways: mints short-lived tokens for your users
- * and publishes over HTTP without keeping a connection.
+ * The backend side of Folkways: signs short-lived tokens for your users with
+ * one of the segment's signing keys, and publishes over HTTP without keeping
+ * a connection. Signing happens in process; minting a token makes no network
+ * call. There are no secret API keys (ADR-008).
  *
  *   import { Folkways } from '@folkways/realtime/server';
- *   const rte = new Folkways.Rest({ apiKey: process.env.RTE_SECRET_KEY, url: 'https://rte.example.com' });
+ *   const rte = new Folkways.Rest({
+ *     url: 'https://rte.example.com',
+ *     segment: process.env.RTE_SEGMENT!,
+ *     signingKey: { kid: 'backend-2026-10', privateKey: process.env.RTE_PRIVATE_KEY! },
+ *   });
  *   const { token } = await rte.createToken({ identity: 'user:42', capabilities: [{ topics: 'chat/*', ops: ['subscribe', 'publish'] }] });
  *
  * Member lists and DMs (`rte.members`, `rte.dm`) arrive with the node's endpoints for them.
@@ -70,63 +90,65 @@ function isBrowser(): boolean {
 export class Rest {
   private readonly http: HttpTransport;
   private readonly base: string;
+  private signer?: Promise<Signer>;
   private own?: { token: string; expiresAt: number };
   private ownInflight?: Promise<string>;
 
   constructor(private readonly opts: RestOptions) {
-    if (!opts || typeof opts.apiKey !== 'string' || opts.apiKey.length === 0) {
-      throw new RealtimeError(Code.InvalidArgument, { message: 'Rest needs an apiKey', local: true });
+    if (!opts) throw invalid('Rest needs options');
+    if ((opts as { apiKey?: unknown }).apiKey !== undefined) {
+      throw invalid('apiKey was removed: secret API keys no longer exist (ADR-008). Pass segment and signingKey: { kid, privateKey } instead');
     }
-    if (opts.apiKey.startsWith('rte_sk_') && isBrowser()) {
-      throw new RealtimeError(Code.InvalidArgument, {
-        message: 'a secret API key must never reach a browser; mint tokens on your server and use authUrl in the client',
-        local: true,
-      });
+    if (isBrowser()) {
+      throw invalid('Rest signs tokens with a private key and must never run in a browser; mint tokens on your server and use authUrl in the client');
     }
     if (typeof opts.url !== 'string' || !/^https?:\/\//.test(opts.url)) {
-      throw new RealtimeError(Code.InvalidArgument, { message: 'Rest needs the node\'s HTTP url (http:// or https://)', local: true });
+      throw invalid('Rest needs the node\'s HTTP url (http:// or https://)');
+    }
+    if (typeof opts.segment !== 'string' || !UUID.test(opts.segment)) throw invalid('Rest needs the segment id (a UUID)');
+    const key = opts.signingKey;
+    if (!key || typeof key.kid !== 'string' || key.kid.length === 0) throw invalid('Rest needs signingKey.kid');
+    if (typeof key.privateKey !== 'string' || key.privateKey.trim().length === 0) throw invalid('Rest needs signingKey.privateKey');
+    if (key.privateKey.trim().startsWith('rte_')) {
+      throw invalid('signingKey.privateKey is an API key; give the private key of a signing key (ADR-008)');
     }
     this.base = opts.url.replace(/\/+$/, '');
     this.http = new HttpTransport(opts.fetch);
   }
 
-  /** Trades the API key for a short-lived token (`POST /v1/token`). */
+  /** Signs a short-lived token for one identity, in process. */
   async createToken(req: CreateTokenOptions = {}): Promise<IssuedToken> {
-    const f = this.fetchFn();
-    const body = JSON.stringify({
-      sub: req.identity,
-      kind: req.kind,
-      cap: req.capabilities?.map((c) => ({ topic: c.topics, ops: c.ops })),
-      ttl_secs: req.ttlMs !== undefined ? Math.max(1, Math.ceil(req.ttlMs / 1000)) : undefined,
-    });
-    const res = await this.withTimeout((signal) =>
-      f(`${this.base}/v1/token`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${this.opts.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json', 'X-Client': `folkways-js/${VERSION}` },
-        body: new TextEncoder().encode(body),
-        signal,
-      }),
-    );
-    const text = new TextDecoder().decode(await res.arrayBuffer());
-    let json: Record<string, unknown> = {};
-    try {
-      json = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-    } catch {
-      /* a proxy answered */
+    const kind = req.kind ?? 'user';
+    let identity: string | null = null;
+    if (kind === 'anonymous') {
+      if (req.identity !== undefined) throw invalid('an anonymous token has no identity');
+    } else {
+      const sub = req.identity;
+      if (typeof sub !== 'string' || sub.length === 0) throw invalid('identity is required unless kind is anonymous');
+      if (new TextEncoder().encode(sub).length > MAX_IDENTITY_BYTES) throw invalid(`identity is longer than ${MAX_IDENTITY_BYTES} bytes`);
+      if (sub.startsWith('anon:')) throw invalid('identity must not start with anon:, which the node reserves');
+      identity = sub;
     }
-    if (res.status < 200 || res.status >= 300) {
-      throw new RealtimeError(typeof json.code === 'number' ? json.code : Code.Unavailable, {
-        message: typeof json.message === 'string' ? json.message : `HTTP ${res.status} from /v1/token`,
-      });
+    const capabilities = req.capabilities ?? [];
+    for (const c of capabilities) {
+      if (!c || typeof c.topics !== 'string' || c.topics.length === 0 || !Array.isArray(c.ops) || c.ops.length === 0) {
+        throw invalid('every capability needs topics and at least one op');
+      }
     }
-    const caps = Array.isArray(json.capabilities) ? (json.capabilities as { topic: string; ops: string[] }[]) : [];
-    return Object.freeze({
-      token: String(json.token),
-      expiresAt: Number(json.expires_at_ms),
-      identity: typeof json.identity === 'string' ? json.identity : null,
-      kind: String(json.kind ?? ''),
-      capabilities: caps.map((c) => ({ topics: c.topic, ops: c.ops as Permission['ops'] })),
-    });
+    const ttlMs = Math.min(Math.max(req.ttlMs ?? DEFAULT_TTL_MS, 1_000), MAX_TTL_MS);
+    const now = Math.floor(Date.now() / 1000);
+    const exp = now + Math.ceil(ttlMs / 1000);
+    const claims: Record<string, unknown> = {
+      seg: this.opts.segment,
+      ...(identity !== null ? { sub: identity } : {}),
+      kind,
+      cap: capabilities.map((c) => ({ topic: c.topics, ops: [...c.ops] })),
+      iat: now,
+      exp,
+      jti: crypto.randomUUID(),
+    };
+    const token = await signJwt(await this.signerFor(), claims);
+    return Object.freeze({ token, expiresAt: exp * 1000, identity, kind, capabilities: capabilities.map((c) => ({ topics: c.topics, ops: [...c.ops] })) });
   }
 
   /** Publishes one event over HTTP and resolves with the node's receipt. Retrying with the same idempotencyKey is safe. */
@@ -169,10 +191,10 @@ export class Rest {
     throw new RealtimeError(Code.Unavailable, { message: `HTTP ${reply.status} without a receipt`, topic, retryAfterMs: reply.retryAfterMs });
   }
 
-  /** This server's own token, minted from the key and cached until shortly before it expires. */
+  /** This server's own `service` token, signed here and cached until shortly before it expires. */
   private async ownToken(): Promise<string> {
     if (this.own && this.own.expiresAt - Date.now() > REFRESH_LEAD_MS) return this.own.token;
-    this.ownInflight ??= this.createToken({ identity: this.opts.identity ?? 'server', kind: 'service' })
+    this.ownInflight ??= this.createToken({ identity: this.opts.identity ?? 'server', kind: 'service', capabilities: this.opts.capabilities ?? SERVER_RIGHTS, ttlMs: MAX_TTL_MS })
       .then((t) => {
         this.own = { token: t.token, expiresAt: t.expiresAt };
         return t.token;
@@ -183,10 +205,13 @@ export class Rest {
     return this.ownInflight;
   }
 
-  private fetchFn(): FetchLike {
-    const f = this.opts.fetch ?? (globalThis as { fetch?: FetchLike }).fetch?.bind(globalThis);
-    if (!f) throw new RealtimeError(Code.TransportUnavailable, { message: 'no fetch in this runtime (pass options.fetch)', local: true });
-    return f;
+  /** The imported signing key; a key that fails to import is retried on the next call. */
+  private signerFor(): Promise<Signer> {
+    this.signer ??= importSigner(this.opts.signingKey).catch((e: unknown) => {
+      this.signer = undefined;
+      throw e;
+    });
+    return this.signer;
   }
 
   private async withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {

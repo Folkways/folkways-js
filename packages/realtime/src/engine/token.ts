@@ -92,6 +92,40 @@ export function authUrlProvider(
 }
 
 /**
+ * A token provider that trades a publishable key (`rte_pk_…`) for an
+ * anonymous, read-only token at the node's `POST /v1/token`. A refusal keeps
+ * the node's code, so a paused key surfaces as `Suspended` and a revoked one
+ * as `AuthInvalid`.
+ */
+export function publishableKeyProvider(httpBase: string, key: string, fetchFn: FetchLike | undefined): TokenProvider {
+  const url = `${httpBase.replace(/\/+$/, '')}/v1/token`;
+  return async () => {
+    const g = (globalThis as { fetch?: FetchLike }).fetch;
+    const f = fetchFn ?? g?.bind(globalThis);
+    if (!f) throw new RealtimeError(Code.AuthRequired, { message: 'publishableKey needs fetch (pass options.fetch)', local: true });
+    const res = await f(url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' },
+      body: new TextEncoder().encode('{}'),
+    });
+    const text = new TextDecoder().decode(await res.arrayBuffer());
+    let json: { token?: unknown; code?: unknown; message?: unknown } = {};
+    try {
+      json = text ? (JSON.parse(text) as typeof json) : {};
+    } catch {
+      /* a proxy answered */
+    }
+    if (res.status < 200 || res.status >= 300) {
+      throw new RealtimeError(typeof json.code === 'number' ? json.code : Code.AuthRequired, {
+        message: typeof json.message === 'string' ? json.message : `token exchange answered HTTP ${res.status}`,
+      });
+    }
+    if (typeof json.token !== 'string') throw new RealtimeError(Code.AuthRequired, { message: 'token exchange answered without a token', local: true });
+    return json.token;
+  };
+}
+
+/**
  * Hands out tokens: caches the current one, refreshes it through the
  * provider (one call at a time) and never logs it.
  */
