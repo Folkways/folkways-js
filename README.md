@@ -9,9 +9,6 @@ network drops, refreshes tokens and resumes every subscription where it left off
 [API reference](https://docs.folkways.io/docs/js-sdk/reference/client-options) ·
 [Example app](https://github.com/Folkways/folkways-js/tree/main/apps/react-example)
 
-> **Pre-release.** The package is not on npm yet. Until the first release,
-> [build it from source](https://github.com/Folkways/folkways-js/blob/main/docs/DEVELOPMENT.md#use-a-local-build-in-your-app).
-
 ## Features
 
 - **Topics with three delivery types:** ordered, replayable `stream` events; shared `kv` state; short-lived `signal`s.
