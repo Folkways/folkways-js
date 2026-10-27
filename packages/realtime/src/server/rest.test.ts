@@ -122,7 +122,7 @@ describe('Folkways.Rest', () => {
   it('reports a key it cannot use when signing', async () => {
     const pub = '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA\n-----END PUBLIC KEY-----';
     await expect(rest({ signingKey: { kid: 'k', privateKey: pub } }).createToken({ identity: 'a' })).rejects.toMatchObject({
-      message: expect.stringContaining('public key'),
+      message: expect.stringContaining('is a public key; give the private key (the one the dashboard showed once'),
     });
     await expect(rest({ signingKey: { kid: 'k', alg: 'EdDSA', privateKey: SECRET } }).createToken({ identity: 'a' })).rejects.toMatchObject({
       message: expect.stringContaining('not a PEM'),

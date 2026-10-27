@@ -70,7 +70,7 @@ export async function importSigner(key: SigningKey): Promise<Signer> {
     return make('HS256', cryptoKey);
   }
   if (material.includes('PUBLIC KEY')) {
-    throw invalid('signingKey.privateKey is a public key; give the private key (the one Control Tower showed once, or your .pem)');
+    throw invalid('signingKey.privateKey is a public key; give the private key (the one the dashboard showed once, or your .pem)');
   }
   if (material.includes('BEGIN EC PRIVATE KEY')) {
     throw invalid('convert the key to PKCS#8 first: openssl pkcs8 -topk8 -nocrypt -in key.ec.pem -out key.pem');
