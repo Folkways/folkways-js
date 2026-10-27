@@ -1,5 +1,12 @@
 import { type StreamCloseEvent, type StreamConnection, type StreamTransport, TransportError } from './types';
 
+/**
+ * An event handler declared with method syntax, so its parameter is checked
+ * bivariantly: implementations whose handlers take a narrower event (`ws`'s
+ * `Event`, the DOM's `MessageEvent`) still fit.
+ */
+type Handler<E> = { handle(ev: E): void }['handle'];
+
 /** The subset of the WebSocket API the transport uses (browser, Node 22+, `ws`, React Native). */
 export interface WebSocketLike {
   binaryType: string;
@@ -7,10 +14,10 @@ export interface WebSocketLike {
   readonly bufferedAmount?: number;
   send(data: ArrayBufferView | ArrayBuffer): void;
   close(code?: number, reason?: string): void;
-  onopen: ((ev: unknown) => void) | null;
-  onmessage: ((ev: { data: unknown }) => void) | null;
-  onerror: ((ev: unknown) => void) | null;
-  onclose: ((ev: { code?: number; reason?: string; wasClean?: boolean }) => void) | null;
+  onopen: Handler<unknown> | null;
+  onmessage: Handler<{ data: unknown }> | null;
+  onerror: Handler<unknown> | null;
+  onclose: Handler<{ code?: number; reason?: string; wasClean?: boolean }> | null;
 }
 
 export type WebSocketConstructor = new (url: string) => WebSocketLike;

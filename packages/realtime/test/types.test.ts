@@ -1,7 +1,8 @@
 import { describe, expectTypeOf, it } from 'vitest';
+import { WebSocket as NodeWebSocket } from 'ws';
 
-import { defineTopic } from '../src';
-import type { Message, MessageOf, PublishReceipt, Realtime, Topic } from '../src';
+import { Folkways, defineTopic } from '../src';
+import type { Message, MessageOf, PublishReceipt, Realtime, RealtimeOptions, Topic, WebSocketConstructor } from '../src';
 
 type Chat = { message: { text: string }; typing: { on: boolean }; read: { upTo: string } };
 
@@ -34,9 +35,22 @@ function definedTopicsType(client: Realtime): void {
   defineTopic<Chat>()('chat/{room}', { events: { message: 'stream' } });
 }
 
+// The README's Node 20 setup: `webSocket: (await import('ws')).WebSocket`.
+async function webSocketImplementations(): Promise<void> {
+  new Folkways.Realtime({ url: 'https://rte.example.com', authUrl: '/api/rte-token', webSocket: NodeWebSocket });
+  const options: RealtimeOptions = { url: 'https://rte.example.com', webSocket: (await import('ws')).WebSocket };
+  expectTypeOf(options.webSocket).toEqualTypeOf<WebSocketConstructor | undefined>();
+  expectTypeOf(NodeWebSocket).toExtend<WebSocketConstructor>();
+  expectTypeOf(globalThis.WebSocket).toExtend<WebSocketConstructor>();
+}
+
 describe('public types', () => {
   it('narrow data by event name (checked at compile time)', () => {
     expectTypeOf(narrowsByEventName).toBeFunction();
     expectTypeOf(definedTopicsType).toBeFunction();
+  });
+
+  it('take the ws package and the global WebSocket as options.webSocket (checked at compile time)', () => {
+    expectTypeOf(webSocketImplementations).toBeFunction();
   });
 });
