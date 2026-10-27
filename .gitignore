@@ -136,3 +136,5 @@ dist
 .pnp.*
 .turbo/
 .DS_Store
+# Copied from the root README when the package is packed
+packages/realtime/README.md
