@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Folkways/folkways-js/blob/main/docs/SECURITY.md
+    about: Never report security problems in a public issue. Email support@folkways.io as the security policy explains.
+  - name: Documentation
+    url: https://docs.folkways.io
+    about: Guides, concepts and the API reference.
+  - name: Account, billing or dashboard help
+    url: https://github.com/Folkways/folkways-js/blob/main/docs/SUPPORT.md#account-billing-and-dashboard-questions
+    about: Questions that aren't about the SDK go to support@folkways.io.

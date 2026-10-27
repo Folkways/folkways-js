@@ -2,13 +2,13 @@ import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } fro
 import { Folkways, type Realtime } from '@folkways/realtime';
 import './App.css';
 
-// Dev node defaults (rte `make dev`). Get a token with `make -s token SUB=alice` in the rte repo.
-const ENDPOINTS = {
-  websocket: import.meta.env.VITE_RTE_WS ?? 'ws://127.0.0.1:8080/v1/ws',
-  http: import.meta.env.VITE_RTE_HTTP ?? 'http://127.0.0.1:3000',
-};
-// Until the node carries several event types per topic (ADR-001, rte#11-#15),
-// the room's messages and its typing signals live on two topics.
+// The node URL from your segment's Connect tab in the Folkways dashboard.
+const NODE_URL = import.meta.env.VITE_RTE_URL ?? '';
+// Optional: your backend's token endpoint. Without it, paste a token your backend issued.
+const AUTH_URL = import.meta.env.VITE_RTE_AUTH_URL;
+const TOKEN_DOCS = 'https://docs.folkways.io/docs/js-sdk/server-tokens';
+// A topic rule has one class, so the room's messages (Durable) and its typing
+// signals (Ephemeral) live on two topics.
 const ROOM = 'chat/lobby';
 const TYPING = 'typing/lobby';
 
@@ -94,21 +94,41 @@ function App() {
     e.preventDefault();
     setError(undefined);
     try {
-      setClient(await Folkways.connect({ endpoints: ENDPOINTS, token: token.trim() }));
+      const auth = AUTH_URL ? { authUrl: AUTH_URL } : { token: token.trim() };
+      setClient(await Folkways.connect({ url: NODE_URL, ...auth }));
     } catch (err) {
       setError((err as Error).message);
     }
   }
 
   if (client) return <Chat client={client} />;
+  if (!NODE_URL) {
+    return (
+      <div className="login">
+        <h1>Folkways Realtime</h1>
+        <p>
+          Set <code>VITE_RTE_URL</code> in <code>.env.local</code> to the node URL from your segment&apos;s{' '}
+          <strong>Connect</strong> tab in the Folkways dashboard, then restart the dev server.
+        </p>
+      </div>
+    );
+  }
   return (
     <form className="login" onSubmit={connect}>
       <h1>Folkways Realtime</h1>
-      <p>
-        Paste a dev token (<code>make -s token SUB=alice</code> in the rte repo).
-      </p>
-      <textarea value={token} onChange={(e) => setToken(e.target.value)} rows={4} />
-      <button type="submit" disabled={!token.trim()}>
+      {AUTH_URL ? (
+        <p>
+          Gets a token from <code>{AUTH_URL}</code>.
+        </p>
+      ) : (
+        <>
+          <p>
+            Paste a token issued by your backend (<a href={TOKEN_DOCS}>how to issue tokens</a>).
+          </p>
+          <textarea value={token} onChange={(e) => setToken(e.target.value)} rows={4} />
+        </>
+      )}
+      <button type="submit" disabled={!AUTH_URL && !token.trim()}>
         Connect
       </button>
       {error && <div className="error">{error}</div>}

@@ -1,11 +1,10 @@
 #!/bin/sh
-# Regenerates the FlatBuffers bindings from the RTE schema.
+# Regenerates the FlatBuffers bindings from the wire schema in ./proto.
 #
-# The schema's source of truth is proto/rte.fbs in the rte repository; a copy
-# is vendored in ./proto so the package builds on its own. Needs flatc 24.3.25
-# (the version the node's Rust bindings and the `flatbuffers` npm runtime use).
+# Needs flatc 24.3.25, the version the `flatbuffers` npm runtime uses
+# (set FLATC if it isn't on PATH). RTE_PROTO copies a newer schema in first.
 #
-#   RTE_PROTO=../../../rte/proto/rte.fbs pnpm proto
+#   pnpm proto
 set -eu
 cd "$(dirname "$0")/.."
 FLATC="${FLATC:-flatc}"
