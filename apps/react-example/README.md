@@ -1,17 +1,45 @@
 # React example
 
-A small chat on `chat/lobby` with a typing indicator on `typing/lobby`, built on `@folkways/realtime`.
+A small chat on `chat/lobby` with a typing indicator on `typing/lobby`, built with `@folkways/realtime` and React's
+`useSyncExternalStore`.
+
+## Before you start
+
+In the [Folkways dashboard](https://docs.folkways.io/docs/js-sdk/prerequisites), set up a segment with:
+
+- a signing key, used by your backend to issue tokens;
+- two topic rules: `chat/>` with class **Durable** and operations `subscribe`, `publish`; and `typing/>` with class
+  **Ephemeral** and operations `subscribe`, `signal`.
+
+Your backend issues each user a token for these topics. See
+[Issue tokens from your backend](https://docs.folkways.io/docs/js-sdk/server-tokens).
 
 ## Run it
 
-1. Start an RTE node (in the `rte` repo): `make dev`.
-2. Mint a dev token: `make -s token SUB=alice`.
-3. Here: `pnpm --filter @folkways/realtime build && pnpm --filter @folkways/react-example dev`, open the page and paste the token.
+Create `apps/react-example/.env.local`:
 
-Open a second tab with a token for another identity (`SUB=bob`) to chat between them.
+```bash
+# The node URL from your segment's Connect tab
+VITE_RTE_URL=https://rte.example.com
 
-Optional environment variables (`.env.local`): `VITE_RTE_WS`, `VITE_RTE_HTTP`, `VITE_RTE_TOKEN`.
+# Optional: your backend's token endpoint. Without it, the app asks you to paste a token.
+VITE_RTE_AUTH_URL=https://api.example.com/api/realtime-token
+```
 
-The token is pasted by hand only because this is a local demo. In an application, your backend mints short-lived tokens (see `Folkways.Rest` in `@folkways/realtime/server`) and the client passes `authUrl: '/api/rte-token'`.
+Then, from the repository root:
 
-Messages and typing use two topics because a local node before the ADR-001 release carries one delivery type per topic. With it, both are events of one room: `room.publish('typing', { on: true }, { delivery: 'signal' })`.
+```bash
+pnpm install
+pnpm --filter @folkways/realtime build
+pnpm --filter @folkways/react-example dev
+```
+
+Open the page and connect. Open a second browser window signed in as another user to chat between them.
+
+If your token endpoint is on another origin than the dev server, it must allow CORS requests from it.
+
+## What to look at
+
+- `src/App.tsx`: one client, `topic.messages` for the message list (with sending status and retry),
+  `topic.values('typing')` for who is typing, and `client.connection` for the connection state.
+- The guide [Using it with React](https://docs.folkways.io/docs/js-sdk/react) explains each part.
