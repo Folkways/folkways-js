@@ -54,6 +54,7 @@
     "lint": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "proto": "sh scripts/gen-proto.sh",
     "clean": "rm -rf dist",
+    "prepack": "node -e \"require('node:fs').copyFileSync('../../README.md', 'README.md')\"",
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
