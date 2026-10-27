@@ -98,4 +98,5 @@ The full documentation is at **[docs.folkways.io](https://docs.folkways.io)**:
 
 ## License
 
-MIT
+Licensed under the [Apache License, Version 2.0](https://github.com/Folkways/folkways-js/blob/main/LICENSE). See [NOTICE](https://github.com/Folkways/folkways-js/blob/main/NOTICE) for attributions.
+The license does not grant permission to use the Folkways name or logo.

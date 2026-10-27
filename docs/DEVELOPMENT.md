@@ -133,6 +133,8 @@ npm install /path/to/folkways-js/packages/realtime/folkways-realtime-<version>.t
 
 Packing copies the repository's `README.md` into the package, so npm shows the same page as GitHub. Don't edit
 `packages/realtime/README.md`; it is generated and ignored by git.
+`packages/realtime/LICENSE` and `packages/realtime/NOTICE` are copies of the root files, so the package ships
+them; change both copies together.
 
 ## Wire protocol bindings
 

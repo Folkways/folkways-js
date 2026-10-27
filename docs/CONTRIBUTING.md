@@ -79,5 +79,9 @@ A maintainer will review it. We may ask for changes; push them to the same branc
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the MIT license, like the rest of the
-project.
+By contributing, you agree that your contributions are licensed under the Apache License, Version 2.0,
+like the rest of the project (section 5 of the license).
+
+Sign off every commit with `git commit -s`. The `Signed-off-by` line certifies the
+[Developer Certificate of Origin](https://developercertificate.org/): that you wrote the change, or
+otherwise have the right to submit it under this license.
