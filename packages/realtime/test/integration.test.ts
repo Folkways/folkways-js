@@ -1,9 +1,6 @@
 /**
- * End-to-end tests against a real RTE node.
- *
- *   RTE_BIN=../../../rte/target/debug/realtime-transport-engine pnpm test:integration
- *
- * Skipped when RTE_BIN is unset.
+ * End-to-end tests against a real Folkways node, run by the Folkways team.
+ * `RTE_BIN` names the node binary; the tests are skipped when it is unset.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 

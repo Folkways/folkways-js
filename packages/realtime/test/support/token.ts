@@ -12,7 +12,7 @@ export interface Capability {
 
 const b64url = (s: string | Buffer) => Buffer.from(s).toString('base64url');
 
-/** Mints a dev token like `rte-token` does. */
+/** Signs a test token for the integration tests' node. */
 export function mintToken(
   sub: string,
   opts: { ttlSecs?: number; cap?: Capability[]; seg?: string; secret?: string; kid?: string; now?: number } = {},
