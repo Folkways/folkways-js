@@ -59,6 +59,13 @@ export function localError(code: number, message?: string, cause?: unknown): Rea
   return new RealtimeError(code, { message, local: true, cause });
 }
 
+// Every copy of the class carries this brand on its prototype: each entry
+// point (`@folkways/realtime`, `/server`) bundles its own `RealtimeError`, and
+// a project may load both the ESM and the CJS build.
+const BRAND = Symbol.for('folkways.RealtimeError');
+Object.defineProperty(RealtimeError.prototype, BRAND, { value: true });
+
+/** True for a `RealtimeError` from any entry point or build, unlike `instanceof`. */
 export function isRealtimeError(e: unknown): e is RealtimeError {
-  return e instanceof RealtimeError;
+  return typeof e === 'object' && e !== null && (e as Record<symbol, unknown>)[BRAND] === true;
 }
