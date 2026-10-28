@@ -176,7 +176,8 @@ jobs:
         env:
           DIST_TAG: ${{ needs.build.outputs.dist-tag }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} # only until trusted publishing is set up
-        run: npm publish release/*.tgz --access public --provenance --tag "$DIST_TAG"
+        # The ./ makes npm read a file; "release/x.tgz" alone is GitHub shorthand for a repository.
+        run: npm publish ./release/*.tgz --access public --provenance --tag "$DIST_TAG"
 
       - name: Publish the GitHub release
         run: |
