@@ -65,7 +65,8 @@ The SDK is bundled with [tsup](https://tsup.egoist.dev) into `packages/realtime/
 | ESM and CommonJS, with type declarations | `index.mjs`, `index.js`, `index.d.ts`, and the same for `server` and `stores/*` | `tsup.base.config.ts` |
 | Browser script bundle (minified, global `Folkways`) | `index.global.js` | `tsup.iife.config.ts` |
 
-Every build targets ES2020 and includes source maps. `pnpm clean` removes `dist/`.
+Every build targets ES2020. `pnpm build` makes the build that is published, without source maps; `pnpm dev` adds
+them. `pnpm clean` removes `dist/`.
 
 ## Develop with watch mode
 
@@ -133,6 +134,9 @@ npm install /path/to/folkways-js/packages/realtime/folkways-realtime-<version>.t
 
 Packing copies the repository's `README.md` into the package, so npm shows the same page as GitHub. Don't edit
 `packages/realtime/README.md`; it is generated and ignored by git.
+`pnpm --filter @folkways/realtime pack:release` packs the file a release publishes instead: its `package.json` has no
+`scripts` or `devDependencies`, and packing fails if anything besides the build, `README.md`, `LICENSE` and `NOTICE`
+would go in.
 `packages/realtime/LICENSE` and `packages/realtime/NOTICE` are copies of the root files, so the package ships
 them; change both copies together.
 

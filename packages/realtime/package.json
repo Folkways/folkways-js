@@ -39,7 +39,6 @@
   },
   "files": [
     "dist",
-    "proto",
     "README.md",
     "LICENSE",
     "NOTICE"
@@ -49,13 +48,14 @@
   },
   "scripts": {
     "build": "tsup --config tsup.base.config.ts && tsup --config tsup.iife.config.ts",
-    "dev": "tsup --config tsup.base.config.ts --watch",
+    "dev": "tsup --config tsup.base.config.ts --watch --sourcemap",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run test/integration.test.ts",
     "lint": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "proto": "sh scripts/gen-proto.sh",
     "clean": "rm -rf dist",
+    "pack:release": "node scripts/pack-release.mjs",
     "prepack": "node -e \"require('node:fs').copyFileSync('../../README.md', 'README.md')\"",
     "prepublishOnly": "pnpm build"
   },
