@@ -37,6 +37,7 @@ packages/realtime/        the SDK, published as @folkwaysio/realtime
   test/                   engine, layer, type, entry-point and integration tests
   proto/rte.fbs           the wire schema
 apps/react-example/       a chat built on the SDK
+apps/token-server/        an Express backend that signs the example's tokens
 docs/                     these guides
 ```
 
@@ -74,8 +75,9 @@ them. `pnpm clean` removes `dist/`.
 pnpm dev
 ```
 
-This rebuilds the SDK on every change (ESM and CommonJS only) and starts the example app's dev server, which picks
-up the new build. To watch the SDK alone: `pnpm --filter @folkwaysio/realtime dev`.
+This rebuilds the SDK on every change (ESM and CommonJS only) and starts the example app's dev server and the
+example token server, which pick up the new build. Build the SDK once first (`pnpm --filter @folkwaysio/realtime
+build`) so the token server finds it when it starts. To watch the SDK alone: `pnpm --filter @folkwaysio/realtime dev`.
 
 ## Test
 
@@ -96,6 +98,7 @@ The tests use [Vitest](https://vitest.dev):
 | Types | `test/types.test.ts` | The public types, checked by the compiler |
 | Entry points | `test/entry-points.test.ts` | Errors and exports across `@folkwaysio/realtime` and `/server` |
 | Integration | `test/integration.test.ts` | The SDK against a real Folkways node. Run by the Folkways team; skipped elsewhere |
+| Token server | `apps/token-server/test/` | The example token server's endpoints, sign-in and settings |
 
 Add tests next to the code you change. Engine behaviour is easiest to test with the fake transport in
 `test/support/fake-transport.ts`.
@@ -106,12 +109,14 @@ Add tests next to the code you change. Engine behaviour is easiest to test with 
 pnpm lint
 ```
 
-For the SDK this type-checks the sources and the tests with `tsc`; for the example app it runs ESLint.
+For the SDK and the token server this type-checks the sources and the tests with `tsc`; for the example app it runs
+ESLint.
 
 ## Try your changes in the example app
 
-The example in `apps/react-example` uses the workspace's build of the SDK. You need a segment in the Folkways
-dashboard and a token from your backend; its [README](../apps/react-example/README.md) explains both. Then:
+The example in `apps/react-example` uses the workspace's build of the SDK, and gets its tokens from the example
+token server in `apps/token-server`. You need a segment in the Folkways dashboard with a signing key; the
+[token server's README](../apps/token-server/README.md) explains how to set both up. Then:
 
 ```bash
 pnpm dev
@@ -177,6 +182,7 @@ Releases are managed with [Changesets](https://github.com/changesets/changesets)
 | --- | --- |
 | `pnpm: command not found` | Run `corepack enable`, or install pnpm 10.20 |
 | `Unsupported engine` or odd syntax errors | Use Node.js 20.19 or newer (`nvm use`) |
+| The example app says it can't reach the token server | Start it (`pnpm --filter @folkwaysio/token-server dev`), or check its `.env` |
 | The example app doesn't see your SDK change | Make sure `pnpm dev` (or the SDK's `dev`) is running, or rebuild with `pnpm --filter @folkwaysio/realtime build` |
 | A test fails on an import | Check the layer rule above: `api` → `engine` → `transport` → `shared` |
 | `need flatc 24.3.25` | Install that exact version, or point `FLATC` at it |

@@ -4,9 +4,11 @@ import './App.css';
 
 // The node URL from your segment's Connect tab in the Folkways dashboard.
 const NODE_URL = import.meta.env.VITE_RTE_URL ?? '';
-// Optional: your backend's token endpoint. Without it, paste a token your backend issued.
+// Optional: your own backend's token endpoint. Without it, the app signs in
+// through the example token server (apps/token-server), proxied at /api.
 const AUTH_URL = import.meta.env.VITE_RTE_AUTH_URL;
-const TOKEN_DOCS = 'https://docs.folkways.io/docs/js-sdk/server-tokens';
+const EXAMPLE_API = '/api';
+const TOKEN_SERVER_DOWN = "Can't reach the token server. Start it as apps/token-server/README.md explains.";
 // A topic rule has one class, so the room's messages (Durable) and its typing
 // signals (Ephemeral) live on two topics.
 const ROOM = 'chat/lobby';
@@ -15,7 +17,7 @@ const TYPING = 'typing/lobby';
 type RoomEvents = { message: { text: string } };
 type TypingEvents = { typing: { typing: boolean } };
 
-function Chat({ client }: { client: Realtime }) {
+function Chat({ client, leave, leaveLabel }: { client: Realtime; leave: () => void; leaveLabel: string }) {
   const room = client.topic<RoomEvents>(ROOM);
   const typingTopic = client.topic<TypingEvents>(TYPING);
   const messages = useSyncExternalStore(room.messages.subscribe, room.messages.getSnapshot);
@@ -64,6 +66,9 @@ function Chat({ client }: { client: Realtime }) {
       <header>
         <strong>{ROOM}</strong> · {identity} · <span className={`state ${state}`}>{state}</span>
         {transport && <span className="transport"> via {transport}</span>}
+        <button className="leave" onClick={leave}>
+          {leaveLabel}
+        </button>
       </header>
       <ul className="messages">
         {messages.map((m) => (
@@ -83,25 +88,66 @@ function Chat({ client }: { client: Realtime }) {
   );
 }
 
+/** Calls the example token server. A 5xx is the dev server's proxy failing to reach it. */
+async function exampleApi(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<{ identity?: string | null; error?: string }> {
+  const res = await fetch(`${EXAMPLE_API}${path}`, {
+    method,
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (res.status >= 500) throw new Error(TOKEN_SERVER_DOWN);
+  const json = res.status === 204 ? {} : ((await res.json().catch(() => ({}))) as { identity?: string | null; error?: string });
+  if (!res.ok) throw new Error(json.error ?? `The token server answered HTTP ${res.status}`);
+  return json;
+}
+
 function App() {
-  const [token, setToken] = useState(import.meta.env.VITE_RTE_TOKEN ?? '');
   const [client, setClient] = useState<Realtime>();
   const [error, setError] = useState<string>();
+  // Who is signed in to the example token server: undefined while asking it, null when nobody.
+  const [identity, setIdentity] = useState<string | null>();
+  const [name, setName] = useState('');
 
   useEffect(() => () => void client?.close(), [client]);
+
+  useEffect(() => {
+    if (AUTH_URL) return;
+    exampleApi('GET', '/session')
+      .then((s) => setIdentity(s.identity ?? null))
+      .catch((err: Error) => {
+        setIdentity(null);
+        setError(err.message);
+      });
+  }, []);
 
   async function connect(e: FormEvent) {
     e.preventDefault();
     setError(undefined);
     try {
-      const auth = AUTH_URL ? { authUrl: AUTH_URL } : { token: token.trim() };
-      setClient(await Folkways.connect({ url: NODE_URL, ...auth }));
+      if (!AUTH_URL && !identity) {
+        const session = await exampleApi('POST', '/session', { name: name.trim() });
+        if (!session.identity) throw new Error(session.error ?? 'Sign-in failed');
+        setIdentity(session.identity);
+      }
+      // The SDK POSTs to authUrl for a token now, and again before it expires.
+      setClient(await Folkways.connect({ url: NODE_URL, authUrl: AUTH_URL ?? `${EXAMPLE_API}/realtime-token` }));
     } catch (err) {
       setError((err as Error).message);
     }
   }
 
-  if (client) return <Chat client={client} />;
+  async function leave() {
+    setClient(undefined);
+    if (AUTH_URL) return;
+    try {
+      await exampleApi('DELETE', '/session');
+      setIdentity(null);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  if (client) return <Chat client={client} leave={() => void leave()} leaveLabel={AUTH_URL ? 'Disconnect' : 'Sign out'} />;
   if (!NODE_URL) {
     return (
       <div className="login">
@@ -120,15 +166,25 @@ function App() {
         <p>
           Gets a token from <code>{AUTH_URL}</code>.
         </p>
+      ) : identity === undefined ? (
+        <p>Checking whether you are signed in…</p>
+      ) : identity ? (
+        <p>
+          Signed in as <strong>{identity}</strong>.{' '}
+          <button type="button" className="link" onClick={() => void leave()}>
+            Sign out
+          </button>
+        </p>
       ) : (
         <>
           <p>
-            Paste a token issued by your backend (<a href={TOKEN_DOCS}>how to issue tokens</a>).
+            Sign in with any name. The example token server in <code>apps/token-server</code> signs a token for you
+            with your segment&apos;s signing key.
           </p>
-          <textarea value={token} onChange={(e) => setToken(e.target.value)} rows={4} />
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name, e.g. alice" autoFocus />
         </>
       )}
-      <button type="submit" disabled={!AUTH_URL && !token.trim()}>
+      <button type="submit" disabled={!AUTH_URL && (identity === undefined || (!identity && !name.trim()))}>
         Connect
       </button>
       {error && <div className="error">{error}</div>}

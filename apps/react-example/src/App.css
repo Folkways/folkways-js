@@ -11,9 +11,27 @@
   gap: 0.75rem;
 }
 
-.login textarea {
-  font-family: monospace;
-  font-size: 0.8rem;
+.login input {
+  padding: 0.5rem;
+}
+
+.chat header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+
+.chat header .leave {
+  margin-left: auto;
+}
+
+button.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: #646cff;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .messages {
