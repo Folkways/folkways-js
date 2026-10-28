@@ -8,7 +8,7 @@ export default defineConfig({
   target: 'es2020',
   globalName: 'Folkways',
   dts: false,
-  sourcemap: true,
+  sourcemap: false,
   clean: false,
   minify: true,
   splitting: false,

@@ -1,5 +1,6 @@
 import { defineConfig } from 'tsup';
 
+// The published build has no source maps; `pnpm dev` adds them (--sourcemap).
 export default defineConfig({
   entry: {
     index: 'src/index.ts',
@@ -11,7 +12,7 @@ export default defineConfig({
   format: ['cjs', 'esm'],
   target: 'es2020',
   dts: true,
-  sourcemap: true,
+  sourcemap: false,
   clean: true,
   minify: false,
   splitting: false,

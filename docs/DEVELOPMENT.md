@@ -65,7 +65,8 @@ The SDK is bundled with [tsup](https://tsup.egoist.dev) into `packages/realtime/
 | ESM and CommonJS, with type declarations | `index.mjs`, `index.js`, `index.d.ts`, and the same for `server` and `stores/*` | `tsup.base.config.ts` |
 | Browser script bundle (minified, global `Folkways`) | `index.global.js` | `tsup.iife.config.ts` |
 
-Every build targets ES2020 and includes source maps. `pnpm clean` removes `dist/`.
+Every build targets ES2020. `pnpm build` makes the build that is published, without source maps; `pnpm dev` adds
+them. `pnpm clean` removes `dist/`.
 
 ## Develop with watch mode
 
@@ -133,6 +134,9 @@ npm install /path/to/folkways-js/packages/realtime/folkways-realtime-<version>.t
 
 Packing copies the repository's `README.md` into the package, so npm shows the same page as GitHub. Don't edit
 `packages/realtime/README.md`; it is generated and ignored by git.
+`pnpm --filter @folkways/realtime pack:release` packs the file a release publishes instead: its `package.json` has no
+`scripts` or `devDependencies`, and packing fails if anything besides the build, `README.md`, `LICENSE` and `NOTICE`
+would go in.
 `packages/realtime/LICENSE` and `packages/realtime/NOTICE` are copies of the root files, so the package ships
 them; change both copies together.
 
@@ -151,13 +155,21 @@ Set `FLATC` if `flatc` isn't on your `PATH`.
 
 ## Changesets and releases
 
-Releases are managed with [Changesets](https://github.com/changesets/changesets).
+Releases are managed with [Changesets](https://github.com/changesets/changesets) and made by the
+[Release workflow](../.github/workflows/release.yml).
 
 - **Contributors:** when a change affects users of the package (a fix, a feature, a changed behaviour), run
   `pnpm changeset`, pick the bump (`patch`, `minor` or `major`) and describe the change in a sentence or two. Commit
   the generated file in `.changeset/` with your change. Changes to tests, tooling or these guides don't need one.
-- **Maintainers:** `pnpm version-packages` turns pending changesets into version bumps and changelog entries;
-  `pnpm release` builds the SDK and publishes it to npm.
+- **Maintainers:** to release what has been merged:
+  1. Run `pnpm version-packages`. It turns the pending changesets into a version bump and changelog entries, and
+     updates `src/api/version.ts` to match. Commit the result to `main`, through a pull request if you want a review.
+  2. On GitHub, open **Actions → Release → Run workflow** on `main`. It lints, tests and builds the SDK, packs it with
+     `pack:release`, creates the GitHub release `v<version>` with the package attached and the changelog entries as
+     its notes, and publishes the same package to npm.
+
+  Tick **Dry run** to only build and check the package; the run's summary lists the files it would publish. The
+  workflow refuses to release while changesets are pending, or when the version is already tagged or on npm.
 
 ## Troubleshooting
 

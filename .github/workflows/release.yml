@@ -1,0 +1,184 @@
+# Releases @folkways/realtime: builds and checks the package, creates the GitHub release (tag
+# v<version>) with the package attached, and publishes the same file to npm.
+#
+# It only runs when a maintainer starts it (Actions → Release → Run workflow). Starting a workflow
+# needs write access to the repository, so pull requests, forks and outside contributors can't run
+# it. The npm credentials live in the `release` environment, which only the last job can use.
+#
+# Before running it, merge the version bump: `pnpm version-packages`, review, commit. Tick "dry run"
+# to build and check the package without releasing it (works on any branch).
+#
+# One-time setup:
+# - Settings → Environments → `release`: limit deployment branches to `main`; add required
+#   reviewers if each release should be approved.
+# - First release: @folkways/realtime isn't on npm yet, so trusted publishing can't be set up. Add a
+#   granular npm access token that can publish @folkways packages as the environment secret
+#   NPM_TOKEN.
+# - Then, on npmjs.com, add a trusted publisher to @folkways/realtime (GitHub Actions,
+#   Folkways/folkways-js, workflow release.yml, environment release) and delete NPM_TOKEN.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Dry run (build and check the package, release nothing)
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and check
+    if: github.repository == 'Folkways/folkways-js'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      dist-tag: ${{ steps.version.outputs.dist-tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check the version
+        id: version
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          version=$(node -p "require('./packages/realtime/package.json').version")
+          tag="v$version"
+          case "$version" in
+            *-*) prerelease=true; pre=${version#*-}; dist_tag=${pre%%.*} ;;  # 1.0.0-beta.2 → beta
+            *) prerelease=false; dist_tag=latest ;;
+          esac
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+            echo "dist-tag=$dist_tag"
+          } >> "$GITHUB_OUTPUT"
+
+          problems=()
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            problems+=("Releases are made from main, not $GITHUB_REF_NAME.")
+          fi
+          if [ -n "$(find .changeset -name '*.md' ! -name README.md)" ]; then
+            problems+=("There are unreleased changesets: run pnpm version-packages and merge the result first.")
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            problems+=("Tag $tag exists already: bump the version with pnpm version-packages.")
+          fi
+          if [ -n "$(npm view "@folkways/realtime@$version" version 2> /dev/null)" ]; then
+            problems+=("@folkways/realtime@$version is on npm already. If its GitHub release is still a draft, publish the draft.")
+          fi
+
+          level=error
+          if [ "$DRY_RUN" = true ]; then level=warning; fi
+          for problem in "${problems[@]}"; do echo "::$level::$problem"; done
+          [ "$level" = warning ] || [ "${#problems[@]}" -eq 0 ]
+
+      - run: pnpm --filter @folkways/realtime lint
+      - run: pnpm --filter @folkways/realtime build
+      - run: pnpm --filter @folkways/realtime test
+
+      - name: Pack
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          pnpm --filter @folkways/realtime pack:release "$RUNNER_TEMP/release"
+          {
+            echo "### @folkways/realtime $VERSION"
+            echo '```'
+            tar -tzvf "$RUNNER_TEMP"/release/*.tgz | awk '{ printf "%9s  %s\n", $3, $6 }'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write the release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          changelog=packages/realtime/CHANGELOG.md
+          changes=
+          if [ -f "$changelog" ]; then
+            # The lines under "## <version>", up to the next version.
+            changes=$(awk -v heading="## $VERSION" '$0 == heading { found = 1; next } found && /^## / { exit } found' "$changelog" | sed '/./,$!d')
+          fi
+          if [ -z "$changes" ]; then
+            echo "::warning::$changelog has no entry for $VERSION; the release notes only say how to install it."
+          fi
+          {
+            if [ -n "$changes" ]; then printf '%s\n\n' "$changes"; fi
+            echo '```bash'
+            echo "npm install @folkways/realtime@$VERSION"
+            echo '```'
+          } > "$RUNNER_TEMP/release/notes.md"
+          cat "$RUNNER_TEMP/release/notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+
+  release:
+    name: Release on GitHub and npm
+    needs: build
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: https://www.npmjs.com/package/@folkways/realtime/v/${{ needs.build.outputs.version }}
+    permissions:
+      contents: write # the tag and the GitHub release
+      id-token: write # npm trusted publishing and provenance
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24 # its npm (11.5.1 or newer) supports trusted publishing
+          registry-url: https://registry.npmjs.org
+
+      - name: Create the GitHub release as a draft
+        env:
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          # A draft left by an earlier run that didn't reach npm: start over.
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2> /dev/null)" = true ]; then
+            gh release delete "$TAG" --yes
+          fi
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$TAG" release/*.tgz --draft --target "$GITHUB_SHA" --title "$TAG" \
+            --notes-file release/notes.md "${flags[@]}"
+
+      - name: Publish to npm
+        env:
+          DIST_TAG: ${{ needs.build.outputs.dist-tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} # only until trusted publishing is set up
+        run: npm publish release/*.tgz --access public --provenance --tag "$DIST_TAG"
+
+      - name: Publish the GitHub release
+        run: |
+          gh release edit "$TAG" --draft=false
+          echo "Released $TAG: $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
