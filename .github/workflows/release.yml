@@ -3,7 +3,8 @@
 #
 # It only runs when a maintainer starts it (Actions → Release → Run workflow). Starting a workflow
 # needs write access to the repository, so pull requests, forks and outside contributors can't run
-# it. The npm credentials live in the `release` environment, which only the last job can use.
+# it. npm trusts only the `release` environment of this workflow (trusted publishing, no token),
+# and only the last job runs in it.
 #
 # Before running it, merge the version bump: `pnpm version-packages`, review, commit. Tick "dry run"
 # to build and check the package without releasing it (works on any branch).
@@ -11,11 +12,9 @@
 # One-time setup:
 # - Settings → Environments → `release`: limit deployment branches to `main`; add required
 #   reviewers if each release should be approved.
-# - First release: @folkwaysio/realtime isn't on npm yet, so trusted publishing can't be set up. Add a
-#   granular npm access token that can publish @folkwaysio packages as the environment secret
-#   NPM_TOKEN.
-# - Then, on npmjs.com, add a trusted publisher to @folkwaysio/realtime (GitHub Actions,
-#   Folkways/folkways-js, workflow release.yml, environment release) and delete NPM_TOKEN.
+# - npm publishes through a trusted publisher on @folkwaysio/realtime (npmjs.com → package
+#   Settings): GitHub Actions, Folkways/folkways-js, workflow release.yml, environment release.
+#   Renaming this file or the environment breaks publishing until that's updated to match.
 name: Release
 
 on:
@@ -175,7 +174,6 @@ jobs:
       - name: Publish to npm
         env:
           DIST_TAG: ${{ needs.build.outputs.dist-tag }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} # only until trusted publishing is set up
         # The ./ makes npm read a file; "release/x.tgz" alone is GitHub shorthand for a repository.
         run: npm publish ./release/*.tgz --access public --provenance --tag "$DIST_TAG"
 
