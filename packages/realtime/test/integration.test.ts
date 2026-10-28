@@ -1,6 +1,8 @@
 /**
  * End-to-end tests against a real Folkways node, run by the Folkways team.
  * `RTE_BIN` names the node binary; the tests are skipped when it is unset.
+ * The node reads its segments from a control plane running its dev seed
+ * (see `startNode` in support/rte-node.ts).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 

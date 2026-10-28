@@ -41,8 +41,8 @@ describe('HttpTransport', () => {
     const packet = encodeServerPacket([{ corr: 1n, msg: { type: 'opOk' } }]);
     const { f, seen } = fetchReturning(200, joinLengthPrefixed([packet, packet]));
     const t = new HttpTransport(f);
-    const reply = await t.request('http://node:3000/', '/v1/publish', 'tok', new Uint8Array([9]));
-    expect(seen[0]!.url).toBe('http://node:3000/v1/publish');
+    const reply = await t.request('http://node:9006/', '/v1/publish', 'tok', new Uint8Array([9]));
+    expect(seen[0]!.url).toBe('http://node:9006/v1/publish');
     expect(seen[0]!.headers.Authorization).toBe('Bearer tok');
     expect(seen[0]!.headers['Content-Type']).toBe('application/octet-stream');
     expect(reply.packets).toHaveLength(2);
