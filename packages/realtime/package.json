@@ -10,29 +10,54 @@
   "module": "./dist/index.mjs",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
     },
     "./server": {
-      "types": "./dist/server.d.ts",
-      "import": "./dist/server.mjs",
-      "require": "./dist/server.js"
+      "import": {
+        "types": "./dist/server.d.mts",
+        "default": "./dist/server.mjs"
+      },
+      "require": {
+        "types": "./dist/server.d.ts",
+        "default": "./dist/server.js"
+      }
     },
     "./stores/indexeddb": {
-      "types": "./dist/stores/indexeddb.d.ts",
-      "import": "./dist/stores/indexeddb.mjs",
-      "require": "./dist/stores/indexeddb.js"
+      "import": {
+        "types": "./dist/stores/indexeddb.d.mts",
+        "default": "./dist/stores/indexeddb.mjs"
+      },
+      "require": {
+        "types": "./dist/stores/indexeddb.d.ts",
+        "default": "./dist/stores/indexeddb.js"
+      }
     },
     "./stores/async-storage": {
-      "types": "./dist/stores/async-storage.d.ts",
-      "import": "./dist/stores/async-storage.mjs",
-      "require": "./dist/stores/async-storage.js"
+      "import": {
+        "types": "./dist/stores/async-storage.d.mts",
+        "default": "./dist/stores/async-storage.mjs"
+      },
+      "require": {
+        "types": "./dist/stores/async-storage.d.ts",
+        "default": "./dist/stores/async-storage.js"
+      }
     },
     "./stores/file": {
-      "types": "./dist/stores/file.d.ts",
-      "import": "./dist/stores/file.mjs",
-      "require": "./dist/stores/file.js"
+      "import": {
+        "types": "./dist/stores/file.d.mts",
+        "default": "./dist/stores/file.mjs"
+      },
+      "require": {
+        "types": "./dist/stores/file.d.ts",
+        "default": "./dist/stores/file.js"
+      }
     },
     "./iife": "./dist/index.global.js",
     "./package.json": "./package.json"
