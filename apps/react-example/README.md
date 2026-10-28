@@ -1,6 +1,6 @@
 # React example
 
-A small chat on `chat/lobby` with a typing indicator on `typing/lobby`, built with `@folkways/realtime` and React's
+A small chat on `chat/lobby` with a typing indicator on `typing/lobby`, built with `@folkwaysio/realtime` and React's
 `useSyncExternalStore`.
 
 ## Before you start
@@ -30,8 +30,8 @@ Then, from the repository root:
 
 ```bash
 pnpm install
-pnpm --filter @folkways/realtime build
-pnpm --filter @folkways/react-example dev
+pnpm --filter @folkwaysio/realtime build
+pnpm --filter @folkwaysio/react-example dev
 ```
 
 Open the page and connect. Open a second browser window signed in as another user to chat between them.

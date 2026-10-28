@@ -60,7 +60,7 @@ export function localError(code: number, message?: string, cause?: unknown): Rea
 }
 
 // Every copy of the class carries this brand on its prototype: each entry
-// point (`@folkways/realtime`, `/server`) bundles its own `RealtimeError`, and
+// point (`@folkwaysio/realtime`, `/server`) bundles its own `RealtimeError`, and
 // a project may load both the ESM and the CJS build.
 const BRAND = Symbol.for('folkways.RealtimeError');
 Object.defineProperty(RealtimeError.prototype, BRAND, { value: true });

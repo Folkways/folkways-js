@@ -1,5 +1,5 @@
 /**
- * IndexedDB store for browsers: `@folkways/realtime/stores/indexeddb`.
+ * IndexedDB store for browsers: `@folkwaysio/realtime/stores/indexeddb`.
  *
  *   const client = new Folkways.Realtime({ url, authUrl, store: indexedDbStore() });
  *

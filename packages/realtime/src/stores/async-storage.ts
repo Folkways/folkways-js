@@ -1,5 +1,5 @@
 /**
- * React Native store: `@folkways/realtime/stores/async-storage`.
+ * React Native store: `@folkwaysio/realtime/stores/async-storage`.
  *
  *   import AsyncStorage from '@react-native-async-storage/async-storage';
  *   const client = new Folkways.Realtime({ url, authUrl, store: asyncStorageStore(AsyncStorage) });

@@ -20,7 +20,7 @@ importers:
 
   apps/react-example:
     dependencies:
-      '@folkways/realtime':
+      '@folkwaysio/realtime':
         specifier: workspace:*
         version: link:../../packages/realtime
       react:

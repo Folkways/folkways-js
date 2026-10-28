@@ -11,8 +11,8 @@ Folkways at risk until a fix is out.
 Please include:
 
 - what the problem is and what an attacker could do with it;
-- the affected package and version (`Folkways.version`), and the entry point (`@folkways/realtime`,
-  `@folkways/realtime/server` or a store);
+- the affected package and version (`Folkways.version`), and the entry point (`@folkwaysio/realtime`,
+  `@folkwaysio/realtime/server` or a store);
 - the steps or code to reproduce it, or a proof of concept;
 - how we can reach you for follow-up questions.
 
@@ -27,7 +27,7 @@ While we work on it, please keep the details private, and don't access or change
 
 ## Supported versions
 
-Security fixes go into the latest release of `@folkways/realtime`. Before version 1.0, update to the latest
+Security fixes go into the latest release of `@folkwaysio/realtime`. Before version 1.0, update to the latest
 version to get them.
 
 ## If a key or token leaks

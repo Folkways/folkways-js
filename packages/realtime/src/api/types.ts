@@ -1,5 +1,5 @@
 /**
- * The public types of @folkways/realtime (ADR-001, revision 3).
+ * The public types of @folkwaysio/realtime (ADR-001, revision 3).
  *
  * Written before the implementation and reviewed on their own (FLK-55),
  * because they become a public API on the first npm release. Names follow

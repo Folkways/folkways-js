@@ -1,7 +1,7 @@
 /**
- * @folkways/realtime: the client SDK for the Folkways Realtime Transport Engine.
+ * @folkwaysio/realtime: the client SDK for the Folkways Realtime Transport Engine.
  *
- *   import { Folkways } from '@folkways/realtime';
+ *   import { Folkways } from '@folkwaysio/realtime';
  *   const client = new Folkways.Realtime({ url, authUrl: '/api/rte-token' });
  *   const session = await client.connect();
  *

@@ -1,4 +1,4 @@
-# Releases @folkways/realtime: builds and checks the package, creates the GitHub release (tag
+# Releases @folkwaysio/realtime: builds and checks the package, creates the GitHub release (tag
 # v<version>) with the package attached, and publishes the same file to npm.
 #
 # It only runs when a maintainer starts it (Actions → Release → Run workflow). Starting a workflow
@@ -11,10 +11,10 @@
 # One-time setup:
 # - Settings → Environments → `release`: limit deployment branches to `main`; add required
 #   reviewers if each release should be approved.
-# - First release: @folkways/realtime isn't on npm yet, so trusted publishing can't be set up. Add a
-#   granular npm access token that can publish @folkways packages as the environment secret
+# - First release: @folkwaysio/realtime isn't on npm yet, so trusted publishing can't be set up. Add a
+#   granular npm access token that can publish @folkwaysio packages as the environment secret
 #   NPM_TOKEN.
-# - Then, on npmjs.com, add a trusted publisher to @folkways/realtime (GitHub Actions,
+# - Then, on npmjs.com, add a trusted publisher to @folkwaysio/realtime (GitHub Actions,
 #   Folkways/folkways-js, workflow release.yml, environment release) and delete NPM_TOKEN.
 name: Release
 
@@ -82,8 +82,8 @@ jobs:
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
             problems+=("Tag $tag exists already: bump the version with pnpm version-packages.")
           fi
-          if [ -n "$(npm view "@folkways/realtime@$version" version 2> /dev/null)" ]; then
-            problems+=("@folkways/realtime@$version is on npm already. If its GitHub release is still a draft, publish the draft.")
+          if [ -n "$(npm view "@folkwaysio/realtime@$version" version 2> /dev/null)" ]; then
+            problems+=("@folkwaysio/realtime@$version is on npm already. If its GitHub release is still a draft, publish the draft.")
           fi
 
           level=error
@@ -91,17 +91,17 @@ jobs:
           for problem in "${problems[@]}"; do echo "::$level::$problem"; done
           [ "$level" = warning ] || [ "${#problems[@]}" -eq 0 ]
 
-      - run: pnpm --filter @folkways/realtime lint
-      - run: pnpm --filter @folkways/realtime build
-      - run: pnpm --filter @folkways/realtime test
+      - run: pnpm --filter @folkwaysio/realtime lint
+      - run: pnpm --filter @folkwaysio/realtime build
+      - run: pnpm --filter @folkwaysio/realtime test
 
       - name: Pack
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          pnpm --filter @folkways/realtime pack:release "$RUNNER_TEMP/release"
+          pnpm --filter @folkwaysio/realtime pack:release "$RUNNER_TEMP/release"
           {
-            echo "### @folkways/realtime $VERSION"
+            echo "### @folkwaysio/realtime $VERSION"
             echo '```'
             tar -tzvf "$RUNNER_TEMP"/release/*.tgz | awk '{ printf "%9s  %s\n", $3, $6 }'
             echo '```'
@@ -123,7 +123,7 @@ jobs:
           {
             if [ -n "$changes" ]; then printf '%s\n\n' "$changes"; fi
             echo '```bash'
-            echo "npm install @folkways/realtime@$VERSION"
+            echo "npm install @folkwaysio/realtime@$VERSION"
             echo '```'
           } > "$RUNNER_TEMP/release/notes.md"
           cat "$RUNNER_TEMP/release/notes.md" >> "$GITHUB_STEP_SUMMARY"
@@ -141,7 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: release
-      url: https://www.npmjs.com/package/@folkways/realtime/v/${{ needs.build.outputs.version }}
+      url: https://www.npmjs.com/package/@folkwaysio/realtime/v/${{ needs.build.outputs.version }}
     permissions:
       contents: write # the tag and the GitHub release
       id-token: write # npm trusted publishing and provenance

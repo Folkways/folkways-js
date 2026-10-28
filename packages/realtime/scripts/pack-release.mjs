@@ -1,13 +1,13 @@
 // Packs the SDK as it is released: the release workflow attaches this file to the GitHub release and
-// publishes it to npm. Writes folkways-realtime-<version>.tgz to the directory given (default: the
+// publishes it to npm. Writes folkwaysio-realtime-<version>.tgz to the directory given (default: the
 // current one) and prints its path.
 //
 // The package holds only what apps use: the build in dist/ (without source maps), README.md, LICENSE,
 // NOTICE, and package.json without the fields only this repository uses (scripts, devDependencies).
 // Packing fails if anything else would go in, or if a file that package.json points to is missing.
 //
-//   pnpm --filter @folkways/realtime build
-//   pnpm --filter @folkways/realtime pack:release [directory]
+//   pnpm --filter @folkwaysio/realtime build
+//   pnpm --filter @folkwaysio/realtime pack:release [directory]
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

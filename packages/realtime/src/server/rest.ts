@@ -77,7 +77,7 @@ function isBrowser(): boolean {
  * a connection. Signing happens in process; minting a token makes no network
  * call. There are no secret API keys (ADR-008).
  *
- *   import { Folkways } from '@folkways/realtime/server';
+ *   import { Folkways } from '@folkwaysio/realtime/server';
  *   const rte = new Folkways.Rest({
  *     url: 'https://rte.example.com',
  *     segment: process.env.RTE_SEGMENT!,
