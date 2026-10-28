@@ -1,4 +1,4 @@
-# @folkways/realtime
+# @folkwaysio/realtime
 
 ## 0.1.1
 
@@ -9,7 +9,7 @@
 - 528432b: Fix three issues found while checking the docs against the SDK:
 
   - `webSocket` now accepts `WebSocket` from the `ws` package (and the DOM `WebSocket`) under `strict` TypeScript.
-  - `isRealtimeError` recognises errors from every entry point and build, so it returns `true` for errors thrown by `Rest` from `@folkways/realtime/server`.
+  - `isRealtimeError` recognises errors from every entry point and build, so it returns `true` for errors thrown by `Rest` from `@folkwaysio/realtime/server`.
   - The public-key error from `Rest` now points to the key "the dashboard showed once".
 
 - 158da83: The package is smaller: it no longer ships source maps or the wire schema (`proto/`), only the build, `README.md`, `LICENSE` and `NOTICE`.

@@ -1,7 +1,7 @@
 # Folkways Realtime for JavaScript
 
 Live chat, locations, typing indicators and feeds for web, mobile and Node.js apps.
-`@folkways/realtime` connects your app to Folkways and keeps it in sync: it picks a transport, reconnects after
+`@folkwaysio/realtime` connects your app to Folkways and keeps it in sync: it picks a transport, reconnects after
 network drops, refreshes tokens and resumes every subscription where it left off.
 
 **[Documentation](https://docs.folkways.io/docs/js-sdk)** ·
@@ -22,7 +22,7 @@ network drops, refreshes tokens and resumes every subscription where it left off
 ## Install
 
 ```bash
-npm install @folkways/realtime
+npm install @folkwaysio/realtime
 ```
 
 ## Quick start
@@ -32,7 +32,7 @@ users. [Set up the dashboard](https://docs.folkways.io/docs/js-sdk/prerequisites
 [issue tokens from your backend](https://docs.folkways.io/docs/js-sdk/server-tokens) explain both.
 
 ```ts
-import { Folkways } from '@folkways/realtime';
+import { Folkways } from '@folkwaysio/realtime';
 
 const client = new Folkways.Realtime({
   url: 'https://rte.example.com',  // your node URL, from the segment's Connect tab
@@ -68,12 +68,12 @@ Read more in [Topics and events](https://docs.folkways.io/docs/js-sdk/topics-and
 
 | Import | Use it in |
 | --- | --- |
-| `@folkways/realtime` | Your app: browsers, React Native, Node.js, Deno, Bun |
-| `@folkways/realtime/server` | Your backend only: issues tokens and publishes over HTTP |
-| `@folkways/realtime/stores/indexeddb` | Browsers: keep state across reloads |
-| `@folkways/realtime/stores/async-storage` | React Native: keep state across restarts |
-| `@folkways/realtime/stores/file` | Node.js: keep state in a directory |
-| `@folkways/realtime/iife` | A `<script>` bundle that defines a global `Folkways` |
+| `@folkwaysio/realtime` | Your app: browsers, React Native, Node.js, Deno, Bun |
+| `@folkwaysio/realtime/server` | Your backend only: issues tokens and publishes over HTTP |
+| `@folkwaysio/realtime/stores/indexeddb` | Browsers: keep state across reloads |
+| `@folkwaysio/realtime/stores/async-storage` | React Native: keep state across restarts |
+| `@folkwaysio/realtime/stores/file` | Node.js: keep state in a directory |
+| `@folkwaysio/realtime/iife` | A `<script>` bundle that defines a global `Folkways` |
 
 ## Documentation
 

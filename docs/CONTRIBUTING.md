@@ -20,7 +20,7 @@ Security problems are the exception: never report them in an issue or a pull req
 
 - **Small fixes** (a typo, a clear bug with an obvious fix): open a pull request directly.
 - **Anything larger**, and every change to the public API: open an issue first and describe what you want to change
-  and why. The public API is what `@folkways/realtime` exports, with its types in
+  and why. The public API is what `@folkwaysio/realtime` exports, with its types in
   `packages/realtime/src/api/types.ts`. It is a promise to every app that uses the SDK, so we agree on changes to it
   before any code is written.
 
@@ -59,7 +59,7 @@ A maintainer will review it. We may ask for changes; push them to the same branc
 
 - Never log tokens, keys or payloads, not even at `debug` level.
 - Never put a token in a URL.
-- Code that holds a signing key belongs in `@folkways/realtime/server` only.
+- Code that holds a signing key belongs in `@folkwaysio/realtime/server` only.
 
 **Code**
 

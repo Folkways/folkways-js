@@ -1,5 +1,5 @@
 {
-  "name": "@folkways/react-example",
+  "name": "@folkwaysio/react-example",
   "private": true,
   "version": "0.0.0",
   "license": "Apache-2.0",
@@ -13,7 +13,7 @@
   "dependencies": {
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "@folkways/realtime": "workspace:*"
+    "@folkwaysio/realtime": "workspace:*"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",

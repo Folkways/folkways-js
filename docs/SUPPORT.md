@@ -19,7 +19,7 @@ problem quickly. Include:
   Deno or Bun), and your operating system.
 - **The transport** in use, from `client.session?.transport` (`websocket` or `http`).
 - **Logs**, if you can. Turn them on with `logger: consoleLogger('debug')` (import `consoleLogger` from
-  `@folkways/realtime`). The SDK never logs tokens, but check for personal data before you paste.
+  `@folkwaysio/realtime`). The SDK never logs tokens, but check for personal data before you paste.
 
 ### Never include
 

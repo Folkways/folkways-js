@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
-import { Folkways, type Realtime } from '@folkways/realtime';
+import { Folkways, type Realtime } from '@folkwaysio/realtime';
 import './App.css';
 
 // The node URL from your segment's Connect tab in the Folkways dashboard.

@@ -27,12 +27,12 @@ How to set up this repository, build and bundle the SDK, run the tests and try y
 ## Repository layout
 
 ```text
-packages/realtime/        the SDK, published as @folkways/realtime
+packages/realtime/        the SDK, published as @folkwaysio/realtime
   src/api/                public API: Folkways.Realtime, topics, subscriptions, live views
   src/engine/             sessions, reconnects, tokens, subscriptions, outbox, local store
   src/transport/          WebSocket and HTTP transports, FlatBuffers codec
   src/shared/             codes, errors, cursors, logger, topic names
-  src/server/             @folkways/realtime/server: Rest
+  src/server/             @folkwaysio/realtime/server: Rest
   src/stores/             persistent stores, one entry point each
   test/                   engine, layer, type, entry-point and integration tests
   proto/rte.fbs           the wire schema
@@ -55,7 +55,7 @@ pnpm install
 
 ```bash
 pnpm build                               # everything, through Turborepo
-pnpm --filter @folkways/realtime build   # the SDK only
+pnpm --filter @folkwaysio/realtime build   # the SDK only
 ```
 
 The SDK is bundled with [tsup](https://tsup.egoist.dev) into `packages/realtime/dist/`:
@@ -75,15 +75,15 @@ pnpm dev
 ```
 
 This rebuilds the SDK on every change (ESM and CommonJS only) and starts the example app's dev server, which picks
-up the new build. To watch the SDK alone: `pnpm --filter @folkways/realtime dev`.
+up the new build. To watch the SDK alone: `pnpm --filter @folkwaysio/realtime dev`.
 
 ## Test
 
 ```bash
 pnpm test                                     # builds, then runs every test
-pnpm --filter @folkways/realtime test         # the SDK's tests only
-pnpm --filter @folkways/realtime test:watch   # re-run on change
-pnpm --filter @folkways/realtime exec vitest run test/engine.test.ts   # one file
+pnpm --filter @folkwaysio/realtime test         # the SDK's tests only
+pnpm --filter @folkwaysio/realtime test:watch   # re-run on change
+pnpm --filter @folkwaysio/realtime exec vitest run test/engine.test.ts   # one file
 ```
 
 The tests use [Vitest](https://vitest.dev):
@@ -94,7 +94,7 @@ The tests use [Vitest](https://vitest.dev):
 | Engine | `test/engine.test.ts` | Reconnects, resume, outbox and more, over a fake transport |
 | Layers | `test/layers.test.ts` | The import direction between layers |
 | Types | `test/types.test.ts` | The public types, checked by the compiler |
-| Entry points | `test/entry-points.test.ts` | Errors and exports across `@folkways/realtime` and `/server` |
+| Entry points | `test/entry-points.test.ts` | Errors and exports across `@folkwaysio/realtime` and `/server` |
 | Integration | `test/integration.test.ts` | The SDK against a real Folkways node. Run by the Folkways team; skipped elsewhere |
 
 Add tests next to the code you change. Engine behaviour is easiest to test with the fake transport in
@@ -122,19 +122,19 @@ pnpm dev
 To try the SDK in another project before it is released, pack it and install the package file:
 
 ```bash
-pnpm --filter @folkways/realtime build
+pnpm --filter @folkwaysio/realtime build
 cd packages/realtime
-pnpm pack                     # writes folkways-realtime-<version>.tgz
+pnpm pack                     # writes folkwaysio-realtime-<version>.tgz
 ```
 
 ```bash
 # in your app
-npm install /path/to/folkways-js/packages/realtime/folkways-realtime-<version>.tgz
+npm install /path/to/folkways-js/packages/realtime/folkwaysio-realtime-<version>.tgz
 ```
 
 Packing copies the repository's `README.md` into the package, so npm shows the same page as GitHub. Don't edit
 `packages/realtime/README.md`; it is generated and ignored by git.
-`pnpm --filter @folkways/realtime pack:release` packs the file a release publishes instead: its `package.json` has no
+`pnpm --filter @folkwaysio/realtime pack:release` packs the file a release publishes instead: its `package.json` has no
 `scripts` or `devDependencies`, and packing fails if anything besides the build, `README.md`, `LICENSE` and `NOTICE`
 would go in.
 `packages/realtime/LICENSE` and `packages/realtime/NOTICE` are copies of the root files, so the package ships
@@ -148,7 +148,7 @@ regenerate them after the schema changes, install [flatc](https://github.com/goo
 (the version the `flatbuffers` runtime uses) and run:
 
 ```bash
-pnpm --filter @folkways/realtime proto
+pnpm --filter @folkwaysio/realtime proto
 ```
 
 Set `FLATC` if `flatc` isn't on your `PATH`.
@@ -177,6 +177,6 @@ Releases are managed with [Changesets](https://github.com/changesets/changesets)
 | --- | --- |
 | `pnpm: command not found` | Run `corepack enable`, or install pnpm 10.20 |
 | `Unsupported engine` or odd syntax errors | Use Node.js 20.19 or newer (`nvm use`) |
-| The example app doesn't see your SDK change | Make sure `pnpm dev` (or the SDK's `dev`) is running, or rebuild with `pnpm --filter @folkways/realtime build` |
+| The example app doesn't see your SDK change | Make sure `pnpm dev` (or the SDK's `dev`) is running, or rebuild with `pnpm --filter @folkwaysio/realtime build` |
 | A test fails on an import | Check the layer rule above: `api` → `engine` → `transport` → `shared` |
 | `need flatc 24.3.25` | Install that exact version, or point `FLATC` at it |

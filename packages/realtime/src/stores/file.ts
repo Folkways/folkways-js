@@ -1,6 +1,6 @@
 /// <reference types="node" />
 /**
- * File store for Node: `@folkways/realtime/stores/file`.
+ * File store for Node: `@folkwaysio/realtime/stores/file`.
  *
  *   const client = new Folkways.Realtime({ url, token, store: fileStore('.folkways') });
  *
