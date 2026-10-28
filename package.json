@@ -18,8 +18,7 @@
     "lint": "turbo run lint",
     "clean": "turbo run clean",
     "changeset": "changeset",
-    "version-packages": "changeset version",
-    "release": "turbo run build --filter=@folkways/realtime && changeset publish"
+    "version-packages": "changeset version && node packages/realtime/scripts/sync-version.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.7",

@@ -155,13 +155,21 @@ Set `FLATC` if `flatc` isn't on your `PATH`.
 
 ## Changesets and releases
 
-Releases are managed with [Changesets](https://github.com/changesets/changesets).
+Releases are managed with [Changesets](https://github.com/changesets/changesets) and made by the
+[Release workflow](../.github/workflows/release.yml).
 
 - **Contributors:** when a change affects users of the package (a fix, a feature, a changed behaviour), run
   `pnpm changeset`, pick the bump (`patch`, `minor` or `major`) and describe the change in a sentence or two. Commit
   the generated file in `.changeset/` with your change. Changes to tests, tooling or these guides don't need one.
-- **Maintainers:** `pnpm version-packages` turns pending changesets into version bumps and changelog entries;
-  `pnpm release` builds the SDK and publishes it to npm.
+- **Maintainers:** to release what has been merged:
+  1. Run `pnpm version-packages`. It turns the pending changesets into a version bump and changelog entries, and
+     updates `src/api/version.ts` to match. Commit the result to `main`, through a pull request if you want a review.
+  2. On GitHub, open **Actions → Release → Run workflow** on `main`. It lints, tests and builds the SDK, packs it with
+     `pack:release`, creates the GitHub release `v<version>` with the package attached and the changelog entries as
+     its notes, and publishes the same package to npm.
+
+  Tick **Dry run** to only build and check the package; the run's summary lists the files it would publish. The
+  workflow refuses to release while changesets are pending, or when the version is already tagged or on npm.
 
 ## Troubleshooting
 
