@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 
-/** The Local Dev segment from rte/seeds/workspaces.json (free tier, HS256). */
+/** The Local Dev segment of the control plane's dev seed (free tier, HS256 signing key). Tests sign with it as a backend would. */
 export const DEV_SEGMENT = 'c7e5a92b-62a1-4b14-bd8f-8bb74c77d3ff';
 export const DEV_KID = 'dev-1';
 export const DEV_SECRET = 'dev-only-secret-change-me';

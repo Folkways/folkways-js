@@ -1,5 +1,4 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
 import { createServer } from 'node:net';
 
 export interface RteNode {
@@ -35,24 +34,25 @@ async function waitHealthy(url: string, timeoutMs: number): Promise<void> {
 }
 
 /**
- * Starts a real RTE node from `RTE_BIN` on free ports, with the repository's
- * seeds (`RTE_DIR`, default: two levels above the binary's target dir).
+ * Starts a real RTE node from `RTE_BIN` on free ports. The node keeps no data
+ * of its own: it reads segments and keys from a control plane running its dev
+ * seed, at `RTE__CORE__SEGMENTS_API` (default `http://localhost:8080/internal/rte`)
+ * with the node token in `RTE__CORE__SEGMENTS_API_TOKEN` (default `dev-node-token`).
  * Returns undefined when `RTE_BIN` is unset.
  */
 export async function startNode(env: Record<string, string> = {}): Promise<RteNode | undefined> {
   const bin = process.env.RTE_BIN;
   if (!bin) return undefined;
-  const dir = process.env.RTE_DIR ?? resolve(dirname(bin), '..', '..');
   const [wsPort, httpPort, metricsPort] = [await freePort(), await freePort(), await freePort()];
   const child: ChildProcess = spawn(bin, [], {
-    cwd: dir,
     env: {
       ...process.env,
       RUST_LOG: process.env.RTE_LOG ?? 'warn',
+      RTE__CORE__SEGMENTS_API: process.env.RTE__CORE__SEGMENTS_API ?? 'http://localhost:8080/internal/rte',
+      RTE__CORE__SEGMENTS_API_TOKEN: process.env.RTE__CORE__SEGMENTS_API_TOKEN ?? 'dev-node-token',
       RTE__ADAPTERS__WEBSOCKET__PORT: String(wsPort),
       RTE__ADAPTERS__HTTP__PORT: String(httpPort),
       RTE__MONITORING__METRICS_PORT: String(metricsPort),
-      RTE__CORE__SEGMENTS_FILE: resolve(dir, 'seeds/segments.json'),
       ...env,
     },
     stdio: ['ignore', 'inherit', 'inherit'],

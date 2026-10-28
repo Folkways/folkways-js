@@ -68,7 +68,7 @@ async function hs256Verify(token: string, secret: string): Promise<boolean> {
 }
 
 const rest = (extra: Partial<ConstructorParameters<typeof Rest>[0]> = {}) =>
-  new Rest({ url: 'http://localhost:3000', segment: SEG, signingKey: { kid: 'dev-1', privateKey: SECRET }, ...extra });
+  new Rest({ url: 'http://localhost:9006', segment: SEG, signingKey: { kid: 'dev-1', privateKey: SECRET }, ...extra });
 
 describe('Folkways.Rest', () => {
   it('signs tokens in process with an Ed25519 key, without calling the node', async () => {
@@ -143,7 +143,7 @@ describe('Folkways.Rest', () => {
     const r = await rte.publish('chat/1', 'notice', { text: 'paid' });
     await rte.publish('chat/1', 'notice', 'again');
     expect(r).toMatchObject({ topic: 'chat/1', delivery: 'stream', id: `${EPOCH}:3` });
-    expect(node.calls.every((c) => c.url === 'http://localhost:3000/v1/publish')).toBe(true);
+    expect(node.calls.every((c) => c.url === 'http://localhost:9006/v1/publish')).toBe(true);
     // One token, cached across publishes
     expect(new Set(tokens).size).toBe(1);
     expect(await hs256Verify(tokens[0]!, SECRET)).toBe(true);
@@ -180,7 +180,7 @@ describe('Folkways.Rest', () => {
   });
 
   it('refuses API keys and bad options with a pointer to signing keys', () => {
-    expect(() => new Rest({ apiKey: 'rte_sk_x.y', url: 'http://localhost:3000' } as never)).toThrow(/ADR-008/);
+    expect(() => new Rest({ apiKey: 'rte_sk_x.y', url: 'http://localhost:9006' } as never)).toThrow(/ADR-008/);
     expect(() => rest({ signingKey: { kid: 'k', privateKey: 'rte_sk_backend.0123456789abcdef0123456789abcdef' } })).toThrow(/API key/);
     expect(() => rest({ segment: 'Local Dev' })).toThrow(/segment id/);
     expect(() => rest({ signingKey: { kid: '', privateKey: SECRET } })).toThrow(/kid/);
