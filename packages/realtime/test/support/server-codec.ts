@@ -106,6 +106,18 @@ function body(b: B, m: ServerMsg): [fb.ServerBody, number] {
         l.maxHeaders,
         l.heartbeatMs,
         l.idleTimeoutMs,
+        l.publishPerSec ?? 0,
+        l.publishBurst ?? 0,
+        l.topicPublishPerSec ?? 0,
+        l.topicPublishBurst ?? 0,
+        l.segmentPublishPerSec ?? 0,
+        l.segmentPublishBurst ?? 0,
+        l.inboundBytesPerSec ?? 0,
+        l.outboundBytesPerSec ?? 0,
+        l.maxSubscribersPerTopic ?? 0,
+        l.subscribesPerMin ?? 0,
+        l.topicCreatesPerMin ?? 0,
+        l.newConnectionsPerMin ?? 0,
       );
       fb.Welcome.startWelcome(b);
       fb.Welcome.addProtoMinor(b, m.protoMinor);

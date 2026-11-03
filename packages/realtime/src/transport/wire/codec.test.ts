@@ -170,6 +170,28 @@ describe('server packets', () => {
     expect(w!.msg).toMatchObject({ segmentId: '', environment: '', capabilities: [] });
   });
 
+  it('decodes the ADR-015 rate limits of Welcome, leaving out the ones a node sends as 0', () => {
+    const welcome = msgs[4] as Extract<ServerMsg, { type: 'welcome' }>;
+    const rates = {
+      publishPerSec: 20,
+      publishBurst: 40,
+      topicPublishPerSec: 50,
+      topicPublishBurst: 100,
+      segmentPublishPerSec: 500,
+      segmentPublishBurst: 1_000,
+      inboundBytesPerSec: 1 << 20,
+      outboundBytesPerSec: 4 << 20,
+      maxSubscribersPerTopic: 5_000,
+      subscribesPerMin: 1_000,
+      topicCreatesPerMin: 600,
+      newConnectionsPerMin: 300,
+    };
+    const [w] = decodeServerPacket(encodeServerPacket([{ corr: 1n, msg: { ...welcome, limits: { ...DEFAULT_LIMITS, ...rates } } }]));
+    expect(w!.msg).toMatchObject({ limits: { ...DEFAULT_LIMITS, ...rates } });
+    const [partial] = decodeServerPacket(encodeServerPacket([{ corr: 1n, msg: { ...welcome, limits: { ...DEFAULT_LIMITS, publishPerSec: 20 } } }]));
+    expect((partial!.msg as typeof welcome).limits).toEqual({ ...DEFAULT_LIMITS, publishPerSec: 20 });
+  });
+
   it('rejects a client packet, a missing identifier and short buffers with BadFrame', () => {
     const clientPacket = encodeClientPacket([{ corr: 1n, msg: { type: 'pong', nonce: 1n, tsMs: 0 } }]);
     const expectBad = (b: Uint8Array) => {

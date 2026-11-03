@@ -43,7 +43,48 @@ export interface Limits {
   readonly maxHeaders: number;
   readonly heartbeatMs: number;
   readonly idleTimeoutMs: number;
+  // Rate limits (ADR-015), from the segment's plan and preset. Absent when
+  // the node does not announce them (an older node, or HTTP, which has no
+  // `Welcome`). Counted per node, so approximate in a cluster.
+  /** Publishes per second from this connection (sustained). Over it: `RateLimited`. */
+  readonly publishPerSec?: number;
+  /** Publishes this connection may send at once above `publishPerSec`. */
+  readonly publishBurst?: number;
+  /** Publishes per second into one topic, from all publishers. */
+  readonly topicPublishPerSec?: number;
+  readonly topicPublishBurst?: number;
+  /** Publishes per second across the whole segment. */
+  readonly segmentPublishPerSec?: number;
+  readonly segmentPublishBurst?: number;
+  /** Framed bytes per second all of the segment's clients may send. */
+  readonly inboundBytesPerSec?: number;
+  /** Framed bytes per second the segment may deliver; over it, publishers get `Flow`. */
+  readonly outboundBytesPerSec?: number;
+  /** Subscribers one topic holds at once. Over it: `QuotaExceeded` on subscribe. */
+  readonly maxSubscribersPerTopic?: number;
+  /** Subscribes per minute across the segment. */
+  readonly subscribesPerMin?: number;
+  /** New topics per minute across the segment. */
+  readonly topicCreatesPerMin?: number;
+  /** New connections per minute across the segment. Over it, `Hello` gets `Close{RateLimited}`. */
+  readonly newConnectionsPerMin?: number;
 }
+
+/** The ADR-015 rate fields of `Limits`, in schema order. */
+export const RATE_LIMIT_FIELDS = [
+  'publishPerSec',
+  'publishBurst',
+  'topicPublishPerSec',
+  'topicPublishBurst',
+  'segmentPublishPerSec',
+  'segmentPublishBurst',
+  'inboundBytesPerSec',
+  'outboundBytesPerSec',
+  'maxSubscribersPerTopic',
+  'subscribesPerMin',
+  'topicCreatesPerMin',
+  'newConnectionsPerMin',
+] as const satisfies readonly (keyof Limits)[];
 
 /** The schema defaults; used until a `Welcome` says otherwise (and on HTTP). */
 export const DEFAULT_LIMITS: Limits = Object.freeze({

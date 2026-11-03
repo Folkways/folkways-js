@@ -62,8 +62,68 @@ idleTimeoutMs():number {
   return offset ? this.bb!.readUint32(this.bb_pos + offset) : 90000;
 }
 
+publishPerSec():number {
+  const offset = this.bb!.__offset(this.bb_pos, 20);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+publishBurst():number {
+  const offset = this.bb!.__offset(this.bb_pos, 22);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+topicPublishPerSec():number {
+  const offset = this.bb!.__offset(this.bb_pos, 24);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+topicPublishBurst():number {
+  const offset = this.bb!.__offset(this.bb_pos, 26);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+segmentPublishPerSec():number {
+  const offset = this.bb!.__offset(this.bb_pos, 28);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+segmentPublishBurst():number {
+  const offset = this.bb!.__offset(this.bb_pos, 30);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+inboundBytesPerSec():number {
+  const offset = this.bb!.__offset(this.bb_pos, 32);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+outboundBytesPerSec():number {
+  const offset = this.bb!.__offset(this.bb_pos, 34);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+maxSubscribersPerTopic():number {
+  const offset = this.bb!.__offset(this.bb_pos, 36);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+subscribesPerMin():number {
+  const offset = this.bb!.__offset(this.bb_pos, 38);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+topicCreatesPerMin():number {
+  const offset = this.bb!.__offset(this.bb_pos, 40);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+newConnectionsPerMin():number {
+  const offset = this.bb!.__offset(this.bb_pos, 42);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
 static startLimits(builder:flatbuffers.Builder) {
-  builder.startObject(8);
+  builder.startObject(20);
 }
 
 static addMaxFrameBytes(builder:flatbuffers.Builder, maxFrameBytes:number) {
@@ -98,12 +158,60 @@ static addIdleTimeoutMs(builder:flatbuffers.Builder, idleTimeoutMs:number) {
   builder.addFieldInt32(7, idleTimeoutMs, 90000);
 }
 
+static addPublishPerSec(builder:flatbuffers.Builder, publishPerSec:number) {
+  builder.addFieldInt32(8, publishPerSec, 0);
+}
+
+static addPublishBurst(builder:flatbuffers.Builder, publishBurst:number) {
+  builder.addFieldInt32(9, publishBurst, 0);
+}
+
+static addTopicPublishPerSec(builder:flatbuffers.Builder, topicPublishPerSec:number) {
+  builder.addFieldInt32(10, topicPublishPerSec, 0);
+}
+
+static addTopicPublishBurst(builder:flatbuffers.Builder, topicPublishBurst:number) {
+  builder.addFieldInt32(11, topicPublishBurst, 0);
+}
+
+static addSegmentPublishPerSec(builder:flatbuffers.Builder, segmentPublishPerSec:number) {
+  builder.addFieldInt32(12, segmentPublishPerSec, 0);
+}
+
+static addSegmentPublishBurst(builder:flatbuffers.Builder, segmentPublishBurst:number) {
+  builder.addFieldInt32(13, segmentPublishBurst, 0);
+}
+
+static addInboundBytesPerSec(builder:flatbuffers.Builder, inboundBytesPerSec:number) {
+  builder.addFieldInt32(14, inboundBytesPerSec, 0);
+}
+
+static addOutboundBytesPerSec(builder:flatbuffers.Builder, outboundBytesPerSec:number) {
+  builder.addFieldInt32(15, outboundBytesPerSec, 0);
+}
+
+static addMaxSubscribersPerTopic(builder:flatbuffers.Builder, maxSubscribersPerTopic:number) {
+  builder.addFieldInt32(16, maxSubscribersPerTopic, 0);
+}
+
+static addSubscribesPerMin(builder:flatbuffers.Builder, subscribesPerMin:number) {
+  builder.addFieldInt32(17, subscribesPerMin, 0);
+}
+
+static addTopicCreatesPerMin(builder:flatbuffers.Builder, topicCreatesPerMin:number) {
+  builder.addFieldInt32(18, topicCreatesPerMin, 0);
+}
+
+static addNewConnectionsPerMin(builder:flatbuffers.Builder, newConnectionsPerMin:number) {
+  builder.addFieldInt32(19, newConnectionsPerMin, 0);
+}
+
 static endLimits(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   return offset;
 }
 
-static createLimits(builder:flatbuffers.Builder, maxFrameBytes:number, maxPayloadBytes:number, maxFramesPerPacket:number, maxSubscriptions:number, maxTopicBytes:number, maxHeaders:number, heartbeatMs:number, idleTimeoutMs:number):flatbuffers.Offset {
+static createLimits(builder:flatbuffers.Builder, maxFrameBytes:number, maxPayloadBytes:number, maxFramesPerPacket:number, maxSubscriptions:number, maxTopicBytes:number, maxHeaders:number, heartbeatMs:number, idleTimeoutMs:number, publishPerSec:number, publishBurst:number, topicPublishPerSec:number, topicPublishBurst:number, segmentPublishPerSec:number, segmentPublishBurst:number, inboundBytesPerSec:number, outboundBytesPerSec:number, maxSubscribersPerTopic:number, subscribesPerMin:number, topicCreatesPerMin:number, newConnectionsPerMin:number):flatbuffers.Offset {
   Limits.startLimits(builder);
   Limits.addMaxFrameBytes(builder, maxFrameBytes);
   Limits.addMaxPayloadBytes(builder, maxPayloadBytes);
@@ -113,6 +221,18 @@ static createLimits(builder:flatbuffers.Builder, maxFrameBytes:number, maxPayloa
   Limits.addMaxHeaders(builder, maxHeaders);
   Limits.addHeartbeatMs(builder, heartbeatMs);
   Limits.addIdleTimeoutMs(builder, idleTimeoutMs);
+  Limits.addPublishPerSec(builder, publishPerSec);
+  Limits.addPublishBurst(builder, publishBurst);
+  Limits.addTopicPublishPerSec(builder, topicPublishPerSec);
+  Limits.addTopicPublishBurst(builder, topicPublishBurst);
+  Limits.addSegmentPublishPerSec(builder, segmentPublishPerSec);
+  Limits.addSegmentPublishBurst(builder, segmentPublishBurst);
+  Limits.addInboundBytesPerSec(builder, inboundBytesPerSec);
+  Limits.addOutboundBytesPerSec(builder, outboundBytesPerSec);
+  Limits.addMaxSubscribersPerTopic(builder, maxSubscribersPerTopic);
+  Limits.addSubscribesPerMin(builder, subscribesPerMin);
+  Limits.addTopicCreatesPerMin(builder, topicCreatesPerMin);
+  Limits.addNewConnectionsPerMin(builder, newConnectionsPerMin);
   return Limits.endLimits(builder);
 }
 }
