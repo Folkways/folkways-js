@@ -12,6 +12,8 @@ export type {
   Delivery,
   EventFilter,
   EventMap,
+  FlowChange,
+  FlowState,
   GapEvent,
   GapReasonName,
   LiveView,

@@ -172,6 +172,28 @@ table Limits {
   max_headers: uint = 16;
   heartbeat_ms: uint = 30000;
   idle_timeout_ms: uint = 90000;
+  // ADR-015: the rate limits that apply to this connection, from the
+  // segment's plan and preset. 0 means not announced: a client then does
+  // not pace itself and relies on RateLimited and Flow. Counting is per
+  // node, so in a cluster the limits are approximate.
+  // Publishes per second (sustained) and burst, per connection.
+  publish_per_sec: uint;
+  publish_burst: uint;
+  // Publishes per second and burst into one topic, from all publishers.
+  topic_publish_per_sec: uint;
+  topic_publish_burst: uint;
+  // Publishes per second and burst across the whole segment.
+  segment_publish_per_sec: uint;
+  segment_publish_burst: uint;
+  // Framed bytes per second the segment may send in and receive out.
+  inbound_bytes_per_sec: uint;
+  outbound_bytes_per_sec: uint;
+  // Subscribers one topic holds at once; beyond, QuotaExceeded.
+  max_subscribers_per_topic: uint;
+  // Per minute, across the segment.
+  subscribes_per_min: uint;
+  topic_creates_per_min: uint;
+  new_connections_per_min: uint;
 }
 
 // ------------------------------------------------- both directions (1-15)

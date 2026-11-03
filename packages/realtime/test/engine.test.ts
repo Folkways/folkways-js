@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Code, Folkways, type Message, Realtime, RealtimeError, type RealtimeOptions, defineTopic, memoryStore } from '../src';
-import { AckMode, ContentType, DeliveryClass, GapReason, OnGap, StartAt, type SubscribeBody } from '../src/transport/wire/model';
+import { AckMode, ContentType, DEFAULT_LIMITS, DeliveryClass, FlowAction, GapReason, OnGap, StartAt, type SubscribeBody } from '../src/transport/wire/model';
 import { FakeRequestTransport, FakeStreamTransport, until } from './support/fake-transport';
 import { event } from './support/server-codec';
 import { DEV_SEGMENT, mintToken } from './support/token';
@@ -1515,5 +1515,176 @@ describe('http long-poll', () => {
     clients.push(c);
     await c.connect();
     expect(http.calls.map((x) => x.token)).toEqual(tokens);
+  });
+});
+
+describe('rate limits and flow control (ADR-015)', () => {
+  const ack = (seq: bigint) => ({ type: 'pubAck', topicId: 1n, level: AckMode.Accepted, cursor: { epoch: EPOCH, seq }, duplicate: false, serverTsMs: 1 }) as const;
+  const flow = (action: FlowAction, retryAfterMs: number) => ({ corr: 0n, msg: { type: 'flow', action, retryAfterMs, topicId: 0n } as const });
+
+  async function connected(opts: Partial<RealtimeOptions> = {}) {
+    const fake = new FakeStreamTransport();
+    const c = client(fake, opts);
+    const conn = await fake.nextConn();
+    await conn.welcome();
+    await c.connect();
+    return { fake, c, conn };
+  }
+
+  it('exposes the rate limits announced in Welcome on session.limits, and none from an older node', async () => {
+    const fake = new FakeStreamTransport();
+    const c = client(fake);
+    await (await fake.nextConn()).welcome({ limits: { publishPerSec: 20, publishBurst: 40, maxSubscribersPerTopic: 5_000, newConnectionsPerMin: 300 } });
+    const session = await c.connect();
+    expect(session.limits).toMatchObject({ publishPerSec: 20, publishBurst: 40, maxSubscribersPerTopic: 5_000, newConnectionsPerMin: 300, maxPayloadBytes: 61_440 });
+    expect(session.limits.topicPublishPerSec).toBeUndefined();
+
+    const old = new FakeStreamTransport();
+    const o = client(old);
+    await (await old.nextConn()).welcome();
+    const s = await o.connect();
+    expect(Object.keys(s.limits).sort()).toEqual(Object.keys(DEFAULT_LIMITS).sort());
+  });
+
+  it('resends a RateLimited publish with the same key after retry_after_ms, beyond publishRetries', async () => {
+    const { c, conn } = await connected({ publishRetries: 1 });
+    const p = c.topic('chat/lobby').publish('message', 'hi');
+    let f = await conn.next('publish');
+    const key = f.msg.publish.idempotencyKey;
+    for (let i = 0; i < 3; i++) {
+      const t0 = Date.now();
+      conn.reply(f.corr, { type: 'opError', code: Code.RateLimited, message: 'publish rate exceeded', retryAfterMs: 30, topicId: 0n });
+      f = await conn.next('publish');
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(28);
+      expect(f.msg.publish.idempotencyKey).toEqual(key);
+    }
+    conn.reply(f.corr, ack(1n));
+    await expect(p).resolves.toMatchObject({ id: `${EPOCH}:1` });
+    expect(c.connection.state).toBe('connected');
+  });
+
+  it('gives up on QuotaExceeded after publishRetries, and fails a subscribe to a full topic, keeping the connection', async () => {
+    const { fake, c, conn } = await connected({ publishRetries: 1 });
+    const p = c.topic('chat/lobby').publish('message', 'hi');
+    const a = await conn.next('publish');
+    conn.reply(a.corr, { type: 'opError', code: Code.QuotaExceeded, message: 'topic limit reached', retryAfterMs: 5, topicId: 0n });
+    const b = await conn.next('publish');
+    expect(b.msg.publish.idempotencyKey).toEqual(a.msg.publish.idempotencyKey);
+    conn.reply(b.corr, { type: 'opError', code: Code.QuotaExceeded, message: 'topic limit reached', retryAfterMs: 5, topicId: 0n });
+    await expect(p).rejects.toMatchObject({ code: Code.QuotaExceeded, topic: 'chat/lobby', local: false });
+
+    const sub = c.topic('live/scores').subscribe();
+    const s = await conn.next('subscribe');
+    conn.reply(s.corr, { type: 'opError', code: Code.QuotaExceeded, message: 'too many subscribers', retryAfterMs: 0, topicId: 0n });
+    await expect(sub.ready).rejects.toMatchObject({ code: Code.QuotaExceeded, topic: 'live/scores' });
+    expect(c.connection.state).toBe('connected');
+    expect(fake.conns).toHaveLength(1);
+  });
+
+  it('follows Flow Throttle → Pause → Resume: holds publishes while paused, drops signals, resends what the node refused', async () => {
+    const { c, conn } = await connected();
+    const flows: string[] = [];
+    c.connection.on('flow', ({ state, retryAfterMs }) => flows.push(`${state}:${retryAfterMs}`));
+    const room = c.topic('chat/lobby');
+
+    conn.push(flow(FlowAction.Throttle, 100));
+    await until(() => c.connection.flow === 'throttled');
+    expect(c.connection.getSnapshot()).toMatchObject({ state: 'connected', flow: 'throttled' });
+    const a = room.publish('message', 'a');
+    const fa = await conn.next('publish'); // still accepted while throttled
+
+    conn.push(flow(FlowAction.Pause, 1_500));
+    await until(() => c.connection.flow === 'paused');
+    // The node refuses publishes while paused; this one was already on the wire.
+    conn.reply(fa.corr, { type: 'opError', code: Code.RateLimited, message: 'outbound pressure; publishing paused', retryAfterMs: 20, topicId: 0n });
+    const b = room.publish('message', 'b');
+    await expect(room.publish('typing', { on: true }, { delivery: 'signal' })).resolves.toBeUndefined();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(conn.sent('publish')).toHaveLength(1);
+
+    conn.push(flow(FlowAction.Resume, 0));
+    const resent = [await conn.next('publish'), await conn.next('publish')];
+    expect(resent.map((f) => new TextDecoder().decode(f.msg.publish.payload)).sort()).toEqual(['a', 'b']);
+    const ra = resent.find((f) => new TextDecoder().decode(f.msg.publish.payload) === 'a')!;
+    expect(ra.msg.publish.idempotencyKey).toEqual(fa.msg.publish.idempotencyKey);
+    for (const [i, f] of resent.entries()) conn.reply(f.corr, ack(BigInt(i + 1)));
+    await expect(Promise.all([a, b])).resolves.toHaveLength(2);
+    expect(conn.sent('publish').filter((f) => f.msg.type === 'publish' && f.msg.publish.name === 'typing')).toHaveLength(0);
+    expect(flows).toEqual(['throttled:100', 'paused:1500', 'normal:0']);
+    expect(c.connection.flow).toBe('normal');
+  });
+
+  it('forgets a pause when the connection drops: the new connection starts unthrottled', async () => {
+    const { fake, c, conn } = await connected();
+    conn.push(flow(FlowAction.Pause, 5_000));
+    await until(() => c.connection.flow === 'paused');
+    const p = c.topic('chat/lobby').publish('message', 'held');
+    conn.drop();
+    const conn2 = await fake.nextConn();
+    await conn2.welcome();
+    const f = await conn2.next('publish');
+    expect(c.connection.flow).toBe('normal');
+    conn2.reply(f.corr, ack(1n));
+    await expect(p).resolves.toBeDefined();
+  });
+
+  it('over HTTP, takes Flow from publish replies and lets it lapse after its wait', async () => {
+    const sends: number[] = [];
+    const http = new FakeRequestTransport((path, _token, frames) => {
+      if (path !== '/v1/publish') return { frames: [] };
+      const out = [];
+      for (const f of frames) {
+        if (f.msg.type === 'ping') out.push({ corr: f.corr, msg: { type: 'pong', nonce: 1n, tsMs: Date.now() } as const });
+        if (f.msg.type !== 'publish') continue;
+        sends.push(Date.now());
+        if (sends.length === 1) {
+          out.push(flow(FlowAction.Pause, 150));
+          out.push({ corr: f.corr, msg: { type: 'opError', code: Code.RateLimited, message: 'outbound pressure; publishing paused', retryAfterMs: 150, topicId: 0n } as const });
+        } else {
+          out.push({ corr: f.corr, msg: ack(1n) });
+        }
+      }
+      return { frames: out };
+    });
+    const c = new Realtime({
+      endpoints: { http: 'http://fake' },
+      transports: ['http'],
+      token: mintToken('alice'),
+      connectTimeoutMs: 0,
+      transportOverrides: { request: http },
+    });
+    clients.push(c);
+    const flows: string[] = [];
+    c.connection.on('flow', ({ state }) => flows.push(state));
+    await c.connect();
+    expect(c.session?.limits.publishPerSec).toBeUndefined(); // no Welcome over HTTP
+    await expect(c.topic('chat/lobby').publish('message', 'x')).resolves.toMatchObject({ id: `${EPOCH}:1` });
+    expect(sends).toHaveLength(2);
+    expect(sends[1]! - sends[0]!).toBeGreaterThanOrEqual(145);
+    expect(flows).toEqual(['paused', 'normal']);
+  });
+
+  it('waits at least retry_after_ms before reconnecting after Close{RateLimited} on Hello, without falling back to HTTP', async () => {
+    const fake = new FakeStreamTransport();
+    const http = new FakeRequestTransport(() => {
+      throw new Error('must not fall back to HTTP');
+    });
+    const c = client(fake, {
+      endpoints: { websocket: 'ws://fake/v1/ws', http: 'http://fake' },
+      transports: ['websocket', 'http'],
+      transportOverrides: { stream: fake, request: http },
+    });
+    for (let i = 0; i < 2; i++) {
+      const conn = await fake.nextConn();
+      await conn.next('hello');
+      const t0 = Date.now();
+      conn.serverClose(Code.RateLimited, 'too many new connections', 60);
+      await until(() => fake.conns.length === i + 2);
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(55);
+    }
+    await fake.conns[2]!.welcome();
+    await c.connect();
+    expect(c.connection.transport).toBe('websocket');
+    expect(http.calls).toHaveLength(0);
   });
 });

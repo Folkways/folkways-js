@@ -27,6 +27,7 @@ import {
   type WireEvent,
   CLIENT_IDENT,
   MAX_FRAMES_PER_PACKET,
+  RATE_LIMIT_FIELDS,
   SERVER_IDENT,
 } from './model';
 
@@ -242,6 +243,12 @@ function decodeEvents(len: number, get: (i: number) => fb.Event | null, total: n
 
 function decodeLimits(l: fb.Limits | null): Limits {
   if (!l) throw bad('Welcome without limits');
+  // A rate field of 0 was not announced (a node before ADR-015): leave it out.
+  const rates: { -readonly [K in (typeof RATE_LIMIT_FIELDS)[number]]?: number } = {};
+  for (const k of RATE_LIMIT_FIELDS) {
+    const v = l[k]();
+    if (v > 0) rates[k] = v;
+  }
   return {
     maxFrameBytes: l.maxFrameBytes(),
     maxPayloadBytes: l.maxPayloadBytes(),
@@ -251,6 +258,7 @@ function decodeLimits(l: fb.Limits | null): Limits {
     maxHeaders: l.maxHeaders(),
     heartbeatMs: l.heartbeatMs(),
     idleTimeoutMs: l.idleTimeoutMs(),
+    ...rates,
   };
 }
 

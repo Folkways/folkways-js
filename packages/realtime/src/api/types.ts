@@ -74,6 +74,25 @@ export interface Session {
  */
 export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'failed' | 'closed';
 
+/**
+ * How the node lets this connection publish (ADR-015 `Flow`). When a
+ * segment's deliveries run over its outbound byte rate, the node slows its
+ * publishers instead of dropping deliveries:
+ * - `normal`: publishes go out as they are made;
+ * - `throttled`: publishes are still accepted; the SDK sends them in batches;
+ * - `paused`: the SDK holds publishes (their `publishTimeoutMs` still runs)
+ *   until the node resumes, up to `offlineQueue.maxSize` (beyond it, or with
+ *   `offlineQueue: false`, they fail with `QueueFull`), and drops signals,
+ *   as when offline.
+ */
+export type FlowState = 'normal' | 'throttled' | 'paused';
+
+export interface FlowChange {
+  readonly state: FlowState;
+  /** How far behind the node's deliveries are, in ms; 0 when back to normal. */
+  readonly retryAfterMs: number;
+}
+
 export interface ConnectionChange {
   readonly current: ConnectionState;
   readonly previous: ConnectionState;
@@ -85,10 +104,13 @@ export interface ConnectionSnapshot {
   readonly state: ConnectionState;
   readonly transport: TransportKind | null;
   readonly error: RealtimeError | null;
+  readonly flow: FlowState;
 }
 
 export type ConnectionEvents = {
   change: (change: ConnectionChange) => void;
+  /** The node throttled, paused or resumed publishing on this connection. */
+  flow: (change: FlowChange) => void;
   /** Errors not tied to one call: listener failures, dropped outbox entries, failed token refreshes. */
   error: (err: RealtimeError | Error) => void;
 };
@@ -99,6 +121,8 @@ export interface Connection extends LiveView<ConnectionSnapshot> {
   readonly transport: TransportKind | null;
   /** Why the connection failed, while `failed`. */
   readonly error: RealtimeError | null;
+  /** Whether the node has publishing throttled or paused; `normal` otherwise. */
+  readonly flow: FlowState;
   on<K extends keyof ConnectionEvents>(event: K, fn: ConnectionEvents[K]): () => void;
   /** Resolves when connected; rejects if the connection fails or closes first. */
   whenConnected(): Promise<void>;

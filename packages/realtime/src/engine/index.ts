@@ -3,6 +3,7 @@
  * re-exports the few wire types layer 1 needs, so it never reaches layer 3.
  */
 export { Engine, type ConnectionState, type EngineConfig, type EngineEvents, type ReconnectInfo, type ReconnectOptions } from './engine';
+export type { FlowState } from './publish-queue';
 export type { CloseInfo, SessionInfo } from './session';
 export type { ActiveInfo, DeliveredEvent, GapInfo, StoredValue, SubscribeSpec, TopicEntry, TopicListener, ValueMaps } from './subscriptions';
 export { type CursorStore, memoryCursorStore } from './cursor-store';
