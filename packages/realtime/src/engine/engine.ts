@@ -21,7 +21,7 @@ import { type CacheLimits, MessageCache } from './cache';
 import { Outbox } from './outbox';
 import { type Store, type StoreCipher, ScopedStore, scopePrefix } from './store';
 import { PollSession } from './poll-session';
-import { PublishQueue } from './publish-queue';
+import { type FlowState, PublishQueue } from './publish-queue';
 import { TransportSelector } from './selector';
 import type { CloseInfo, Session, SessionHost, SessionInfo } from './session';
 import { SocketSession } from './socket-session';
@@ -102,6 +102,8 @@ export type EngineEvents = {
   tokenRefreshed: (expiresAtMs?: number) => void;
   /** The session changed without a reconnect (a token for the same identity, or anonymous → signed in). */
   sessionUpdated: (info: SessionInfo) => void;
+  /** The node changed how publishes may flow (`Flow`): throttled, paused, or back to normal. */
+  flow: (state: FlowState, retryAfterMs: number) => void;
   /** Every event delivered on any topic (for `client.on`). */
   delivered: (e: DeliveredEvent) => void;
   /** A publish restored from the outbox after a reload settled (`error` set when it failed or was too old). */
@@ -187,6 +189,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
         retries: cfg.publishRetries,
         logger: cfg.logger,
         outbox: new Outbox(this.store, cfg.outboxMaxAgeMs, cfg.logger, cfg.cipher),
+        onFlow: (state, retryAfterMs) => this.emit('flow', state, retryAfterMs),
       },
     );
     this.selector = new TransportSelector(
@@ -242,6 +245,11 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
 
   get error(): RealtimeError | undefined {
     return this.fatalError;
+  }
+
+  /** Whether the node has publishing throttled or paused on this connection. */
+  get flow(): FlowState {
+    return this.publishes.flow;
   }
 
   /** `Date.now()` corrected by the measured clock offset to the node. */

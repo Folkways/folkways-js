@@ -10,7 +10,8 @@ export type FetchLike = (
   arrayBuffer(): Promise<ArrayBuffer>;
 }>;
 
-function retryAfter(value: string | null): number | undefined {
+/** A `Retry-After` header (seconds or an HTTP date) in milliseconds. */
+export function parseRetryAfter(value: string | null): number | undefined {
   if (!value) return undefined;
   const secs = Number(value);
   if (Number.isFinite(secs) && secs >= 0) return secs * 1000;
@@ -69,12 +70,12 @@ export class HttpTransport implements RequestTransport {
       if (res.status >= 200 && res.status < 300) {
         throw new TransportError(`unexpected content type "${contentType}" from ${path}`);
       }
-      return { status: res.status, packets: [], retryAfterMs: retryAfter(res.headers.get('retry-after')) };
+      return { status: res.status, packets: [], retryAfterMs: parseRetryAfter(res.headers.get('retry-after')) };
     }
     return {
       status: res.status,
       packets: splitLengthPrefixed(new Uint8Array(body), this.maxPacketBytes),
-      retryAfterMs: retryAfter(res.headers.get('retry-after')),
+      retryAfterMs: parseRetryAfter(res.headers.get('retry-after')),
     };
   }
 }

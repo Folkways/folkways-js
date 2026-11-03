@@ -1,17 +1,17 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { event } from '../../test/support/server-codec';
 import { mintToken } from '../../test/support/token';
 import { Code } from '../shared/codes';
 import { RealtimeError, localError } from '../shared/errors';
 import { silentLogger } from '../shared/logger';
-import { AckMode, DeliveryClass, OnGap, StartAt } from '../transport';
+import { AckMode, DeliveryClass, FlowAction, OnGap, StartAt } from '../transport';
 import { Backoff } from './backoff';
 import { memoryCursorStore } from './cursor-store';
 import { Outbox } from './outbox';
 import { KEYS, ScopedStore, memoryStore, scopePrefix } from './store';
 import { packetize } from './packets';
-import { type OutboundPublish, PublishQueue } from './publish-queue';
+import { type FlowState, type OutboundPublish, PublishQueue } from './publish-queue';
 import { SubscriptionRegistry, type TopicListener } from './subscriptions';
 import { TokenManager, authUrlProvider, peekJwt, publishableKeyProvider } from './token';
 import { resolveOptions } from '../api/options';
@@ -23,6 +23,18 @@ describe('Backoff', () => {
     expect(new Backoff({ initialDelayMs: 100, maxDelayMs: 1_000 }, () => 0).next(250)).toBe(250);
     b.reset();
     expect(b.next()).toBe(99);
+  });
+
+  it('waits at least retry_after, plus jitter of up to min(cap, retry_after), so a herd spreads out', () => {
+    const half = new Backoff({ initialDelayMs: 100, maxDelayMs: 1_000 }, () => 0.5);
+    // Caps 100, 200, 400, 800: the jitter grows with them but never past the floor itself.
+    expect([half.next(400), half.next(400), half.next(400), half.next(400)]).toEqual([450, 500, 600, 600]);
+    const most = new Backoff({ initialDelayMs: 500, maxDelayMs: 30_000 }, () => 0.999);
+    expect(most.next(5_000)).toBe(5_499);
+    const many = Array.from({ length: 200 }, () => new Backoff({ initialDelayMs: 500, maxDelayMs: 30_000 }).next(5_000));
+    expect(Math.min(...many)).toBeGreaterThanOrEqual(5_000);
+    expect(Math.max(...many)).toBeLessThan(5_500);
+    expect(new Set(many).size).toBeGreaterThan(50);
   });
 });
 
@@ -93,6 +105,18 @@ describe('TokenManager', () => {
     expect(calls[0]).toMatchObject({ url: 'https://rte.example.com/v1/token', headers: { authorization: 'Bearer rte_pk_web.abc' }, body: '{}' });
     next = { status: 403, body: { code: Code.Suspended, error: 'Suspended', message: 'api key paused' } };
     await expect(p({ reason: 'expiring' })).rejects.toMatchObject({ code: Code.Suspended, message: expect.stringContaining('api key paused') });
+    next = { status: 429, body: { code: Code.RateLimited, error: 'RateLimited', message: 'too many failed authentications', retry_after_ms: 42_000 } };
+    await expect(p({ reason: 'rejected' })).rejects.toMatchObject({ code: Code.RateLimited, retry: 'backoff', retryAfterMs: 42_000 });
+  });
+
+  it('takes the wait from Retry-After when a 429 body has no retry_after_ms', async () => {
+    const fetchFn = async () => ({
+      status: 429,
+      headers: { get: (h: string) => (h.toLowerCase() === 'retry-after' ? '7' : null) },
+      arrayBuffer: async () => new TextEncoder().encode('Too Many Requests').buffer as ArrayBuffer,
+    });
+    const p = publishableKeyProvider('https://rte.example.com', 'rte_pk_web.abc', fetchFn);
+    await expect(p({ reason: 'initial' })).rejects.toMatchObject({ code: Code.AuthRequired, retryAfterMs: 7_000 });
   });
 
   it('takes one token source, and never a secret API key', () => {
@@ -185,13 +209,23 @@ describe('PublishQueue', () => {
 
   function queue(opts: { online?: boolean; maxQueued?: number; timeoutMs?: number } = {}) {
     const sent: OutboundPublish[][] = [];
+    const flows: string[] = [];
     let online = opts.online ?? true;
     const q = new PublishQueue(
       { canSend: () => online, send: (items) => sent.push(items), refusal: () => undefined },
-      { maxQueued: opts.maxQueued ?? 10, timeoutMs: opts.timeoutMs ?? 1_000, retries: 2, logger: silentLogger },
+      {
+        maxQueued: opts.maxQueued ?? 10,
+        timeoutMs: opts.timeoutMs ?? 1_000,
+        retries: 2,
+        logger: silentLogger,
+        onFlow: (state: FlowState, ms: number) => flows.push(`${state}:${ms}`),
+      },
     );
-    return { q, sent, setOnline: (v: boolean) => (online = v) };
+    return { q, sent, flows, setOnline: (v: boolean) => (online = v) };
   }
+
+  const ack = { topicId: 1n, level: AckMode.Accepted, cursor: { epoch: 1n, seq: 1n }, duplicate: false, serverTsMs: 1 };
+  const ids = (batches: OutboundPublish[][]) => batches.map((b) => b.map((p) => p.id));
 
   it('batches submits of one tick into one send', async () => {
     const { q, sent } = queue();
@@ -231,6 +265,167 @@ describe('PublishQueue', () => {
     await new Promise((r) => setTimeout(r, 0));
     q.failed(sent[1]![0]!, localError(Code.PayloadTooLarge));
     await expect(p2).rejects.toMatchObject({ code: Code.PayloadTooLarge });
+  });
+
+  describe('retries and Flow (ADR-015)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('retries RateLimited after retry_after_ms without using up retries, until the deadline', async () => {
+      vi.useFakeTimers();
+      const { q, sent } = queue({ timeoutMs: 10_000 });
+      const p = q.submit('t/x', body, true);
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 5; i++) {
+        q.failed(sent[i]![0]!, new RealtimeError(Code.RateLimited, { retryAfterMs: 300 }));
+        await vi.advanceTimersByTimeAsync(299);
+        expect(sent).toHaveLength(i + 1); // never before retry_after_ms
+        await vi.advanceTimersByTimeAsync(301); // floor + at most min(cap, floor) of jitter
+        expect(sent).toHaveLength(i + 2);
+      }
+      // Same publish (and so the same idempotency key) every time; 5 retries > retries: 2.
+      expect(new Set(sent.flat())).toEqual(new Set([sent[0]![0]]));
+      q.acked(sent[5]![0]!, ack);
+      await expect(p).resolves.toEqual(ack);
+    });
+
+    it('still bounds other backoff codes by retries, and RateLimited by the deadline', async () => {
+      vi.useFakeTimers();
+      const { q, sent } = queue({ timeoutMs: 2_000 });
+      const p = q.submit('t/x', body, true);
+      const pe = expect(p).rejects.toMatchObject({ code: Code.QuotaExceeded, topic: 't/x' });
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 3; i++) {
+        q.failed(sent[i]![0]!, new RealtimeError(Code.QuotaExceeded, { retryAfterMs: 10 }));
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      await pe;
+      expect(sent).toHaveLength(3); // the first send and retries: 2
+
+      const r = q.submit('t/x', body, true);
+      const re = expect(r).rejects.toMatchObject({ code: Code.Timeout, local: true });
+      await vi.advanceTimersByTimeAsync(0);
+      q.failed(sent[3]![0]!, new RealtimeError(Code.RateLimited, { retryAfterMs: 5_000 }));
+      await vi.advanceTimersByTimeAsync(2_000);
+      await re;
+      expect(sent).toHaveLength(4);
+    });
+
+    it('sends in one batch per interval while throttled, and at once again on Resume', async () => {
+      vi.useFakeTimers();
+      const { q, sent, flows } = queue({ timeoutMs: 10_000 });
+      q.flowControl(FlowAction.Throttle, 200, false);
+      expect(q.flow).toBe('throttled');
+      q.submit('t/x', body, true).catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sent).toHaveLength(1); // the first batch goes at once
+      q.submit('t/x', body, true).catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      q.submit('t/x', body, true).catch(() => {});
+      await vi.advanceTimersByTimeAsync(199);
+      expect(sent).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(ids(sent)).toEqual([[1], [2, 3]]);
+      // A new interval, clamped to [50, 1000] ms, starts after the batch already due.
+      q.flowControl(FlowAction.Throttle, 60_000, false);
+      q.submit('t/x', body, true).catch(() => {});
+      await vi.advanceTimersByTimeAsync(200);
+      expect(sent).toHaveLength(3);
+      q.submit('t/x', body, true).catch(() => {});
+      await vi.advanceTimersByTimeAsync(999);
+      expect(sent).toHaveLength(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sent).toHaveLength(4);
+      q.submit('t/x', body, true).catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      q.flowControl(FlowAction.Resume, 0, false);
+      expect(ids(sent)[sent.length - 1]).toEqual([6]);
+      expect(q.flow).toBe('normal');
+      expect(flows).toEqual(['throttled:200', 'normal:0']); // changes only
+    });
+
+    it('holds publishes while paused, drops fire-and-forget, and sends the held ones in order on Resume', async () => {
+      vi.useFakeTimers();
+      const { q, sent, flows } = queue({ maxQueued: 3, timeoutMs: 10_000 });
+      q.submit('t/x', body, false).catch(() => {}); // a queued signal, dropped by the pause
+      q.flowControl(FlowAction.Pause, 1_500, false);
+      const held = [q.submit('t/x', body, true), q.submit('t/x', body, true), q.submit('t/x', body, true)];
+      await expect(q.submit('t/x', body, false)).resolves.toBeUndefined();
+      await expect(q.submit('t/x', body, true)).rejects.toMatchObject({ code: Code.QueueFull, message: expect.stringContaining('paused') });
+      // The node sends Resume on its own: on WebSocket a pause has no expiry of its own.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(sent).toHaveLength(0);
+      q.flowControl(FlowAction.Resume, 0, false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ids(sent)).toEqual([[2, 3, 4]]);
+      for (const p of sent[0]!) q.acked(p, ack);
+      await expect(Promise.all(held)).resolves.toHaveLength(3);
+      expect(flows).toEqual(['paused:1500', 'normal:0']);
+    });
+
+    it('keeps the deadline running while paused', async () => {
+      vi.useFakeTimers();
+      const { q, sent } = queue({ timeoutMs: 1_000 });
+      q.flowControl(FlowAction.Pause, 5_000, false);
+      const p = q.submit('t/x', body, true);
+      const pe = expect(p).rejects.toMatchObject({ code: Code.Timeout, local: true });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await pe;
+      q.flowControl(FlowAction.Resume, 0, false);
+      expect(sent).toHaveLength(0);
+    });
+
+    it('resends a publish the node refused during a pause once it resumes, after Pause → Throttle → Resume', async () => {
+      vi.useFakeTimers();
+      const { q, sent, flows } = queue({ timeoutMs: 10_000 });
+      const p = q.submit('t/x', body, true);
+      await vi.advanceTimersByTimeAsync(0);
+      q.flowControl(FlowAction.Pause, 1_200, false);
+      q.failed(sent[0]![0]!, new RealtimeError(Code.RateLimited, { message: 'publishing paused', retryAfterMs: 1_200 }));
+      await vi.advanceTimersByTimeAsync(3_000); // the retry is due, but the pause holds it
+      expect(sent).toHaveLength(1);
+      q.flowControl(FlowAction.Throttle, 300, false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sent).toHaveLength(2);
+      expect(sent[1]![0]).toBe(sent[0]![0]);
+      q.flowControl(FlowAction.Resume, 0, false);
+      q.acked(sent[1]![0]!, ack);
+      await expect(p).resolves.toEqual(ack);
+      expect(flows).toEqual(['paused:1200', 'throttled:300', 'normal:0']);
+    });
+
+    it('lets an HTTP Flow lapse after its wait, since every request starts unthrottled', async () => {
+      vi.useFakeTimers();
+      const { q, sent, flows } = queue({ timeoutMs: 10_000 });
+      q.flowControl(FlowAction.Pause, 1_500, true);
+      q.submit('t/x', body, true).catch(() => {});
+      await vi.advanceTimersByTimeAsync(1_499);
+      expect(sent).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sent).toHaveLength(1);
+      expect(q.flow).toBe('normal');
+      // A repeated Throttle restarts the wait.
+      q.flowControl(FlowAction.Throttle, 400, true);
+      await vi.advanceTimersByTimeAsync(300);
+      q.flowControl(FlowAction.Throttle, 400, true);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(q.flow).toBe('throttled');
+      await vi.advanceTimersByTimeAsync(100);
+      expect(q.flow).toBe('normal');
+      expect(flows).toEqual(['paused:1500', 'normal:0', 'throttled:400', 'normal:0']);
+    });
+
+    it('forgets the flow state when the session drops', async () => {
+      vi.useFakeTimers();
+      const { q, flows } = queue();
+      q.flowControl(FlowAction.Pause, 2_000, false);
+      q.sessionLost();
+      expect(q.flow).toBe('normal');
+      q.flowControl(42 as FlowAction, 0, false); // an action from a newer node is ignored
+      expect(q.flow).toBe('normal');
+      expect(flows).toEqual(['paused:2000', 'normal:0']);
+    });
   });
 });
 

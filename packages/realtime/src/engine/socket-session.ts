@@ -323,6 +323,10 @@ export class SocketSession implements Session {
         if (entry) registry.onSubEnded(entry, msg.code, msg.message);
         return;
       }
+      case 'flow':
+        // Outbound pressure: the node sends only changes, and Resume on its own.
+        this.host.publishes.flowControl(msg.action, msg.retryAfterMs, false);
+        return;
       default:
         log.debug('ignored frame', { type: msg.type });
     }

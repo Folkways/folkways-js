@@ -5,8 +5,10 @@ export interface BackoffOptions {
 
 /**
  * Exponential backoff with full jitter: attempt n waits a uniformly random
- * time in [0, min(max, initial * 2^n)], but never less than the server's
- * `retry_after_ms`.
+ * time in [0, cap], cap = min(max, initial * 2^n). With the server's
+ * `retry_after_ms` as a floor it waits floor + [0, min(cap, floor)] instead,
+ * so clients told the same wait (a rate-limited segment, FLK-21) do not all
+ * come back at the same instant.
  */
 export class Backoff {
   private attempt = 0;
@@ -23,7 +25,8 @@ export class Backoff {
   next(floorMs = 0): number {
     const cap = Math.min(this.opts.maxDelayMs, this.opts.initialDelayMs * 2 ** Math.min(this.attempt, 30));
     this.attempt++;
-    return Math.max(floorMs, Math.floor(this.random() * cap));
+    if (floorMs > 0) return floorMs + Math.floor(this.random() * Math.min(cap, floorMs));
+    return Math.floor(this.random() * cap);
   }
 
   reset(): void {

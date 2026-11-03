@@ -1,11 +1,18 @@
 import { Code, codeInfo } from '../shared/codes';
 import { RealtimeError, localError } from '../shared/errors';
 import type { Logger } from '../shared/logger';
-import type { PubAck, PublishBody } from '../transport';
+import { FlowAction, type PubAck, type PublishBody } from '../transport';
 import { Backoff } from './backoff';
 import type { Outbox, OutboxItem } from './outbox';
 
 export type PublishState = 'queued' | 'inflight' | 'waiting' | 'done';
+
+/**
+ * What the node asked publishers to do about outbound pressure (`Flow`,
+ * ADR-015 D4): `throttled` sends in batches, `paused` holds publishes until
+ * the node resumes.
+ */
+export type FlowState = 'normal' | 'throttled' | 'paused';
 
 /** One logical publish. Its body is frozen: retries resend exactly the same bytes. */
 export interface OutboundPublish {
@@ -19,6 +26,8 @@ export interface OutboundPublish {
   outboxKey?: string;
   state: PublishState;
   attempts: number;
+  /** Attempts answered with `RateLimited`; they do not count against `retries`. */
+  rateLimited: number;
 }
 
 /** What the queue needs from the engine. */
@@ -39,7 +48,13 @@ export interface PublishQueueOptions {
   logger: Logger;
   /** A persistent outbox: publishes survive reloads and wait out being offline. */
   outbox?: Outbox;
+  /** The flow state changed. */
+  onFlow?: (state: FlowState, retryAfterMs: number) => void;
 }
+
+/** Bounds of the batching interval while throttled. */
+const THROTTLE_MIN_MS = 50;
+const THROTTLE_MAX_MS = 1_000;
 
 interface Entry {
   p: OutboundPublish;
@@ -56,6 +71,12 @@ interface Entry {
  * what is in flight, puts in-flight publishes back when a session drops (the
  * idempotency key makes the resend safe), retries `Backoff`-class errors and
  * enforces the overall timeout. Order of first sends follows submit order.
+ *
+ * `Flow` from the node gates sending: while throttled, queued publishes go
+ * out in one batch per interval; while paused, they wait in the queue (their
+ * deadline still runs) and fire-and-forget publishes are dropped, as when
+ * offline. `RateLimited` means nothing was done, so its retries are bounded
+ * by the deadline only, not by `retries`.
  */
 export class PublishQueue {
   private seq = 0;
@@ -63,6 +84,11 @@ export class PublishQueue {
   private readonly queue: OutboundPublish[] = [];
   private flushScheduled = false;
   private closedWith?: RealtimeError;
+  private flowState: FlowState = 'normal';
+  private throttleMs = 0;
+  private nextSendAt = 0;
+  private flushTimer?: ReturnType<typeof setTimeout>;
+  private flowTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
     private readonly sink: PublishSink,
@@ -71,6 +97,10 @@ export class PublishQueue {
 
   get size(): number {
     return this.entries.size;
+  }
+
+  get flow(): FlowState {
+    return this.flowState;
   }
 
   /** True when stream and kv publishes are kept in a persistent outbox. */
@@ -104,17 +134,24 @@ export class PublishQueue {
     if (signal?.aborted) return Promise.reject(localError(Code.Aborted, 'publish aborted'));
     const outbox = wantsAck && this.persistent ? this.opts.outbox : undefined;
     const online = this.sink.canSend();
-    if (!online) {
-      if (!wantsAck) return Promise.resolve(undefined); // fire-and-forget is dropped while offline
-      const refused = this.sink.refusal();
-      if (refused && !(outbox && refused.code === Code.NotConnected)) return Promise.reject(refused);
-      if (this.opts.maxQueued <= 0) return Promise.reject(localError(Code.NotConnected, 'not connected'));
-      const waiting = this.queue.length + [...this.entries.values()].filter((e) => e.p.state === 'waiting').length;
-      if (waiting >= this.opts.maxQueued) {
-        return Promise.reject(localError(Code.QueueFull, `offline queue is full (${this.opts.maxQueued})`));
+    const paused = online && this.flowState === 'paused';
+    if (!online || paused) {
+      // Fire-and-forget is dropped while offline or paused: it would be stale by the time it went out.
+      if (!wantsAck) {
+        if (paused) this.opts.logger.debug('fire-and-forget publish dropped while paused', { topic });
+        return Promise.resolve(undefined);
+      }
+      if (!online) {
+        const refused = this.sink.refusal();
+        if (refused && !(outbox && refused.code === Code.NotConnected)) return Promise.reject(refused);
+        if (this.opts.maxQueued <= 0) return Promise.reject(localError(Code.NotConnected, 'not connected'));
+      }
+      if (this.opts.maxQueued > 0 && this.held() >= this.opts.maxQueued) {
+        const why = paused ? 'publishing is paused by the node and the queue is full' : 'offline queue is full';
+        return Promise.reject(localError(Code.QueueFull, `${why} (${this.opts.maxQueued})`));
       }
     }
-    const p: OutboundPublish = { id: ++this.seq, topic, body, wantsAck, createdAt, state: 'queued', attempts: 0 };
+    const p: OutboundPublish = { id: ++this.seq, topic, body, wantsAck, createdAt, state: 'queued', attempts: 0, rateLimited: 0 };
     if (outbox) p.outboxKey = restoredKey ?? outbox.keyFor(body, createdAt);
     return new Promise<PubAck | undefined>((resolve, reject) => {
       // Offline with an outbox, a publish waits up to the outbox's age limit instead.
@@ -143,10 +180,26 @@ export class PublishQueue {
     });
   }
 
-  /** Sends whatever is queued, if a session can take it. */
+  /** Publishes not sent yet: queued, or waiting to be retried. */
+  private held(): number {
+    return this.queue.length + [...this.entries.values()].filter((e) => e.p.state === 'waiting').length;
+  }
+
+  /** Sends whatever is queued, if a session can take it and the node lets it. */
   flush(): void {
     this.flushScheduled = false;
-    if (this.queue.length === 0 || !this.sink.canSend()) return;
+    if (this.queue.length === 0 || !this.sink.canSend() || this.flowState === 'paused') return;
+    if (this.flowState === 'throttled') {
+      const wait = this.nextSendAt - Date.now();
+      if (wait > 0) {
+        this.flushTimer ??= setTimeout(() => {
+          this.flushTimer = undefined;
+          this.flush();
+        }, wait);
+        return;
+      }
+      this.nextSendAt = Date.now() + this.throttleMs;
+    }
     const batch = this.queue.splice(0, this.queue.length).filter((p) => p.state === 'queued');
     for (const p of batch) {
       p.state = 'inflight';
@@ -169,7 +222,9 @@ export class PublishQueue {
     const e = this.entries.get(p.id);
     if (!e || p.state === 'done') return;
     const retryable = !err.local && codeInfo(err.code).retry === 'backoff';
-    if (retryable && p.attempts <= this.opts.retries) {
+    // RateLimited: nothing was done and the node said when to come back; only the deadline bounds it.
+    if (retryable && err.code === Code.RateLimited) p.rateLimited++;
+    if (retryable && (err.code === Code.RateLimited || p.attempts - p.rateLimited <= this.opts.retries)) {
       const backoff = new Backoff({ initialDelayMs: 250, maxDelayMs: 5_000 });
       for (let i = 1; i < p.attempts; i++) backoff.next();
       const delay = backoff.next(err.retryAfterMs ?? 0);
@@ -188,8 +243,61 @@ export class PublishQueue {
   }
 
   /**
+   * `Flow` from the node. `expires`: the state lasts `retryAfterMs` unless
+   * the node repeats it (HTTP, where every request starts unthrottled);
+   * otherwise it lasts until the next `Flow` (WebSocket, where the node sends
+   * `Resume` on its own).
+   */
+  flowControl(action: FlowAction, retryAfterMs: number, expires: boolean): void {
+    clearTimeout(this.flowTimer);
+    this.flowTimer = undefined;
+    switch (action) {
+      case FlowAction.Resume:
+        this.setFlow('normal', 0);
+        return;
+      case FlowAction.Throttle:
+        this.throttleMs = Math.min(THROTTLE_MAX_MS, Math.max(THROTTLE_MIN_MS, retryAfterMs));
+        this.setFlow('throttled', retryAfterMs);
+        break;
+      case FlowAction.Pause:
+        this.setFlow('paused', retryAfterMs);
+        this.dropQueuedFireAndForget();
+        break;
+      default:
+        this.opts.logger.debug('ignored unknown Flow action', { action });
+        return;
+    }
+    if (expires) this.flowTimer = setTimeout(() => this.setFlow('normal', 0), Math.max(retryAfterMs, THROTTLE_MIN_MS));
+  }
+
+  private setFlow(state: FlowState, retryAfterMs: number): void {
+    if (state === 'normal') {
+      clearTimeout(this.flowTimer);
+      this.flowTimer = undefined;
+    }
+    if (state !== 'throttled') {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+      this.nextSendAt = 0;
+    }
+    const changed = state !== this.flowState;
+    this.flowState = state;
+    if (changed) {
+      this.opts.logger.debug('publish flow changed', { state, retryAfterMs });
+      this.opts.onFlow?.(state, retryAfterMs);
+    }
+    // Leaving a pause sends what it held (in batches, when throttled).
+    if (state !== 'paused') this.flush();
+  }
+
+  private dropQueuedFireAndForget(): void {
+    for (const p of this.queue.filter((q) => !q.wantsAck)) this.settle(p, undefined);
+  }
+
+  /**
    * The session ended. In-flight publishes go back to the front of the queue,
    * in their original order, to be resent with the same idempotency key.
+   * The flow state belongs to the session and starts over with the next one.
    */
   sessionLost(): void {
     const inflight = [...this.entries.values()]
@@ -200,12 +308,15 @@ export class PublishQueue {
     const fireAndForget = inflight.filter((p) => !p.wantsAck);
     for (const p of fireAndForget) this.settle(p, undefined);
     this.queue.unshift(...inflight.filter((p) => p.wantsAck));
+    this.setFlow('normal', 0);
   }
 
   /** Rejects everything and refuses new publishes. */
   close(err: RealtimeError): void {
     this.closedWith = err;
     this.rejectAll(err);
+    clearTimeout(this.flushTimer);
+    clearTimeout(this.flowTimer);
   }
 
   /** Rejects every pending publish (offline, failed); new ones are still taken. */

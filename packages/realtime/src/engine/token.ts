@@ -1,6 +1,6 @@
 import { Code } from '../shared/codes';
 import { RealtimeError } from '../shared/errors';
-import type { FetchLike } from '../transport';
+import { type FetchLike, parseRetryAfter } from '../transport';
 
 /**
  * Why a token is asked for: `initial` (no token yet), `expiring` (the
@@ -95,7 +95,8 @@ export function authUrlProvider(
  * A token provider that trades a publishable key (`rte_pk_…`) for an
  * anonymous, read-only token at the node's `POST /v1/token`. A refusal keeps
  * the node's code, so a paused key surfaces as `Suspended` and a revoked one
- * as `AuthInvalid`.
+ * as `AuthInvalid`, and its wait, so a `RateLimited` (HTTP 429: too many
+ * failed authentications from this address) is retried no sooner than asked.
  */
 export function publishableKeyProvider(httpBase: string, key: string, fetchFn: FetchLike | undefined): TokenProvider {
   const url = `${httpBase.replace(/\/+$/, '')}/v1/token`;
@@ -109,7 +110,7 @@ export function publishableKeyProvider(httpBase: string, key: string, fetchFn: F
       body: new TextEncoder().encode('{}'),
     });
     const text = new TextDecoder().decode(await res.arrayBuffer());
-    let json: { token?: unknown; code?: unknown; message?: unknown } = {};
+    let json: { token?: unknown; code?: unknown; message?: unknown; retry_after_ms?: unknown } = {};
     try {
       json = text ? (JSON.parse(text) as typeof json) : {};
     } catch {
@@ -118,6 +119,7 @@ export function publishableKeyProvider(httpBase: string, key: string, fetchFn: F
     if (res.status < 200 || res.status >= 300) {
       throw new RealtimeError(typeof json.code === 'number' ? json.code : Code.AuthRequired, {
         message: typeof json.message === 'string' ? json.message : `token exchange answered HTTP ${res.status}`,
+        retryAfterMs: typeof json.retry_after_ms === 'number' ? json.retry_after_ms : parseRetryAfter(res.headers.get('retry-after')),
       });
     }
     if (typeof json.token !== 'string') throw new RealtimeError(Code.AuthRequired, { message: 'token exchange answered without a token', local: true });

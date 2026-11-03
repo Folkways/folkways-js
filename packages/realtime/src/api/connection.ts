@@ -2,7 +2,7 @@ import type { ConnectionState as EngineState, Engine } from '../engine';
 import { Emitter } from '../shared/emitter';
 import type { RealtimeError } from '../shared/errors';
 import { Live } from './live';
-import type { Connection, ConnectionEvents, ConnectionSnapshot, ConnectionState } from './types';
+import type { Connection, ConnectionEvents, ConnectionSnapshot, ConnectionState, FlowState } from './types';
 
 /** `client.connection`: one connection for the whole segment. */
 export class RealtimeConnection extends Emitter<ConnectionEvents> implements Connection {
@@ -18,6 +18,10 @@ export class RealtimeConnection extends Emitter<ConnectionEvents> implements Con
       this.emit('change', { current, previous, reason });
     });
     engine.on('connected', () => this.live.set(this.snapshot(null)));
+    engine.on('flow', (state, retryAfterMs) => {
+      this.live.set(this.snapshot(this.error));
+      this.emit('flow', { state, retryAfterMs });
+    });
   }
 
   get state(): ConnectionState {
@@ -30,6 +34,10 @@ export class RealtimeConnection extends Emitter<ConnectionEvents> implements Con
 
   get error(): RealtimeError | null {
     return this.engine.state === 'failed' ? (this.engine.error ?? null) : null;
+  }
+
+  get flow(): FlowState {
+    return this.engine.flow;
   }
 
   readonly getSnapshot = (): ConnectionSnapshot => this.live.getSnapshot();
@@ -47,6 +55,6 @@ export class RealtimeConnection extends Emitter<ConnectionEvents> implements Con
   }
 
   private snapshot(error: RealtimeError | null): ConnectionSnapshot {
-    return Object.freeze({ state: this.engine.state, transport: this.engine.transport, error });
+    return Object.freeze({ state: this.engine.state, transport: this.engine.transport, error, flow: this.engine.flow });
   }
 }

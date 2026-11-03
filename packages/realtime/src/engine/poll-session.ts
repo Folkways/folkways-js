@@ -155,6 +155,11 @@ export class PollSession implements Session {
           }
           const answered = new Set<bigint>();
           for (const { corr, msg } of replies) {
+            if (msg.type === 'flow') {
+              // Each request starts unthrottled at the node, so the state lasts only its wait.
+              this.host.publishes.flowControl(msg.action, msg.retryAfterMs, true);
+              continue;
+            }
             const p = byCorr.get(corr);
             if (!p) continue;
             if (msg.type === 'pubAck') {

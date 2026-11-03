@@ -56,9 +56,13 @@ export interface RealtimeOptions {
   openTimeoutMs?: number;
   /** Subscribe, unsubscribe and reauth replies. Default 10 000. */
   requestTimeoutMs?: number;
-  /** Whole life of a publish, retries included. Default 30 000. */
+  /** Whole life of a publish, retries and time held by a `Flow` pause included. Default 30 000. */
   publishTimeoutMs?: number;
-  /** Retries of `RateLimited`/`QuotaExceeded`/`Internal`/`Overloaded` publishes. Default 3. */
+  /**
+   * Retries of `QuotaExceeded`/`Internal`/`Overloaded` publishes. Default 3.
+   * `RateLimited` is resent after the node's `retry_after_ms` (plus jitter)
+   * until `publishTimeoutMs`, without counting here: nothing was done.
+   */
   publishRetries?: number;
   /** Reconnect policy, or `false` to give up on the first disconnect. */
   reconnect?: Partial<{ initialDelayMs: number; maxDelayMs: number; maxAttempts: number }> | false;
@@ -72,7 +76,11 @@ export interface RealtimeOptions {
   pongTimeoutMs?: number;
   /** How often processed cursors are hinted to the node; 0 disables. Default 5 000. */
   cursorAckIntervalMs?: number;
-  /** Publishes kept while offline (default `{ maxSize: 1000 }`), or `false` to reject them. */
+  /**
+   * Publishes kept while offline (default `{ maxSize: 1000 }`), or `false` to
+   * reject them. `maxSize` also bounds publishes held while the node has
+   * publishing paused (`connection.flow`).
+   */
   offlineQueue?: { maxSize?: number } | false;
   /**
    * The local store: cursors and, with a persistent adapter, an outbox
