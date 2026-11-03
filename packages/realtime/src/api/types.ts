@@ -81,7 +81,9 @@ export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnectin
  * - `normal`: publishes go out as they are made;
  * - `throttled`: publishes are still accepted; the SDK sends them in batches;
  * - `paused`: the SDK holds publishes (their `publishTimeoutMs` still runs)
- *   until the node resumes, and drops signals, as when offline.
+ *   until the node resumes, up to `offlineQueue.maxSize` (beyond it, or with
+ *   `offlineQueue: false`, they fail with `QueueFull`), and drops signals,
+ *   as when offline.
  */
 export type FlowState = 'normal' | 'throttled' | 'paused';
 

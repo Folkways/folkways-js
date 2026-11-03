@@ -364,6 +364,76 @@ describe('PublishQueue', () => {
       expect(flows).toEqual(['paused:1500', 'normal:0']);
     });
 
+    it('rejects acknowledged publishes while paused when the offline queue is disabled', async () => {
+      vi.useFakeTimers();
+      const { q, sent } = queue({ maxQueued: 0, timeoutMs: 10_000 });
+      q.flowControl(FlowAction.Pause, 1_500, false);
+      await expect(q.submit('t/x', body, true)).rejects.toMatchObject({ code: Code.QueueFull, local: true, message: expect.stringContaining('disabled') });
+      await expect(q.submit('t/x', body, false)).resolves.toBeUndefined();
+      expect(q.size).toBe(0);
+      q.flowControl(FlowAction.Resume, 0, false);
+      const p = q.submit('t/x', body, true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ids(sent)).toEqual([[1]]); // refused publishes never took an id
+      q.acked(sent[0]![0]!, ack);
+      await expect(p).resolves.toEqual(ack);
+    });
+
+    it('holds at most offlineQueue.maxSize publishes while paused', async () => {
+      vi.useFakeTimers();
+      const { q, sent } = queue({ maxQueued: 2, timeoutMs: 10_000 });
+      q.flowControl(FlowAction.Pause, 1_500, false);
+      const held = [q.submit('t/x', body, true), q.submit('t/x', body, true)];
+      await expect(q.submit('t/x', body, true)).rejects.toMatchObject({ code: Code.QueueFull, message: expect.stringContaining('paused') });
+      expect(q.size).toBe(2);
+      q.flowControl(FlowAction.Resume, 0, false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ids(sent)).toEqual([[1, 2]]);
+      for (const p of sent[0]!) q.acked(p, ack);
+      await expect(Promise.all(held)).resolves.toHaveLength(2);
+    });
+
+    it('never holds more than the limit through a long pause; deadlines free room for new publishes', async () => {
+      vi.useFakeTimers();
+      const { q, sent } = queue({ maxQueued: 2, timeoutMs: 1_000 });
+      q.flowControl(FlowAction.Pause, 60_000, false);
+      const outcomes: string[] = [];
+      for (let t = 0; t < 30; t++) {
+        q.submit('t/x', body, true).then(
+          () => outcomes.push('ok'),
+          (e: RealtimeError) => outcomes.push(e.codeName),
+        );
+        await vi.advanceTimersByTimeAsync(100);
+        expect(q.size).toBeLessThanOrEqual(2);
+      }
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sent).toHaveLength(0);
+      expect(q.size).toBe(0);
+      // Every publish settled loudly: refused at once, or timed out while held.
+      expect(outcomes).toHaveLength(30);
+      expect(outcomes.filter((o) => o === 'Timeout').length).toBeGreaterThanOrEqual(4);
+      expect(outcomes.filter((o) => o === 'QueueFull').length).toBeGreaterThanOrEqual(20);
+      expect(outcomes).not.toContain('ok');
+    });
+
+    it('takes publishes again once a full pause queue is sent on Resume', async () => {
+      vi.useFakeTimers();
+      const { q, sent } = queue({ maxQueued: 2, timeoutMs: 10_000 });
+      q.flowControl(FlowAction.Pause, 1_500, false);
+      q.submit('t/x', body, true).catch(() => {});
+      q.submit('t/x', body, true).catch(() => {});
+      await expect(q.submit('t/x', body, true)).rejects.toMatchObject({ code: Code.QueueFull });
+      q.flowControl(FlowAction.Resume, 0, false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ids(sent)).toEqual([[1, 2]]);
+      // In flight no longer counts as held: the queue has room again.
+      const more = [q.submit('t/x', body, true), q.submit('t/x', body, true), q.submit('t/x', body, true)];
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ids(sent)).toEqual([[1, 2], [3, 4, 5]]);
+      for (const p of sent.flat()) q.acked(p, ack);
+      await expect(Promise.all(more)).resolves.toHaveLength(3);
+    });
+
     it('keeps the deadline running while paused', async () => {
       vi.useFakeTimers();
       const { q, sent } = queue({ timeoutMs: 1_000 });

@@ -79,7 +79,8 @@ export interface RealtimeOptions {
   /**
    * Publishes kept while offline (default `{ maxSize: 1000 }`), or `false` to
    * reject them. `maxSize` also bounds publishes held while the node has
-   * publishing paused (`connection.flow`).
+   * publishing paused (`connection.flow`); more fail with `QueueFull`, and
+   * with `false` every publish made during a pause does.
    */
   offlineQueue?: { maxSize?: number } | false;
   /**

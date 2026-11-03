@@ -146,7 +146,11 @@ export class PublishQueue {
         if (refused && !(outbox && refused.code === Code.NotConnected)) return Promise.reject(refused);
         if (this.opts.maxQueued <= 0) return Promise.reject(localError(Code.NotConnected, 'not connected'));
       }
-      if (this.opts.maxQueued > 0 && this.held() >= this.opts.maxQueued) {
+      // The offline queue bounds a pause too; disabled, a pause holds nothing.
+      if (this.opts.maxQueued <= 0) {
+        return Promise.reject(localError(Code.QueueFull, 'publishing is paused by the node and the offline queue is disabled'));
+      }
+      if (this.held() >= this.opts.maxQueued) {
         const why = paused ? 'publishing is paused by the node and the queue is full' : 'offline queue is full';
         return Promise.reject(localError(Code.QueueFull, `${why} (${this.opts.maxQueued})`));
       }
