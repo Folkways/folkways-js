@@ -28,7 +28,7 @@ The [React example](../react-example) uses it to sign in and connect. Copy the p
  (keeps the public half)
 
  Your app ── POST /api/realtime-token ─▶ who is signed in?
-            (session cookie)             sign { segment, user, permissions, expiry }
+            (Bearer session)             sign { segment, user, permissions, expiry }
           ◀──────── { token } ─────────
 
  Your app ── connect with the token ──────────────────────────────────────▶ checks the signature
@@ -52,8 +52,8 @@ token itself.
 - Node.js 20.12 or newer and pnpm, as the [development guide](../../docs/DEVELOPMENT.md#prerequisites) describes.
 - A segment in the [Folkways dashboard](https://docs.folkways.io/docs/js-sdk/prerequisites). For the example app,
   give it two topic rules:
-  - `chat/>`, class **Durable**, operations `subscribe` and `publish`;
-  - `typing/>`, class **Ephemeral**, operations `subscribe` and `signal`.
+  - `chat/>`, class **Durable**, with presence turned on (so the app can show who is in the room);
+  - `typing/>`, class **Ephemeral**.
 
 ## 1. Create a signing key
 
@@ -126,11 +126,11 @@ and exits. It restarts when you change its code; restart it yourself after you e
 Try it with curl:
 
 ```bash
-curl -c cookies.txt -H 'content-type: application/json' -d '{"name":"alice"}' http://127.0.0.1:8787/api/session
+SESSION=$(curl -s -H 'content-type: application/json' -d '{"name":"alice"}' http://127.0.0.1:8787/api/login | node -pe 'JSON.parse(require("fs").readFileSync(0)).session')
 ```
 
 ```bash
-curl -b cookies.txt -X POST http://127.0.0.1:8787/api/realtime-token
+curl -X POST -H "authorization: Bearer $SESSION" http://127.0.0.1:8787/api/realtime-token
 ```
 
 The second command answers `{ "token": "eyJ…", "expiresAt": 1793191155000 }`.
@@ -156,11 +156,12 @@ With the token server running, start the app from the repository root:
 pnpm --filter @folkwaysio/react-example dev
 ```
 
-Open the page, sign in with any name and you are in `chat/lobby`. Open a second browser window, sign in with
-another name and chat between the two.
+Open the page, sign in with any name and you are in `chat/lobby`. Open a second tab, sign in with another name, or
+the same one, and chat between the two. Every sign-in with the same name gets the same identity, so the node sees one
+user with several connections.
 
-The app's dev server forwards `/api` to this server, so the app, the sign-in cookie and the token endpoint share one
-origin and no CORS is needed. If the token server runs somewhere else, set `TOKEN_SERVER_URL` in the app's
+The app's dev server forwards `/api` to this server, so the app and the token endpoint share one origin and no CORS
+is needed. If the token server runs somewhere else, set `TOKEN_SERVER_URL` in the app's
 `.env.local` (default `http://127.0.0.1:8787`).
 
 `pnpm dev` at the repository root starts the SDK in watch mode, the example app and this server together.
@@ -170,13 +171,12 @@ origin and no CORS is needed. If the token server runs somewhere else, set `TOKE
 | Method and path | Request | Response |
 | --- | --- | --- |
 | `GET /healthz` | | `{ "ok": true }` |
-| `GET /api/session` | | `{ "identity": "user:alice" }`, or `{ "identity": null }` when nobody is signed in |
-| `POST /api/session` | `{ "name": "alice" }`: 1 to 32 letters, digits, `.`, `-` or `_` | `{ "identity": "user:alice" }` and the session cookie; `400` for a bad name |
-| `DELETE /api/session` | | `204`; clears the cookie |
-| `POST /api/realtime-token` | `{ "reason": "initial" \| "expiring" \| "rejected" }` and the session cookie | `{ "token": "…", "expiresAt": <Unix ms> }`; `401` when nobody is signed in |
+| `POST /api/login` | `{ "name": "alice" }`: 1 to 32 letters, digits, `.`, `-` or `_` | `{ "name", "identity": "user:alice", "session", "expiresAt" }`; `400` for a bad name |
+| `POST /api/realtime-token` | `{ "reason": "initial" \| "expiring" \| "rejected" }` and `Authorization: Bearer <session>` | `{ "token": "…", "expiresAt": <Unix ms> }`; `401` without a valid session |
 
-The token endpoint follows the contract of the SDK's `authUrl` option. The SDK sends `POST` with a JSON body and
-your page's cookies, and reads the `token` field. Any status other than 2xx means "not signed in". Responses carry
+The token endpoint follows the contract of the SDK's `authUrl` option (send the session with `authHeaders`); the
+example app calls it from a `token` function instead, so it can tell an expired sign-in from a server that is down.
+Signing out is the app forgetting its session. Responses carry
 `Cache-Control: no-store`, so no proxy or browser cache keeps a token.
 
 ## Settings
@@ -190,10 +190,9 @@ The server reads these from the environment. When there is a `.env` file in its 
 | `RTE_KEY_ID` | required | The signing key's ID (`kid`), from the **Signing keys** tab |
 | `RTE_PRIVATE_KEY_FILE`, `RTE_PRIVATE_KEY` or `RTE_SECRET` | one required | The key's private half; see [Store the key](#2-store-the-key) |
 | `RTE_TOKEN_TTL_SECONDS` | `600` | How long each token lives, from 60 to 900 seconds |
-| `SESSION_SECRET` | random | Signs the sign-in cookie. At least 32 characters. Unset, a random one is made at startup, so restarting signs everyone out |
+| `SESSION_SECRET` | random | Signs the sign-in sessions. At least 32 characters. Unset, a random one is made at startup, so restarting signs everyone out |
 | `HOST` | `127.0.0.1` | Address to listen on. Use `0.0.0.0` in a container |
 | `PORT` | `8787` | Port to listen on |
-| `NODE_ENV` | | `production` marks the sign-in cookie `Secure` (HTTPS only) |
 
 ## Make it yours
 
@@ -232,7 +231,7 @@ app.post('/api/realtime-token', requireLogin, async (req, res) => {
 - **Permissions.** A token can only narrow what the segment's topic rules allow. Grant each user the topics they
   belong to, for example `chat/team-7/>` instead of `chat/>`.
 - **Same origin.** Serve the token endpoint from your app's origin, or proxy it there as the example app does. Then
-  the browser sends your session cookie with the SDK's request, and `SameSite` cookies protect it from other sites.
+  the browser sends your own session cookie with the SDK's `authUrl` request and no CORS is needed.
 - **Publishing from your backend.** The same `rte` client publishes events over HTTP, such as a notice after a
   payment. See [Issue tokens from your backend](https://docs.folkways.io/docs/js-sdk/server-tokens).
 
@@ -241,7 +240,7 @@ app.post('/api/realtime-token', requireLogin, async (req, res) => {
 - [ ] The example sign-in is replaced by your app's login, and the reminder about it in `server.ts` is gone.
 - [ ] The private key is in your secret manager, readable only by this server, and never logged. This server never
       logs keys or tokens; it logs the identity and expiry of each token it issues.
-- [ ] Everything is served over HTTPS, and `NODE_ENV=production` is set so cookies are `Secure`.
+- [ ] Everything is served over HTTPS.
 - [ ] `SESSION_SECRET` is set, or your own sessions are used.
 - [ ] Each user gets only the permissions they need.
 - [ ] The token endpoint is rate limited per user, like your other authenticated endpoints.
@@ -267,8 +266,8 @@ closes every connection still using a token signed with it.
 | `convert the key to PKCS#8 first` | Your P-256 key is in the older EC format. Convert it: `openssl pkcs8 -topk8 -nocrypt -in key.ec.pem -out key.pem` |
 | `not an Ed25519 or P-256 private key` | The file is not a private key in PKCS#8 PEM. Check that you copied all of it, including the `BEGIN` and `END` lines |
 | The app says `Can't reach the token server` | Start the token server, or set `TOKEN_SERVER_URL` in the app's `.env.local` |
-| The app says `authUrl answered HTTP 401` | Nobody is signed in, or the browser didn't send the session cookie because the token endpoint is on another origin |
-| The connection fails with `AuthInvalid` | `RTE_SEGMENT_ID` or `RTE_KEY_ID` doesn't match the key in the dashboard, or the key was deleted. Check that the server's clock is right |
+| The app says `Your sign-in has expired` | The token server restarted without `SESSION_SECRET`, or the 8-hour session ended. Sign in again |
+| The app says `The node refused the token` (`AuthInvalid`) | `RTE_SEGMENT_ID` or `RTE_KEY_ID` doesn't match the key in the dashboard, the key was deleted, or an HS256 secret is used on a paid segment (they work on Free only). Check that the server's clock is right |
 | `Forbidden` when subscribing or publishing | The topic needs a rule that allows the operation, and the token's permissions (`src/permissions.ts`) must include it |
 
 More in [Errors and troubleshooting](https://docs.folkways.io/docs/js-sdk/errors).

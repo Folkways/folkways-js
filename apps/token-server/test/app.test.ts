@@ -4,7 +4,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { type Config, ConfigError, loadConfig } from '../src/config.js';
 
@@ -21,30 +21,23 @@ function decode(token: string) {
   return { header: json(header!), claims: json(claims!), input: `${header}.${claims}`, signature: signature! };
 }
 
-/** Starts the app on a free port and returns a fetch that keeps the session cookie, like a browser. */
+/** Starts the app on a free port and returns a fetch that sends `session` as a bearer, like the example app. */
 async function start(config: Config) {
   const server = await new Promise<Server>((res) => {
     const s = createApp(config, undefined, () => {}).listen(0, '127.0.0.1', () => res(s));
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  let cookie = '';
-  const call = async (method: string, path: string, body?: unknown) => {
+  const call = async (method: string, path: string, body?: unknown, session?: string) => {
     const res = await fetch(base + path, {
       method,
-      headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+      headers: { 'content-type': 'application/json', ...(session ? { authorization: `Bearer ${session}` } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const set = res.headers.get('set-cookie');
-    if (set) cookie = set.split(';')[0]!;
     const text = await res.text();
     return { status: res.status, headers: res.headers, body: text ? JSON.parse(text) : undefined };
   };
-  return {
-    call,
-    setCookie: (value: string) => (cookie = value),
-    getCookie: () => cookie,
-    stop: () => new Promise<void>((res) => server.close(() => res())),
-  };
+  const login = async (name: string) => (await call('POST', '/api/login', { name })).body.session as string;
+  return { call, login, stop: () => new Promise<void>((res) => server.close(() => res())) };
 }
 
 describe('token endpoint (HS256)', () => {
@@ -53,7 +46,6 @@ describe('token endpoint (HS256)', () => {
     app = await start(loadConfig({ ...BASE_ENV, RTE_SECRET: SECRET }, dir));
   });
   afterAll(() => app.stop());
-  afterEach(() => app.setCookie(''));
 
   it('refuses a token to someone who has not signed in', async () => {
     const res = await app.call('POST', '/api/realtime-token', { reason: 'initial' });
@@ -61,11 +53,16 @@ describe('token endpoint (HS256)', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
   });
 
-  it('signs a short-lived token for the signed-in user', async () => {
-    expect((await app.call('POST', '/api/session', { name: 'alice' })).body).toEqual({ identity: 'user:alice' });
-    expect((await app.call('GET', '/api/session')).body).toEqual({ identity: 'user:alice' });
+  it('signs in with a name', async () => {
+    const res = await app.call('POST', '/api/login', { name: ' alice ' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ name: 'alice', identity: 'user:alice' });
+    expect(typeof res.body.session).toBe('string');
+    expect(res.body.expiresAt).toBeGreaterThan(Date.now());
+  });
 
-    const res = await app.call('POST', '/api/realtime-token', { reason: 'initial' });
+  it('signs a short-lived token for the signed-in user', async () => {
+    const res = await app.call('POST', '/api/realtime-token', { reason: 'initial' }, await app.login('alice'));
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
     const { header, claims, input, signature } = decode(res.body.token);
@@ -75,7 +72,7 @@ describe('token endpoint (HS256)', () => {
       sub: 'user:alice',
       kind: 'user',
       cap: [
-        { topic: 'chat/>', ops: ['subscribe', 'publish'] },
+        { topic: 'chat/>', ops: ['subscribe', 'history', 'publish', 'presence'] },
         { topic: 'typing/>', ops: ['subscribe', 'signal'] },
       ],
     });
@@ -84,26 +81,25 @@ describe('token endpoint (HS256)', () => {
     expect(signature).toBe(createHmac('sha256', SECRET).update(input).digest('base64url'));
   });
 
-  it('ignores a session cookie that was changed in the browser', async () => {
-    await app.call('POST', '/api/session', { name: 'alice' });
-    const [payload, mac] = app.getCookie().split('=')[1]!.split('.');
-    const forged = Buffer.from(JSON.stringify({ name: 'admin', expiresAt: JSON.parse(Buffer.from(payload!, 'base64url').toString()).expiresAt })).toString('base64url');
-    app.setCookie(`example_session=${forged}.${mac}`);
-    expect((await app.call('POST', '/api/realtime-token')).status).toBe(401);
+  it('gives every sign-in with the same name the same identity', async () => {
+    const [a, b] = [await app.login('alice'), await app.login('alice')];
+    const sub = async (session: string) => decode((await app.call('POST', '/api/realtime-token', {}, session)).body.token).claims.sub;
+    expect(await sub(a)).toBe('user:alice');
+    expect(await sub(b)).toBe('user:alice');
   });
 
-  it('signs out', async () => {
-    await app.call('POST', '/api/session', { name: 'alice' });
-    expect((await app.call('DELETE', '/api/session')).status).toBe(204);
-    expect((await app.call('GET', '/api/session')).body).toEqual({ identity: null });
-    expect((await app.call('POST', '/api/realtime-token')).status).toBe(401);
+  it('ignores a session that was changed in the browser', async () => {
+    const [payload, mac] = (await app.login('alice')).split('.');
+    const forged = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(payload!, 'base64url').toString()), name: 'admin' })).toString('base64url');
+    expect((await app.call('POST', '/api/realtime-token', {}, `${forged}.${mac}`)).status).toBe(401);
+    expect((await app.call('POST', '/api/realtime-token', {}, 'nonsense')).status).toBe(401);
   });
 
   it('refuses names that would make a bad identity', async () => {
-    for (const name of ['', 'two words', 'anon:x', 'x'.repeat(33), 42]) {
-      expect((await app.call('POST', '/api/session', { name })).status).toBe(400);
+    for (const name of ['', '  ', 'two words', 'anon:x', 'x'.repeat(33), 42]) {
+      expect((await app.call('POST', '/api/login', { name })).status).toBe(400);
     }
-    expect((await app.call('POST', '/api/session')).status).toBe(400);
+    expect((await app.call('POST', '/api/login')).status).toBe(400);
   });
 });
 
@@ -113,8 +109,7 @@ describe('token endpoint (Ed25519 key file)', () => {
     writeFileSync(join(dir, 'signing-key.pem'), privateKey.export({ type: 'pkcs8', format: 'pem' }));
     const app = await start(loadConfig({ ...BASE_ENV, RTE_PRIVATE_KEY_FILE: './signing-key.pem', RTE_TOKEN_TTL_SECONDS: '900' }, dir));
     try {
-      await app.call('POST', '/api/session', { name: 'bob' });
-      const res = await app.call('POST', '/api/realtime-token', { reason: 'expiring' });
+      const res = await app.call('POST', '/api/realtime-token', { reason: 'expiring' }, await app.login('bob'));
       const { header, claims, input, signature } = decode(res.body.token);
       expect(header.alg).toBe('EdDSA');
       expect(claims.sub).toBe('user:bob');

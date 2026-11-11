@@ -21,13 +21,14 @@ export const identityOf = (name: string) => `user:${name}`;
  * The HTTP API:
  *
  *   GET    /healthz              liveness
- *   GET    /api/session          who is signed in ({ identity: null } when nobody)
- *   POST   /api/session          sign in with { name }
- *   DELETE /api/session          sign out
- *   POST   /api/realtime-token   a token for the signed-in user (the SDK's authUrl)
+ *   POST   /api/login            sign in with { name }; answers { name, identity, session, expiresAt }
+ *   POST   /api/realtime-token   a token for the session in `Authorization: Bearer` (the SDK's authUrl)
+ *
+ * The same name may sign in any number of times: every session gets the same
+ * identity, so the node sees one user with several connections.
  */
 export function createApp(config: Config, rte: Rest = createRest(config), log: Log = console.log): express.Express {
-  const sessions = new Sessions(config.sessionSecret, config.secureCookies);
+  const sessions = new Sessions(config.sessionSecret);
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '4kb' }));
@@ -36,24 +37,17 @@ export function createApp(config: Config, rte: Rest = createRest(config), log: L
     res.json({ ok: true });
   });
 
-  app.get('/api/session', (req, res) => {
-    const session = sessions.read(req);
-    res.json({ identity: session ? identityOf(session.name) : null });
-  });
-
-  app.post('/api/session', (req, res) => {
-    const name: unknown = req.body?.name;
-    if (typeof name !== 'string' || !NAME.test(name.trim())) {
-      res.status(400).json({ error: 'Use a name of 1 to 32 letters, digits, dots, dashes or underscores' });
+  app.post('/api/login', (req, res) => {
+    const raw: unknown = req.body?.name;
+    const name = typeof raw === 'string' ? raw.trim() : '';
+    if (!NAME.test(name)) {
+      res.status(400).json({ error: 'Use 1 to 32 letters, digits, dots, dashes or underscores' });
       return;
     }
-    sessions.start(res, name.trim());
-    res.json({ identity: identityOf(name.trim()) });
-  });
-
-  app.delete('/api/session', (_req, res) => {
-    sessions.end(res);
-    res.status(204).end();
+    const { session, expiresAt } = sessions.issue(name);
+    log(`sign-in as ${identityOf(name)}`);
+    res.set('cache-control', 'no-store');
+    res.json({ name, identity: identityOf(name), session, expiresAt });
   });
 
   // The SDK POSTs { reason } here: 'initial' on connect, 'expiring' about a
@@ -61,7 +55,7 @@ export function createApp(config: Config, rte: Rest = createRest(config), log: L
   // it. Each token is good for every connect and reconnect until it expires.
   app.post('/api/realtime-token', async (req, res) => {
     res.set('cache-control', 'no-store');
-    const session = sessions.read(req);
+    const session = sessions.read(req.headers.authorization);
     if (!session) {
       res.status(401).json({ error: 'Not signed in' });
       return;

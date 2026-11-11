@@ -1,16 +1,17 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { Request, Response } from 'express';
 
 /**
  * A stand-in for your app's real login, so the example has someone to issue
- * tokens for: anyone can sign in with a name. The name lives in a cookie,
- * signed so the browser can't change it, and the cookie is `HttpOnly` and
- * `SameSite=Lax`, so other sites can neither read it nor send it with a POST.
+ * tokens for: anyone can sign in with a name. Signing in returns a session
+ * string (the name and an expiry, HMAC-signed so the browser can't change it)
+ * that the app sends back as `Authorization: Bearer <session>`.
+ *
+ * Each browser tab keeps its own session, so the same name can be signed in
+ * from several tabs or browsers at once: one user, several connections.
  *
  * Replace this with your own sessions. The token endpoint only needs to know
  * who the signed-in user is.
  */
-export const SESSION_COOKIE = 'example_session';
 const SESSION_MS = 8 * 60 * 60 * 1000;
 
 export interface Session {
@@ -21,27 +22,19 @@ export interface Session {
 export class Sessions {
   constructor(
     private readonly secret: string,
-    private readonly secure: boolean,
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** Signs `name` in, by setting the session cookie on `res`. */
-  start(res: Response, name: string): Session {
-    const session = { name, expiresAt: this.now() + SESSION_MS };
-    const payload = Buffer.from(JSON.stringify(session)).toString('base64url');
-    res.cookie(SESSION_COOKIE, `${payload}.${this.sign(payload)}`, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: this.secure,
-      path: '/',
-      maxAge: SESSION_MS,
-    });
-    return session;
+  /** A signed session string for `name`. */
+  issue(name: string): { session: string; expiresAt: number } {
+    const expiresAt = this.now() + SESSION_MS;
+    const payload = Buffer.from(JSON.stringify({ name, expiresAt })).toString('base64url');
+    return { session: `${payload}.${this.sign(payload)}`, expiresAt };
   }
 
-  /** The signed-in user, or undefined when the cookie is missing, altered or expired. */
-  read(req: Request): Session | undefined {
-    const value = cookie(req, SESSION_COOKIE);
+  /** The user of an `Authorization: Bearer <session>` header, or undefined when it is missing, altered or expired. */
+  read(authorization: string | undefined): Session | undefined {
+    const value = authorization?.match(/^Bearer\s+(\S+)$/i)?.[1];
     const dot = value?.lastIndexOf('.') ?? -1;
     if (!value || dot <= 0) return undefined;
     const payload = value.slice(0, dot);
@@ -58,20 +51,7 @@ export class Sessions {
     }
   }
 
-  /** Signs out, by clearing the cookie. */
-  end(res: Response): void {
-    res.clearCookie(SESSION_COOKIE, { httpOnly: true, sameSite: 'lax', secure: this.secure, path: '/' });
-  }
-
   private sign(payload: string): string {
     return createHmac('sha256', this.secret).update(payload).digest('base64url');
   }
-}
-
-function cookie(req: Request, name: string): string | undefined {
-  for (const part of (req.headers.cookie ?? '').split(';')) {
-    const eq = part.indexOf('=');
-    if (eq > 0 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
-  }
-  return undefined;
 }

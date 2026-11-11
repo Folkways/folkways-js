@@ -18,8 +18,6 @@ export interface Config {
   sessionSecret: string;
   /** False when SESSION_SECRET was unset and a random secret was made. */
   sessionSecretFromEnv: boolean;
-  /** Mark the sign-in cookie `Secure` (NODE_ENV=production). */
-  secureCookies: boolean;
 }
 
 /** Every problem with the environment, one per line. */
@@ -87,7 +85,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
     tokenTtlMs: ttlSeconds! * 1000,
     sessionSecret,
     sessionSecretFromEnv,
-    secureCookies: env.NODE_ENV === 'production',
   };
 }
 
