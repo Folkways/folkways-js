@@ -936,6 +936,33 @@ describe('topic views', () => {
     expect(Object.isFrozen(room.messages.getSnapshot())).toBe(true);
   });
 
+  it('keeps one copy of a send whose delivered copy arrives before its receipt', async () => {
+    const { c, conn } = await connected();
+    const room = c.topic<{ message: { text: string } }>('chat/45');
+    room.subscribe();
+    const s = await conn.next('subscribe');
+    conn.reply(s.corr, { type: 'subAck', topicId: 9n, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [] });
+    const p = room.publish('message', { text: 'hi' });
+    const f = await conn.next('publish');
+    conn.reply(0n, {
+      type: 'deliver',
+      topicId: 9n,
+      delivery: DeliveryClass.Durable,
+      replayed: false,
+      events: [
+        event(9n, EPOCH, 1n, '{"text":"hi"}', { publisher: 'alice', name: 'message', contentType: ContentType.Json, uid: { hi: 0n, lo: 5n } }),
+        event(9n, EPOCH, 2n, '{"text":"yo"}', { publisher: 'bob', name: 'message', contentType: ContentType.Json }),
+      ],
+    });
+    await until(() => room.messages.getSnapshot().length === 3);
+    conn.reply(f.corr, ack(1n, 5n));
+    await p;
+    expect(room.messages.getSnapshot().map((m) => [m.id, m.status, m.publisher])).toEqual([
+      [`${EPOCH}:1`, 'sent', 'alice'],
+      [`${EPOCH}:2`, 'sent', 'bob'],
+    ]);
+  });
+
   it('marks a failed send and retries it with the same idempotency key', async () => {
     const { c, conn } = await connected();
     const room = c.topic('chat/45');

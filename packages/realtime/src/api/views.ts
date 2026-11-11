@@ -161,6 +161,16 @@ export class TopicViews {
 
   /** PubAck: the send is `sent`; the delivered copy will replace it in place. */
   acked(localId: string, receipt: { id: string; uid?: string; cursor?: Message['cursor']; serverTime: number }): void {
+    // The delivered copy can beat the receipt: then it takes the send's place.
+    const i = this.list.findIndex((e) => e.localId === localId);
+    const delivered = i < 0 ? -1 : this.list.findIndex((e) => !e.localId && (e.id === receipt.id || (receipt.uid !== undefined && e.uid === receipt.uid)));
+    if (delivered >= 0) {
+      const next = [...this.list];
+      next[i] = next[delivered]!;
+      next.splice(delivered, 1);
+      this.commit(next);
+      return;
+    }
     this.update(localId, (e) => ({
       ...e,
       status: 'sent',
