@@ -8,6 +8,8 @@ export interface Config {
   port: number;
   /** The node URL, e.g. `https://rte.example.com`. */
   rteUrl: string;
+  /** The node's WebSocket URL, only when it serves WebSocket apart from HTTP (a local node). */
+  rteWsUrl?: string;
   /** The segment ID (a UUID). */
   segment: string;
   /** The signing key's `kid` and private half. Never log `privateKey`. */
@@ -49,6 +51,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
   if (!rteUrl) problems.push("RTE_URL is not set: use the node URL from the segment's Connect tab");
   else if (!/^https?:\/\/[^/]/.test(rteUrl)) problems.push(`RTE_URL must start with https:// or http://, got "${rteUrl}"`);
 
+  const rteWsUrl = read('RTE_WS_URL');
+  if (rteWsUrl && !/^wss?:\/\/[^/]/.test(rteWsUrl)) problems.push(`RTE_WS_URL must start with wss:// or ws://, got "${rteWsUrl}"`);
+
   const segment = read('RTE_SEGMENT_ID');
   if (!segment) problems.push("RTE_SEGMENT_ID is not set: use the segment ID from the segment's Connect tab");
   else if (!UUID.test(segment)) problems.push(`RTE_SEGMENT_ID must be a UUID, got "${segment}"`);
@@ -79,6 +84,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
     host: read('HOST') || '127.0.0.1',
     port: port!,
     rteUrl,
+    ...(rteWsUrl ? { rteWsUrl } : {}),
     segment,
     signingKey: { kid, privateKey: key.privateKey, ...(key.alg ? { alg: key.alg } : {}) },
     keySource: key.source,

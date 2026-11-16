@@ -1,7 +1,9 @@
 import { defineConfig } from 'tsup';
 
 // The published build has no source maps; `pnpm dev` adds them (--sourcemap).
-export default defineConfig({
+// Watch mode keeps the existing dist/ instead of wiping it, so the example app
+// and token server that `pnpm dev` starts alongside always find the SDK.
+export default defineConfig((options) => ({
   entry: {
     index: 'src/index.ts',
     server: 'src/server/index.ts',
@@ -13,7 +15,7 @@ export default defineConfig({
   target: 'es2020',
   dts: true,
   sourcemap: false,
-  clean: true,
+  clean: !options.watch,
   minify: false,
   splitting: false,
-});
+}));

@@ -53,6 +53,12 @@ describe('token endpoint (HS256)', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
   });
 
+  it('tells the app which node to connect to', async () => {
+    const res = await app.call('GET', '/api/connection');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ url: 'https://rte.example.com' });
+  });
+
   it('signs in with a name', async () => {
     const res = await app.call('POST', '/api/login', { name: ' alice ' });
     expect(res.status).toBe(200);
@@ -163,5 +169,16 @@ describe('loadConfig', () => {
   it('checks the segment ID and node URL', () => {
     expect(problems({ ...BASE_ENV, RTE_SECRET: SECRET, RTE_SEGMENT_ID: 'my-segment' })).toMatch(/must be a UUID/);
     expect(problems({ ...BASE_ENV, RTE_SECRET: SECRET, RTE_URL: 'rte.example.com' })).toMatch(/RTE_URL must start/);
+    expect(problems({ ...BASE_ENV, RTE_SECRET: SECRET, RTE_WS_URL: 'http://127.0.0.1:9005/v1/ws' })).toMatch(/RTE_WS_URL must start/);
+  });
+
+  it('hands the app a separate WebSocket URL when one is set', async () => {
+    const app = await start(loadConfig({ ...BASE_ENV, RTE_SECRET: SECRET, RTE_WS_URL: 'ws://127.0.0.1:9005/v1/ws' }, dir));
+    try {
+      const res = await app.call('GET', '/api/connection');
+      expect(res.body).toEqual({ url: 'https://rte.example.com', endpoints: { websocket: 'ws://127.0.0.1:9005/v1/ws' } });
+    } finally {
+      await app.stop();
+    }
   });
 });

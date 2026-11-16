@@ -24,16 +24,10 @@ Then set up the token server as its [README](../token-server/README.md) explains
 
 ## Run it
 
-Create `apps/react-example/.env.local`:
+The app has no settings of its own. Your segment's details (node URL, segment ID, signing key) go only in the token
+server's `apps/token-server/.env`; the app asks the token server which node to connect to.
 
-```bash
-# The node URL from your segment's Connect tab
-VITE_RTE_URL=https://rte.example.com
-# Only for a node that serves WebSocket on its own port, such as a local one:
-# VITE_RTE_WS_URL=ws://localhost:9005/v1/ws
-```
-
-Then, from the repository root, start the SDK, the token server and the app together:
+From the repository root, start the SDK, the token server and the app together:
 
 ```bash
 pnpm install
@@ -43,7 +37,7 @@ pnpm dev
 Open the page and sign in with a name. Open a second tab and sign in with another name, or the same one, and chat.
 
 The dev server forwards `/api` to the token server at `http://127.0.0.1:8787`, so the app and the token endpoint
-share one origin. Set `TOKEN_SERVER_URL` in `.env.local` if it runs elsewhere.
+share one origin. Set `TOKEN_SERVER_URL` in `apps/react-example/.env.local` only if the token server runs elsewhere.
 
 ## What to look at
 
@@ -51,7 +45,7 @@ share one origin. Set `TOKEN_SERVER_URL` in `.env.local` if it runs elsewhere.
 | --- | --- |
 | `src/App.tsx` | Sign-in, and one client connected with a `token` function that asks the token server |
 | `src/Chat.tsx` | `topic.messages`, `topic.values()` for typing, presence and your connections, and `client.connection` |
-| `src/api.ts` | The calls to the token server |
+| `src/api.ts` | The calls to the token server: where to connect, sign-in and tokens |
 | `src/styles/tokens.css` | The design tokens, copied from folkways.io |
 | `vite.config.ts` | The `/api` proxy to the token server |
 

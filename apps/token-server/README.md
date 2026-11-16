@@ -144,13 +144,9 @@ cd apps/token-server && NODE_ENV=production node dist/server.js
 
 ## 4. Connect the example app
 
-Create `apps/react-example/.env.local` with the node URL:
-
-```bash
-VITE_RTE_URL=https://rte.example.com
-```
-
-With the token server running, start the app from the repository root:
+The app needs no settings of its own: it asks this server which node to connect to (`GET /api/connection`), so
+your segment's details live only in this server's `.env`. With the token server running, start the app from the
+repository root:
 
 ```bash
 pnpm --filter @folkwaysio/react-example dev
@@ -171,6 +167,7 @@ is needed. If the token server runs somewhere else, set `TOKEN_SERVER_URL` in th
 | Method and path | Request | Response |
 | --- | --- | --- |
 | `GET /healthz` | | `{ "ok": true }` |
+| `GET /api/connection` | | `{ "url", "endpoints"?: { "websocket" } }`: where the app connects, ready to spread into `Folkways.connect` |
 | `POST /api/login` | `{ "name": "alice" }`: 1 to 32 letters, digits, `.`, `-` or `_` | `{ "name", "identity": "user:alice", "session", "expiresAt" }`; `400` for a bad name |
 | `POST /api/realtime-token` | `{ "reason": "initial" \| "expiring" \| "rejected" }` and `Authorization: Bearer <session>` | `{ "token": "…", "expiresAt": <Unix ms> }`; `401` without a valid session |
 
@@ -186,6 +183,7 @@ The server reads these from the environment. When there is a `.env` file in its 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `RTE_URL` | required | The node URL, from the segment's **Connect** tab |
+| `RTE_WS_URL` | unset | Only for a node that serves WebSocket on its own port, such as a local one (`ws://127.0.0.1:9005/v1/ws`) |
 | `RTE_SEGMENT_ID` | required | The segment ID (a UUID), from the **Connect** tab |
 | `RTE_KEY_ID` | required | The signing key's ID (`kid`), from the **Signing keys** tab |
 | `RTE_PRIVATE_KEY_FILE`, `RTE_PRIVATE_KEY` or `RTE_SECRET` | one required | The key's private half; see [Store the key](#2-store-the-key) |
@@ -268,6 +266,7 @@ closes every connection still using a token signed with it.
 | The app says `Can't reach the token server` | Start the token server, or set `TOKEN_SERVER_URL` in the app's `.env.local` |
 | The app says `Your sign-in has expired` | The token server restarted without `SESSION_SECRET`, or the 8-hour session ended. Sign in again |
 | The app says `The node refused the token` (`AuthInvalid`) | `RTE_SEGMENT_ID` or `RTE_KEY_ID` doesn't match the key in the dashboard, the key was deleted, or an HS256 secret is used on a paid segment (they work on Free only). Check that the server's clock is right |
+| The app says `Can't reach the node at …` | Check `RTE_URL` (and `RTE_WS_URL` for a local node) in `.env`, restart this server, and check that the node is running |
 | `Forbidden` when subscribing or publishing | The topic needs a rule that allows the operation, and the token's permissions (`src/permissions.ts`) must include it |
 
 More in [Errors and troubleshooting](https://docs.folkways.io/docs/js-sdk/errors).

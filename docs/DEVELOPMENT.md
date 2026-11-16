@@ -76,8 +76,7 @@ pnpm dev
 ```
 
 This rebuilds the SDK on every change (ESM and CommonJS only) and starts the example app's dev server and the
-example token server, which pick up the new build. Build the SDK once first (`pnpm --filter @folkwaysio/realtime
-build`) so the token server finds it when it starts. To watch the SDK alone: `pnpm --filter @folkwaysio/realtime dev`.
+example token server, which pick up the new build. It builds the SDK first, so it works on a fresh clone. To watch the SDK alone: `pnpm --filter @folkwaysio/realtime dev`.
 
 ## Test
 

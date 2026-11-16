@@ -38,6 +38,7 @@ const app = createApp(config, await signingClient(config));
 const server = app.listen(config.port, config.host, (err) => {
   if (err) fail(`can't listen on ${config.host}:${config.port}: ${err.message}`);
   console.log(`token-server: listening on http://${config.host}:${config.port}`);
+  console.log(`  node ${config.rteUrl}${config.rteWsUrl ? ` (WebSocket ${config.rteWsUrl})` : ''}`);
   console.log(`  segment ${config.segment}, key ${config.signingKey.kid} from ${config.keySource}, tokens last ${config.tokenTtlMs / 1000} s`);
   if (!config.sessionSecretFromEnv) console.log('  SESSION_SECRET is not set: sign-ins last until the server restarts');
   console.log("  This example signs anyone in by name. Use your app's own login before you deploy it.");

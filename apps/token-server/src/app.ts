@@ -21,6 +21,7 @@ export const identityOf = (name: string) => `user:${name}`;
  * The HTTP API:
  *
  *   GET    /healthz              liveness
+ *   GET    /api/connection       where the app connects: { url, endpoints? }, ready for Folkways.connect
  *   POST   /api/login            sign in with { name }; answers { name, identity, session, expiresAt }
  *   POST   /api/realtime-token   a token for the session in `Authorization: Bearer` (the SDK's authUrl)
  *
@@ -35,6 +36,12 @@ export function createApp(config: Config, rte: Rest = createRest(config), log: L
 
   app.get('/healthz', (_req, res) => {
     res.json({ ok: true });
+  });
+
+  // The app connects to the node this server signs tokens for, so the segment's
+  // settings live in one place (.env here) and the app needs none of its own.
+  app.get('/api/connection', (_req, res) => {
+    res.json({ url: config.rteUrl, ...(config.rteWsUrl ? { endpoints: { websocket: config.rteWsUrl } } : {}) });
   });
 
   app.post('/api/login', (req, res) => {

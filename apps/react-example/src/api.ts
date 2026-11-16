@@ -44,6 +44,26 @@ export function saveSignIn(s: SignIn | null): void {
   }
 }
 
+/** Where to connect, as the token server reports it: spread into `Folkways.connect`. */
+export interface Connection {
+  url: string;
+  endpoints?: { websocket?: string };
+}
+
+/** The node the token server signs tokens for. Its `.env` holds the segment's settings, so the app needs none. */
+export async function connection(): Promise<Connection> {
+  let res: Response;
+  try {
+    res = await fetch('/api/connection');
+  } catch {
+    throw new Error(SERVER_DOWN);
+  }
+  if (res.status >= 500) throw new Error(SERVER_DOWN);
+  const json = (await res.json().catch(() => ({}))) as Partial<Connection>;
+  if (!res.ok || typeof json.url !== 'string') throw new Error(`The token server answered HTTP ${res.status}`);
+  return json as Connection;
+}
+
 async function post(path: string, body: unknown, session?: string): Promise<Response> {
   let res: Response;
   try {

@@ -1,13 +1,11 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Folkways, isRealtimeError, type Realtime } from '@folkwaysio/realtime';
-import { login, realtimeToken, savedSignIn, saveSignIn, SignedOut, type SignIn } from './api';
+import { connection, login, realtimeToken, savedSignIn, saveSignIn, SignedOut, type SignIn } from './api';
 import { Chat } from './Chat';
 import { Eyebrow, LogoTile } from './ui';
 
-// The node from your segment's Connect tab. VITE_RTE_WS_URL is only needed
-// when the node serves WebSocket on another port than HTTP (a local node).
-const NODE_URL = import.meta.env.VITE_RTE_URL ?? '';
-const WS_URL = import.meta.env.VITE_RTE_WS_URL;
+// The node URL the last connect used, for error messages.
+let nodeUrl = '';
 
 /** Explains a failed connect in terms of what to fix. */
 function describe(err: unknown): string {
@@ -18,7 +16,7 @@ function describe(err: unknown): string {
     if (err.codeName === 'AuthInvalid') {
       return 'The node refused the token. Check that RTE_SEGMENT_ID, RTE_KEY_ID and the signing key in apps/token-server/.env belong to the same segment (HS256 secrets work on Free segments only).';
     }
-    if (err.codeName === 'Timeout') return `Can't reach the node at ${NODE_URL}. Is it running?`;
+    if (err.codeName === 'Timeout') return `Can't reach the node at ${nodeUrl}. Check RTE_URL in apps/token-server/.env, and that the node is running.`;
     return `${err.codeName}: ${err.message}`;
   }
   return (err as Error).message ?? String(err);
@@ -30,10 +28,12 @@ async function connect(signIn: SignIn): Promise<Realtime> {
   // Get the first token up front: the SDK retries a failing token function
   // until the connect times out, but an expired sign-in or a stopped token
   // server should show at once.
-  let first: string | undefined = await realtimeToken(signIn.session, 'initial');
+  // The node comes from the token server too, so the app has no settings of its own.
+  const [node, initial] = await Promise.all([connection(), realtimeToken(signIn.session, 'initial')]);
+  nodeUrl = node.url;
+  let first: string | undefined = initial;
   return Folkways.connect({
-    url: NODE_URL,
-    ...(WS_URL ? { endpoints: { websocket: WS_URL } } : {}),
+    ...node,
     // Called on connect and again before each token expires.
     token: ({ reason }) => {
       const token = first;
@@ -55,7 +55,7 @@ export default function App() {
   // A reload keeps this tab's sign-in: connect again straight away.
   useEffect(() => {
     const saved = savedSignIn();
-    if (!saved || !NODE_URL) return;
+    if (!saved) return;
     let cancelled = false;
     setBusy(true);
     connect(saved)
@@ -111,11 +111,7 @@ function Login({ onJoin, busy, error, resuming }: { onJoin: (name: string) => vo
         <LogoTile size={48} />
         <Eyebrow>Realtime chat example</Eyebrow>
         <h1 className="fw-text-heading-2">Join the lobby</h1>
-        {!NODE_URL ? (
-          <p className="muted">
-            Set <code>VITE_RTE_URL</code> in <code>apps/react-example/.env.local</code> to your node&apos;s URL, then restart <code>pnpm dev</code>.
-          </p>
-        ) : resuming ? (
+        {resuming ? (
           <p className="muted" role="status">
             Reconnecting…
           </p>
