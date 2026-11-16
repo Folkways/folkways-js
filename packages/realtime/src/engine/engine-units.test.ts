@@ -6,7 +6,7 @@ import { Code } from '../shared/codes';
 import { RealtimeError, localError } from '../shared/errors';
 import { silentLogger } from '../shared/logger';
 import { AckMode, DeliveryClass, FlowAction, OnGap, StartAt } from '../transport';
-import { Backoff } from './backoff';
+import { Backoff, PollPacer } from './backoff';
 import { memoryCursorStore } from './cursor-store';
 import { Outbox } from './outbox';
 import { KEYS, ScopedStore, memoryStore, scopePrefix } from './store';
@@ -35,6 +35,60 @@ describe('Backoff', () => {
     expect(Math.min(...many)).toBeGreaterThanOrEqual(5_000);
     expect(Math.max(...many)).toBeLessThan(5_500);
     expect(new Set(many).size).toBeGreaterThan(50);
+  });
+});
+
+describe('PollPacer', () => {
+  it('waits before repeating a poll that came back at once with nothing new, growing to about 2 s', () => {
+    const p = new PollPacer(undefined, () => 0.5);
+    // waitMs 25 s asked, answered in 3 ms: the node did not hold it.
+    expect([p.next(false, 3, 25_000), p.next(false, 3, 25_000), p.next(false, 3, 25_000), p.next(false, 3, 25_000), p.next(false, 3, 25_000)]).toEqual([
+      250, 500, 1_000, 2_000, 2_000,
+    ]);
+  });
+
+  it('jitters by ±20%, so a herd spreads out', () => {
+    expect(new PollPacer(undefined, () => 0).next(false, 0, 25_000)).toBe(200);
+    expect(new PollPacer(undefined, () => 0.999).next(false, 0, 25_000)).toBe(300);
+    const caps = Array.from({ length: 200 }, () => {
+      const p = new PollPacer();
+      for (let i = 0; i < 10; i++) p.next(false, 0, 25_000);
+      return p.next(false, 0, 25_000);
+    });
+    expect(Math.min(...caps)).toBeGreaterThanOrEqual(1_600);
+    expect(Math.max(...caps)).toBeLessThanOrEqual(2_400);
+    expect(new Set(caps).size).toBeGreaterThan(50);
+  });
+
+  it('resets on real data, a page with more, or a poll the node really held', () => {
+    const p = new PollPacer(undefined, () => 0.5);
+    p.next(false, 0, 25_000);
+    p.next(false, 0, 25_000);
+    expect(p.next(true, 2, 25_000)).toBe(0);
+    expect(p.next(false, 0, 25_000)).toBe(250);
+    // Held for 25 s and timed out: a normal long poll, no wait.
+    expect(p.next(false, 25_000, 25_000)).toBe(0);
+    expect(p.attempts).toBe(0);
+    // The 1 s empty-topic wait counts as held.
+    p.next(false, 0, 1_000);
+    expect(p.next(false, 1_000, 1_000)).toBe(0);
+  });
+
+  it('never lets a poll that asks for no wait, or a tiny one, repeat at once', () => {
+    const p = new PollPacer(undefined, () => 0.5);
+    // waitMs 0 (the empty-topic recheck, or waitMs: 0 in the options) is never "held".
+    expect(p.next(false, 0, 0)).toBe(250);
+    // waitMs 1 answered after 1 ms: shorter than 250 ms, so not held either.
+    expect(p.next(false, 1, 1)).toBe(500);
+    // Over a minute of back-to-back empty answers, a few polls at most.
+    let t = 0;
+    let polls = 0;
+    const q = new PollPacer();
+    while (t < 60_000) {
+      polls++;
+      t += 1 + q.next(false, 1, 0);
+    }
+    expect(polls).toBeLessThan(70);
   });
 });
 
@@ -639,6 +693,136 @@ describe('SubscriptionRegistry', () => {
       r.onSubAck(e, { topicId: 1n, delivery: S, catchingUp: false, snapshotFollows: false, deliveries: [] });
       r.add('chat/a', spec, listener([S]).l);
       expect(e.retype).toBe(false);
+    });
+  });
+
+  describe('snapshots of state-only topics', () => {
+    const { Durable: S, Ephemeral: SIG, LastValue: KV } = DeliveryClass;
+    const OLD = 11n;
+    const NEW = 22n;
+    const snap = (events: ReturnType<typeof event>[], fence?: { epoch: bigint; seq: bigint }) => ({
+      topicId: 1n,
+      snapshotId: 1n,
+      chunk: 0,
+      lastChunk: true,
+      fence,
+      events,
+    });
+
+    it('takes the cursor of a snapshot, even one behind the stored cursor', async () => {
+      const r = new SubscriptionRegistry({ cursorStore: memoryCursorStore(), logger: silentLogger, onChange: () => {} });
+      const e = r.add('$online/bob', spec, listener().l);
+      r.onSubAck(e, { topicId: 1n, delivery: SIG, catchingUp: false, snapshotFollows: true, deliveries: [SIG] });
+      r.onSnapshot(e, snap([event(1n, OLD, 5n, 'on', { delivery: SIG })]));
+      expect(e.received).toEqual({ epoch: OLD, seq: 5n });
+      r.onSnapshot(e, snap([event(1n, NEW, 1n, 'on', { delivery: SIG })]));
+      expect(e.received).toEqual({ epoch: NEW, seq: 1n });
+      r.onSnapshot(e, snap([], { epoch: NEW, seq: 3n }));
+      expect(e.received).toEqual({ epoch: NEW, seq: 3n });
+    });
+
+    it('clears the cursor on a snapshot without one, so the topic polls as empty', async () => {
+      const store = memoryCursorStore();
+      await store.set('$online/bob', { epoch: OLD, seq: 4n });
+      const r = new SubscriptionRegistry({ cursorStore: store, logger: silentLogger, onChange: () => {} });
+      const e = r.add('$online/bob', spec, listener().l);
+      await e.loading;
+      expect(e.resumeCursor).toEqual({ epoch: OLD, seq: 4n });
+      r.onSubAck(e, { topicId: 1n, delivery: SIG, catchingUp: false, snapshotFollows: true, deliveries: [SIG] });
+      r.onSnapshot(e, snap([event(1n, OLD, 5n, 'on', { delivery: SIG })]));
+      await e.chain;
+      expect(await store.get('$online/bob')).toEqual({ epoch: OLD, seq: 5n });
+      // The node restarted: a fresh, empty $online with no position.
+      r.onSnapshot(e, snap([]));
+      await e.chain;
+      expect(e.received).toBeUndefined();
+      expect(e.resumeCursor).toBeUndefined();
+      expect(e.processed).toBeUndefined();
+      expect(await store.get('$online/bob')).toBeUndefined();
+      expect(e.subscribeBody()).toMatchObject({ start: StartAt.Latest });
+      expect(e.subscribeBody().cursor).toBeUndefined();
+    });
+
+    it('drops every old position on an empty snapshot: cursor, stored cursor, state version, processed and hinted', async () => {
+      const store = memoryCursorStore();
+      await store.set('$online/bob', { epoch: OLD, seq: 4n });
+      const r = new SubscriptionRegistry({ cursorStore: store, logger: silentLogger, onChange: () => {} });
+      const e = r.add('$online/bob', spec, listener().l);
+      await e.loading;
+      // The old node: a cursor, a latest, a state version from SubAck and from the event.
+      r.onSubAck(e, { topicId: 1n, delivery: SIG, catchingUp: false, snapshotFollows: true, deliveries: [SIG], latest: { epoch: OLD, seq: 5n }, stateLatest: { epoch: OLD, seq: 8n } });
+      r.onSnapshot(e, snap([event(1n, OLD, 5n, 'on', { delivery: SIG, version: 9n })]));
+      await e.chain;
+      e.hinted = e.processed;
+      expect(e.stateLatest).toEqual({ epoch: OLD, seq: 9n });
+      expect(e.processed).toEqual({ epoch: OLD, seq: 5n });
+      // The new node answers with no position at all.
+      r.onSubAck(e, { topicId: 1n, delivery: SIG, catchingUp: false, snapshotFollows: true, deliveries: [SIG] }, true);
+      r.onSnapshot(e, snap([]));
+      // All gone at once, before any callback runs.
+      expect(e.received).toBeUndefined();
+      expect(e.stored).toBeUndefined();
+      expect(e.latest).toBeUndefined();
+      expect(e.stateLatest).toBeUndefined();
+      expect(e.processed).toBeUndefined();
+      expect(e.hinted).toBeUndefined();
+      expect(r.takeCursorHints()).toEqual([]);
+      await e.chain;
+      expect(await store.get('$online/bob')).toBeUndefined();
+      expect(e.processed).toBeUndefined();
+    });
+
+    it('does not let a callback queued before the empty snapshot write the old cursor back', async () => {
+      const store = memoryCursorStore();
+      const r = new SubscriptionRegistry({ cursorStore: store, logger: silentLogger, onChange: () => {} });
+      let release!: () => void;
+      const slow = listener().l;
+      const gate = new Promise<void>((res) => (release = res));
+      const e = r.add('$online/bob', spec, { ...slow, onSnapshot: () => gate });
+      r.onSubAck(e, { topicId: 1n, delivery: SIG, catchingUp: false, snapshotFollows: true, deliveries: [SIG] });
+      r.onSnapshot(e, snap([event(1n, OLD, 5n, 'on', { delivery: SIG })]));
+      // The listener is still busy with the old snapshot when the empty one lands.
+      r.onSnapshot(e, snap([]));
+      release();
+      await e.chain;
+      expect(e.received).toBeUndefined();
+      expect(e.processed).toBeUndefined();
+      expect(await store.get('$online/bob')).toBeUndefined();
+    });
+
+    it('keeps the new node\'s positions from the SubAck of the same answer', async () => {
+      const r = new SubscriptionRegistry({ cursorStore: memoryCursorStore(), logger: silentLogger, onChange: () => {} });
+      const e = r.add('$online/bob', spec, listener().l);
+      r.onSubAck(e, { topicId: 1n, delivery: SIG, catchingUp: false, snapshotFollows: true, deliveries: [SIG], latest: { epoch: OLD, seq: 5n }, stateLatest: { epoch: OLD, seq: 9n } });
+      r.onSnapshot(e, snap([event(1n, OLD, 5n, 'on', { delivery: SIG, version: 9n })]));
+      r.onSubAck(e, { topicId: 1n, delivery: SIG, catchingUp: false, snapshotFollows: true, deliveries: [SIG], latest: { epoch: NEW, seq: 2n }, stateLatest: { epoch: NEW, seq: 3n } }, true);
+      r.onSnapshot(e, snap([]));
+      expect(e.latest).toEqual({ epoch: NEW, seq: 2n });
+      expect(e.stateLatest).toEqual({ epoch: NEW, seq: 3n });
+      expect(e.received).toBeUndefined();
+    });
+
+    it('treats a kv-only topic, and an old node\'s state topic, as state-only', async () => {
+      const r = new SubscriptionRegistry({ cursorStore: memoryCursorStore(), logger: silentLogger, onChange: () => {} });
+      const kv = r.add('rides/1', spec, listener().l);
+      r.onSubAck(kv, { topicId: 1n, delivery: KV, catchingUp: false, snapshotFollows: true, deliveries: [KV, SIG] });
+      r.onSnapshot(kv, snap([event(1n, OLD, 2n, 'x', { delivery: KV, key: 'k' })]));
+      r.onSnapshot(kv, snap([]));
+      expect(kv.received).toBeUndefined();
+      const old = r.add('rides/2', spec, listener().l);
+      r.onSubAck(old, { topicId: 2n, delivery: KV, catchingUp: false, snapshotFollows: true, deliveries: [] });
+      r.onSnapshot(old, { ...snap([event(2n, OLD, 2n, 'x', { key: 'k' })]), topicId: 2n });
+      r.onSnapshot(old, { ...snap([]), topicId: 2n });
+      expect(old.received).toBeUndefined();
+    });
+
+    it('keeps the stream cursor of a topic with stream events when its state snapshot is empty', async () => {
+      const r = new SubscriptionRegistry({ cursorStore: memoryCursorStore(), logger: silentLogger, onChange: () => {} });
+      const e = r.add('rooms/1', spec, listener().l);
+      r.onSubAck(e, { topicId: 1n, delivery: DeliveryClass.Unspecified, catchingUp: false, snapshotFollows: true, deliveries: [S, KV, SIG] });
+      r.onDeliver(e, { topicId: 1n, delivery: DeliveryClass.Unspecified, replayed: false, events: [event(1n, OLD, 7n, 'hi', { delivery: S })] });
+      r.onSnapshot(e, snap([]));
+      expect(e.received).toEqual({ epoch: OLD, seq: 7n });
     });
   });
 });

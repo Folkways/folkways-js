@@ -1,4 +1,5 @@
 import { Code, codeInfo } from '../shared/codes';
+import { type Cursor, sameCursor } from '../shared/cursor';
 import { RealtimeError, localError } from '../shared/errors';
 import { randomU64 } from '../shared/random';
 import {
@@ -13,7 +14,7 @@ import {
   TransportError,
   decodeServerPacket,
 } from '../transport';
-import { Backoff, sleep } from './backoff';
+import { Backoff, PollPacer, sleep } from './backoff';
 import { packetize } from './packets';
 import { type OutboundPublish, opError } from './publish-queue';
 import type { CloseInfo, Session, SessionHost, SessionInfo } from './session';
@@ -26,6 +27,9 @@ export interface PollSessionOptions {
   maxEvents: number;
   emptyStateRecheckMs: number;
 }
+
+/** Both absent, or the same cursor. */
+const samePosition = (a: Cursor | undefined, b: Cursor | undefined): boolean => (!a && !b) || sameCursor(a, b);
 
 /** Topics per `Poll` (schema limit). */
 const MAX_POLL_TOPICS = 256;
@@ -64,6 +68,35 @@ function endsSession(code: number): boolean {
 }
 
 /**
+ * Whether the node answers over HTTP: one `Ping` to `/v1/publish`. Any
+ * reply from the node counts, even a refusal; a network error, a timeout or
+ * a 5xx (a proxy in front of a node that is down) does not.
+ */
+export async function httpReachable(
+  transport: RequestTransport,
+  baseUrl: string,
+  token: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const frames: ClientFrame[] = [{ corr: 1n, msg: { type: 'ping', nonce: randomU64(), tsMs: Date.now() } }];
+  const packet = packetize(frames, DEFAULT_LIMITS).packets[0]!.bytes;
+  const abort = new AbortController();
+  const onAbort = () => abort.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  const timer = timeoutMs > 0 ? setTimeout(onAbort, timeoutMs) : undefined;
+  try {
+    const reply = await transport.request(baseUrl, '/v1/publish', token, packet, abort.signal);
+    return reply.status < 500;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+/**
  * The HTTP protocol driver. Publishes go to `POST /v1/publish` in batches;
  * subscriptions are served by a stateless long-poll loop on `POST /v1/poll`
  * that carries each topic's cursor itself.
@@ -83,6 +116,12 @@ export class PollSession implements Session {
   private publishing = false;
   private nextCorr = 1n;
   private recheckNext = false;
+  /**
+   * One pacer per poll group, keyed by the group's topics, so a quiet group
+   * never rides on a busy one and a regrouping never hands one group's
+   * pacing to another. Pacers unused for a minute are dropped.
+   */
+  private readonly pacers = new Map<string, { pacer: PollPacer; usedAt: number }>();
 
   constructor(
     private readonly host: SessionHost,
@@ -289,6 +328,8 @@ export class PollSession implements Session {
     const onEnd = () => abort.abort();
     this.endController.signal.addEventListener('abort', onEnd, { once: true });
     try {
+      const now = Date.now();
+      for (const [key, p] of this.pacers) if (now - p.usedAt > 60_000) this.pacers.delete(key);
       await Promise.all(groups.map((g) => this.pollGroup(g, abort.signal)));
     } finally {
       this.endController.signal.removeEventListener('abort', onEnd);
@@ -301,14 +342,19 @@ export class PollSession implements Session {
     const recheck = anyEmpty && this.recheckNext;
     const waitMs = recheck ? 0 : anyEmpty ? Math.min(this.opts.waitMs, this.opts.emptyStateRecheckMs) : this.opts.waitMs;
     const topics = group.map((e) => this.pollBody(e, recheck));
+    const before = group.map((e) => ({ received: e.received, stateLatest: e.stateLatest }));
+    const started = Date.now();
     const frames = await this.call(
       '/v1/poll',
       [{ corr: this.corr(), msg: { type: 'poll', poll: { topics, maxEvents: this.opts.maxEvents, waitMs } } }],
       signal,
     );
     if (anyEmpty) this.recheckNext = !recheck;
+    const elapsed = Date.now() - started;
     const { registry } = this.host;
     const seen = new Set<TopicEntry>();
+    let fresh = 0;
+    let more = false;
     for (const { msg } of frames) {
       switch (msg.type) {
         case 'opError': {
@@ -335,7 +381,7 @@ export class PollSession implements Session {
         }
         case 'deliver': {
           const entry = registry.byTopicId(msg.topicId);
-          if (entry) registry.onDeliver(entry, msg, false);
+          if (entry) fresh += registry.onDeliver(entry, msg, false);
           break;
         }
         case 'snapshot': {
@@ -343,6 +389,9 @@ export class PollSession implements Session {
           if (entry) registry.onSnapshot(entry, msg);
           break;
         }
+        case 'pollEnd':
+          more ||= msg.more;
+          break;
         default:
           break;
       }
@@ -353,6 +402,25 @@ export class PollSession implements Session {
       if (!seen.has(e) && e.wire === 'active') e.wire = 'idle';
       this.afterRead(e);
     }
+    // Safety net: a long poll that came back at once with nothing new must
+    // not be repeated at once, whatever made the node answer early.
+    const moved = group.some((e, i) => !samePosition(e.received, before[i]!.received) || !samePosition(e.stateLatest, before[i]!.stateLatest));
+    const delay = this.pacerFor(group).next(fresh > 0 || moved || more, elapsed, waitMs);
+    if (delay > 0 && !signal.aborted) {
+      this.host.log.debug('long poll returned at once with nothing new; waiting', { delayMs: delay, elapsedMs: elapsed });
+      await sleep(delay, signal);
+    }
+  }
+
+  private pacerFor(group: TopicEntry[]): PollPacer {
+    const key = group
+      .map((e) => e.name)
+      .sort()
+      .join('\n');
+    let p = this.pacers.get(key);
+    if (!p) this.pacers.set(key, (p = { pacer: new PollPacer(), usedAt: 0 }));
+    p.usedAt = Date.now();
+    return p.pacer;
   }
 
   /** Where the next poll of an established topic starts. */

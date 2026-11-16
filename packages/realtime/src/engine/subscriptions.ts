@@ -132,6 +132,13 @@ export class TopicEntry {
    * back as `stateAfter` so the node answers only with what changed.
    */
   stateLatest?: Cursor;
+  /** `SubAck.stateLatest` of the last answer, as the node sent it (absent when it sent none). */
+  ackStateLatest?: Cursor;
+  /**
+   * Bumped whenever the topic's position is replaced or dropped; a callback
+   * queued before then must not write its now obsolete cursor back.
+   */
+  positionGen = 0;
   loaded = false;
   readonly loading: Promise<void>;
   everActive = false;
@@ -176,6 +183,16 @@ export class TopicEntry {
   get isState(): boolean {
     const state = (d: DeliveryClass) => d === DeliveryClass.LastValue || d === DeliveryClass.Ephemeral;
     return state(this.deliveryClass) || this.allowed.some(state);
+  }
+
+  /**
+   * Every type the topic holds is kv or signal (such as `$online/<identity>`):
+   * a snapshot is the whole topic, and its positions are the only ones worth
+   * resuming from.
+   */
+  get isStateOnly(): boolean {
+    const state = (d: DeliveryClass) => d === DeliveryClass.LastValue || d === DeliveryClass.Ephemeral;
+    return this.allowed.length > 0 ? this.allowed.every(state) : state(this.deliveryClass);
   }
 
   /** The union of every listener's event types; empty means all. */
@@ -364,6 +381,7 @@ export class SubscriptionRegistry {
     entry.deliveryClass = ack.delivery;
     entry.allowed = ack.deliveries;
     entry.latest = ack.latest;
+    entry.ackStateLatest = ack.stateLatest;
     if (ack.stateLatest) entry.noteState(ack.stateLatest);
     if (quiet && entry.wire === 'active') return;
     entry.wire = 'active';
@@ -406,9 +424,13 @@ export class SubscriptionRegistry {
     return true;
   }
 
-  /** Events from the wire. `replayed` overrides the frame's flag (long-poll reads are always "replays"). */
-  onDeliver(entry: TopicEntry, d: Deliver, replayed = d.replayed): void {
-    if (entry.removed) return;
+  /**
+   * Events from the wire. `replayed` overrides the frame's flag (long-poll
+   * reads are always "replays"). Returns how many events were new.
+   */
+  onDeliver(entry: TopicEntry, d: Deliver, replayed = d.replayed): number {
+    if (entry.removed) return 0;
+    let fresh = 0;
     if (d.delivery !== DeliveryClass.Unspecified && entry.allowed.length === 0) entry.deliveryClass = d.delivery;
     const now = this.now();
     for (const event of d.events) {
@@ -422,16 +444,19 @@ export class SubscriptionRegistry {
         if (!isAfter(c, entry.received)) continue; // already seen
         entry.received = c;
       }
+      fresh++;
       entry.storeValue(event, delivery, now);
       if (delivery === DeliveryClass.Durable && numbered) this.opts.cache?.addMessage(entry.name, event);
       else if (delivery === DeliveryClass.LastValue) this.opts.cache?.setValues(entry.name, entry.kvList());
       const delivered: DeliveredEvent = { topic: entry.name, event, delivery, replayed, fromSnapshot: false };
+      const gen = entry.positionGen;
       this.run(entry, async () => {
         this.opts.observe?.(delivered);
         await Promise.all([...entry.listeners].filter((l) => accepts(l.types, delivery)).map((l) => l.onEvent(delivered)));
-        if (numbered && delivery === DeliveryClass.Durable) await this.processed(entry, c);
+        if (numbered && delivery === DeliveryClass.Durable) await this.processed(entry, c, gen);
       });
     }
+    return fresh;
   }
 
   onSnapshot(entry: TopicEntry, s: Snapshot): void {
@@ -446,6 +471,18 @@ export class SubscriptionRegistry {
     const now = this.now();
     entry.kv.clear();
     entry.signals.clear();
+    const stateOnly = entry.isStateOnly;
+    if (stateOnly) {
+      // The snapshot replaces the whole topic, so every position from before
+      // it goes: the state version restarts from what this answer's SubAck
+      // said (the snapshot's own versions move it on below), and callbacks
+      // still queued may not write an older cursor back. After a node
+      // restart the snapshot is empty and carries no position; keeping one
+      // from the old node would make it answer every poll at once with the
+      // same snapshot.
+      entry.positionGen++;
+      entry.stateLatest = entry.ackStateLatest;
+    }
     let top: Cursor | undefined = s.fence;
     const delivered: DeliveredEvent[] = [];
     for (const event of events) {
@@ -456,11 +493,18 @@ export class SubscriptionRegistry {
       const c = { epoch: event.epoch, seq: event.seq };
       if (!top || (c.epoch === top.epoch && c.seq > top.seq)) top = c;
     }
-    if (top) entry.received = top;
+    if (stateOnly) {
+      entry.received = top;
+      entry.stored = undefined;
+      if (!top) this.forgetCursor(entry);
+    } else if (top) {
+      entry.received = top;
+    }
     this.opts.cache?.setValues(entry.name, entry.kvList());
+    const gen = entry.positionGen;
     this.run(entry, async () => {
       await Promise.all([...entry.listeners].map((l) => l.onSnapshot(delivered.filter((d) => accepts(l.types, d.delivery)))));
-      if (top) await this.processed(entry, top);
+      if (top) await this.processed(entry, top, gen);
     });
   }
 
@@ -481,6 +525,7 @@ export class SubscriptionRegistry {
       // A cursor ahead of the topic: forget it and start over from the spec.
       this.opts.logger.warn('cursor rejected; subscribing without it', { topic: entry.name });
       entry.cursorRecovered = true;
+      entry.positionGen++;
       entry.received = undefined;
       entry.stored = undefined;
       void Promise.resolve(this.opts.cursorStore.delete?.(entry.name)).catch(() => {});
@@ -575,7 +620,26 @@ export class SubscriptionRegistry {
     if (entry.topicId !== undefined && this.byId.get(entry.topicId) === entry) this.byId.delete(entry.topicId);
   }
 
-  private async processed(entry: TopicEntry, c: Cursor): Promise<void> {
+  /**
+   * Drops every saved position of a topic (an empty snapshot of a
+   * state-only topic): in memory at once, in the store after any write
+   * already under way. Callbacks queued earlier hold an older `positionGen`,
+   * so none of them writes a cursor back afterwards.
+   */
+  private forgetCursor(entry: TopicEntry): void {
+    entry.processed = undefined;
+    entry.hinted = undefined;
+    this.run(entry, async () => {
+      try {
+        await this.opts.cursorStore.delete?.(entry.name);
+      } catch (err) {
+        this.opts.logger.warn('cursor store delete failed', { topic: entry.name, err });
+      }
+    });
+  }
+
+  private async processed(entry: TopicEntry, c: Cursor, gen: number): Promise<void> {
+    if (gen !== entry.positionGen) return; // the position was replaced since
     entry.processed = c;
     if (entry.isState && entry.allowed.length === 0) return; // a state topic on a node before ADR-001: snapshots resume it
     try {
