@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Code, Folkways, type Message, Realtime, RealtimeError, type RealtimeOptions, defineTopic, memoryStore } from '../src';
-import { AckMode, ContentType, DEFAULT_LIMITS, DeliveryClass, FlowAction, GapReason, OnGap, StartAt, type SubscribeBody } from '../src/transport/wire/model';
-import { FakeRequestTransport, FakeStreamTransport, until } from './support/fake-transport';
+import { AckMode, ContentType, DEFAULT_LIMITS, DeliveryClass, FlowAction, GapReason, OnGap, StartAt, type ServerFrame, type SubscribeBody, type WireEvent } from '../src/transport/wire/model';
+import { TransportError } from '../src/transport/types';
+import { type FakeConn, FakeRequestTransport, FakeStreamTransport, until } from './support/fake-transport';
 import { event } from './support/server-codec';
 import { DEV_SEGMENT, mintToken } from './support/token';
 
@@ -1403,6 +1404,7 @@ describe('http long-poll', () => {
       }
       if (f.msg.type !== 'poll') throw new Error('expected poll');
       polls++;
+      await new Promise((r) => setImmediate(r));
       const t = f.msg.poll.topics[0]!;
       if (f.msg.poll.waitMs === 0) {
         // The probe.
@@ -1687,4 +1689,201 @@ describe('rate limits and flow control (ADR-015)', () => {
     expect(c.connection.transport).toBe('websocket');
     expect(http.calls).toHaveLength(0);
   });
+});
+
+describe('node restart (FLK-201)', () => {
+  const NEW_EPOCH = EPOCH + 1n;
+  const ONLINE = '$online/alice';
+  const CHAT = 'chat/lobby';
+  const ids: Record<string, bigint> = { [ONLINE]: 1n, [CHAT]: 2n };
+  const nameOf = (b: SubscribeBody): string => ('name' in b.topic ? b.topic.name : '');
+
+  /**
+   * A node serving WebSocket and HTTP that can be stopped and started again.
+   * Like the real one, a one-type state topic polled with a cursor from
+   * another epoch is answered at once with a snapshot, which is empty on a
+   * fresh node; anything else waits up to `waitMs`.
+   */
+  class Node {
+    epoch = EPOCH;
+    wsUp = true;
+    httpUp = true;
+    online: WireEvent[] = [event(1n, EPOCH, 1n, 'here', { delivery: DeliveryClass.Ephemeral, publisher: 'alice' })];
+    readonly polls: { at: number; waitMs: number; topics: SubscribeBody[] }[] = [];
+    readonly conns: FakeConn[] = [];
+    readonly ws: FakeStreamTransport;
+    readonly http: FakeRequestTransport;
+
+    constructor() {
+      const node = this;
+      this.ws = new (class extends FakeStreamTransport {
+        override async connect() {
+          if (!node.wsUp) {
+            this.attempts++;
+            throw new TransportError('connection refused');
+          }
+          const c = (await super.connect()) as FakeConn;
+          node.conns.push(c);
+          void node.serve(c);
+          return c;
+        }
+      })();
+      this.http = new FakeRequestTransport((path, _token, frames, signal) => this.onHttp(path, frames, signal));
+    }
+
+    stop(): void {
+      this.wsUp = false;
+      this.httpUp = false;
+      for (const c of this.conns) c.drop();
+    }
+
+    /** Back with a new epoch and a fresh, empty `$online`. */
+    start(opts: { ws: boolean }): void {
+      this.epoch = NEW_EPOCH;
+      this.online = [];
+      this.httpUp = true;
+      this.wsUp = opts.ws;
+    }
+
+    private ack(name: string): ServerFrame['msg'] {
+      return name === ONLINE
+        ? { type: 'subAck', topicId: ids[name]!, delivery: DeliveryClass.Ephemeral, catchingUp: false, snapshotFollows: true, deliveries: [DeliveryClass.Ephemeral] }
+        : { type: 'subAck', topicId: ids[name]!, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [DeliveryClass.Durable] };
+    }
+
+    private snapshot(): ServerFrame['msg'] {
+      return { type: 'snapshot', topicId: ids[ONLINE]!, snapshotId: 1n, chunk: 0, lastChunk: true, events: this.online };
+    }
+
+    private async serve(c: FakeConn): Promise<void> {
+      try {
+        await c.welcome({ identity: 'alice' });
+        for (;;) {
+          const s = await c.next('subscribe', 10_000);
+          const name = nameOf(s.msg.subscribe);
+          c.reply(s.corr, this.ack(name));
+          if (name === ONLINE) c.reply(0n, this.snapshot());
+        }
+      } catch {
+        /* the connection ended */
+      }
+    }
+
+    private async onHttp(path: string, frames: { corr: bigint; msg: { type: string } }[], signal?: AbortSignal) {
+      // A real request yields to the event loop; without this a tight loop would starve the timers.
+      await new Promise((r) => setImmediate(r));
+      if (!this.httpUp) throw new TransportError('connection refused');
+      const f = frames[0]! as (typeof frames)[0] & { msg: { type: 'poll'; poll: { topics: SubscribeBody[]; waitMs: number } } };
+      if (path === '/v1/publish') return { frames: frames.map((fr) => ({ corr: fr.corr, msg: { type: 'pong', nonce: 1n, tsMs: Date.now() } as const })) };
+      const { topics, waitMs } = f.msg.poll;
+      this.polls.push({ at: Date.now(), waitMs, topics });
+      const snapshotNow = (t: SubscribeBody) =>
+        nameOf(t) === ONLINE && (t.cursor ? t.cursor.epoch !== this.epoch : t.snapshot !== false);
+      const now = topics.some(snapshotNow);
+      if (!now && waitMs > 0) {
+        await new Promise<void>((r) => {
+          const timer = setTimeout(r, waitMs);
+          signal?.addEventListener('abort', () => (clearTimeout(timer), r()), { once: true });
+        });
+      }
+      const out: ServerFrame[] = [];
+      for (const t of topics) {
+        out.push({ corr: f.corr, msg: this.ack(nameOf(t)) });
+        if (snapshotNow(t)) out.push({ corr: f.corr, msg: this.snapshot() });
+      }
+      out.push({ corr: f.corr, msg: { type: 'pollEnd', timedOut: !now, more: false } });
+      return { frames: out };
+    }
+  }
+
+  async function subscribed(node: Node, opts: Partial<RealtimeOptions> = {}) {
+    const c = client(node.ws, {
+      endpoints: { websocket: 'ws://fake/v1/ws', http: 'http://fake' },
+      transports: ['websocket', 'http'],
+      transportOverrides: { stream: node.ws, request: node.http },
+      reconnect: { initialDelayMs: 20, maxDelayMs: 100 },
+      ...opts,
+    });
+    await c.connect();
+    const online = c.topic(ONLINE).subscribe();
+    const chat = c.topic(CHAT).subscribe();
+    await Promise.all([online.ready, chat.ready]);
+    await until(() => c.topic(ONLINE).values().size === 1, 3_000, 'online snapshot');
+    expect(c.connection.transport).toBe('websocket');
+    return c;
+  }
+
+  it('stays on WebSocket when HTTP is down too, and resubscribes once the node is back', async () => {
+    const node = new Node();
+    const c = await subscribed(node);
+    node.stop();
+    await until(() => c.connection.state !== 'connected', 2_000, 'disconnect');
+    // Down for longer than fallbackAfterFailures attempts take.
+    await until(() => node.ws.attempts >= 6, 3_000, 'failed WebSocket attempts');
+    node.start({ ws: true });
+    await until(() => c.connection.state === 'connected', 3_000, 'reconnect');
+    expect(c.connection.transport).toBe('websocket');
+    await until(() => c.topic(ONLINE).values().size === 0, 3_000, 'empty online snapshot');
+    expect(node.polls).toHaveLength(0);
+  });
+
+  it('polls about once a second on the HTTP fallback after a restart, then returns to WebSocket', async () => {
+    const node = new Node();
+    const c = await subscribed(node, { webSocketRetryMs: 1_000 });
+    node.stop();
+    await until(() => c.connection.state !== 'connected', 2_000, 'disconnect');
+    await new Promise((r) => setTimeout(r, 200));
+    // HTTP is back first; the WebSocket listener lags behind.
+    node.start({ ws: false });
+    await until(() => c.connection.transport === 'http', 3_000, 'HTTP fallback');
+    await until(() => c.topic(ONLINE).values().size === 0, 3_000, 'empty online snapshot');
+    // From the first long poll of both topics (the probes are done), over 3 s.
+    const first = await until(() => node.polls.find((p) => p.topics.length === 2), 3_000, 'long poll');
+    const t0 = first.at;
+    await new Promise((r) => setTimeout(r, t0 + 3_000 - Date.now()));
+    const polls = node.polls.filter((p) => p.at >= t0 && p.at < t0 + 3_000);
+    // Before FLK-201 this was hundreds to thousands per second.
+    expect(polls.length / 3).toBeLessThanOrEqual(1.5);
+    // The empty snapshot dropped the stale pre-restart cursor of $online.
+    for (const p of polls) {
+      const online = p.topics.find((t) => nameOf(t) === ONLINE);
+      expect(online?.cursor?.epoch).not.toBe(EPOCH);
+    }
+    node.wsUp = true;
+    await until(() => c.connection.transport === 'websocket', 4_000, 'back on WebSocket');
+    const after = node.polls.length;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(node.polls.length).toBe(after);
+  }, 15_000);
+
+  it('paces polls even when the node answers every one at once with nothing new', async () => {
+    let polls = 0;
+    const http = new FakeRequestTransport((path, _token, frames) => {
+      const f = frames[0]!;
+      if (path === '/v1/publish') return { frames: frames.map((fr) => ({ corr: fr.corr, msg: { type: 'pong', nonce: 1n, tsMs: 0 } as const })) };
+      if (f.msg.type !== 'poll') throw new Error('expected poll');
+      polls++;
+      return {
+        frames: [
+          { corr: f.corr, msg: { type: 'subAck', topicId: 2n, delivery: DeliveryClass.Durable, catchingUp: false, latest: { epoch: EPOCH, seq: 1n }, snapshotFollows: false, deliveries: [] } },
+          { corr: f.corr, msg: { type: 'pollEnd', timedOut: false, more: false } },
+        ],
+      };
+    });
+    const c = new Realtime({
+      endpoints: { http: 'http://fake' },
+      transports: ['http'],
+      token: mintToken('alice'),
+      connectTimeoutMs: 0,
+      longPoll: { waitMs: 1 },
+      transportOverrides: { request: http },
+    });
+    clients.push(c);
+    await c.connect();
+    await c.topic(CHAT).subscribe().ready;
+    const from = polls;
+    await new Promise((r) => setTimeout(r, 2_000));
+    // 250 ms, 500, 1 s, 2 s...: a handful, never a tight loop.
+    expect(polls - from).toBeLessThanOrEqual(5);
+  }, 10_000);
 });

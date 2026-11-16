@@ -178,6 +178,16 @@ export class TopicEntry {
     return state(this.deliveryClass) || this.allowed.some(state);
   }
 
+  /**
+   * Every type the topic holds is kv or signal (a one-type state topic such
+   * as `$online/<identity>`): a snapshot is the whole topic, and its cursor
+   * is the only position worth resuming from.
+   */
+  get isStateOnly(): boolean {
+    const state = (d: DeliveryClass) => d === DeliveryClass.LastValue || d === DeliveryClass.Ephemeral;
+    return this.allowed.length > 0 ? this.allowed.every(state) : state(this.deliveryClass);
+  }
+
   /** The union of every listener's event types; empty means all. */
   wantedTypes(): DeliveryClass[] {
     return unionTypes([...this.listeners].map((l) => l.types));
@@ -406,9 +416,13 @@ export class SubscriptionRegistry {
     return true;
   }
 
-  /** Events from the wire. `replayed` overrides the frame's flag (long-poll reads are always "replays"). */
-  onDeliver(entry: TopicEntry, d: Deliver, replayed = d.replayed): void {
-    if (entry.removed) return;
+  /**
+   * Events from the wire. `replayed` overrides the frame's flag (long-poll
+   * reads are always "replays"). Returns how many events were new.
+   */
+  onDeliver(entry: TopicEntry, d: Deliver, replayed = d.replayed): number {
+    if (entry.removed) return 0;
+    let fresh = 0;
     if (d.delivery !== DeliveryClass.Unspecified && entry.allowed.length === 0) entry.deliveryClass = d.delivery;
     const now = this.now();
     for (const event of d.events) {
@@ -422,6 +436,7 @@ export class SubscriptionRegistry {
         if (!isAfter(c, entry.received)) continue; // already seen
         entry.received = c;
       }
+      fresh++;
       entry.storeValue(event, delivery, now);
       if (delivery === DeliveryClass.Durable && numbered) this.opts.cache?.addMessage(entry.name, event);
       else if (delivery === DeliveryClass.LastValue) this.opts.cache?.setValues(entry.name, entry.kvList());
@@ -432,6 +447,7 @@ export class SubscriptionRegistry {
         if (numbered && delivery === DeliveryClass.Durable) await this.processed(entry, c);
       });
     }
+    return fresh;
   }
 
   onSnapshot(entry: TopicEntry, s: Snapshot): void {
@@ -456,11 +472,22 @@ export class SubscriptionRegistry {
       const c = { epoch: event.epoch, seq: event.seq };
       if (!top || (c.epoch === top.epoch && c.seq > top.seq)) top = c;
     }
-    if (top) entry.received = top;
+    const stateOnly = entry.isStateOnly;
+    if (stateOnly) {
+      // The snapshot replaces the whole topic, so its position replaces ours.
+      // An empty one (a fresh `$online` after a node restart) has none: a
+      // cursor kept from before would be unknown to the node, which answers
+      // every poll at once with the same snapshot (FLK-201).
+      entry.received = top;
+      entry.stored = undefined;
+    } else if (top) {
+      entry.received = top;
+    }
     this.opts.cache?.setValues(entry.name, entry.kvList());
     this.run(entry, async () => {
       await Promise.all([...entry.listeners].map((l) => l.onSnapshot(delivered.filter((d) => accepts(l.types, d.delivery)))));
       if (top) await this.processed(entry, top);
+      else if (stateOnly) await this.forgetCursor(entry);
     });
   }
 
@@ -573,6 +600,17 @@ export class SubscriptionRegistry {
     entry.removed = true;
     if (this.byName.get(entry.name) === entry) this.byName.delete(entry.name);
     if (entry.topicId !== undefined && this.byId.get(entry.topicId) === entry) this.byId.delete(entry.topicId);
+  }
+
+  /** Drops every saved position of a topic (an empty snapshot of a state-only topic). */
+  private async forgetCursor(entry: TopicEntry): Promise<void> {
+    entry.processed = undefined;
+    entry.hinted = undefined;
+    try {
+      await this.opts.cursorStore.delete?.(entry.name);
+    } catch (err) {
+      this.opts.logger.warn('cursor store delete failed', { topic: entry.name, err });
+    }
   }
 
   private async processed(entry: TopicEntry, c: Cursor): Promise<void> {

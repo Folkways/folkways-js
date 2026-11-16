@@ -5,7 +5,8 @@ import type { TransportKind } from '../transport';
  * Chooses the transport for the next connection attempt: the first one in
  * the preference list this runtime and configuration can use. After
  * `fallbackAfter` consecutive transport-level failures (no session opened)
- * it moves to the next one and stays there.
+ * it moves to the next one and stays there. The engine only reports a
+ * failure here when the next transport works (FLK-201).
  */
 export class TransportSelector {
   private index = 0;
@@ -25,6 +26,15 @@ export class TransportSelector {
         this.index = i;
         return k;
       }
+    }
+    return undefined;
+  }
+
+  /** The transport a fallback would move to, if any. */
+  next(): TransportKind | undefined {
+    this.current();
+    for (let i = this.index + 1; i < this.prefs.length; i++) {
+      if (this.usable(this.prefs[i]!)) return this.prefs[i];
     }
     return undefined;
   }
