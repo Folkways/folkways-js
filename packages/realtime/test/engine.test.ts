@@ -1925,20 +1925,28 @@ describe('long-poll pacing', () => {
    * gives the extra frames and `more` flag of the n-th long poll (probes
    * are answered on their own). Every reply comes back at once.
    */
-  async function polling(deliveries: DeliveryClass[], answer: (n: number, f: PollFrame) => { frames?: ServerFrame['msg'][]; more?: boolean }) {
+  async function polling(deliveries: DeliveryClass[], answer: (n: number, f: PollFrame) => { frames?: ServerFrame['msg'][]; more?: boolean; latest?: bigint }) {
     const longPolls: { at: number; names: string[] }[] = [];
     const http = new FakeRequestTransport(async (path, _token, frames) => {
       await new Promise((r) => setImmediate(r));
       if (path === '/v1/publish') return pong(frames);
       const f = frames[0] as unknown as PollFrame;
       const probe = f.msg.poll.waitMs === 0 && f.msg.poll.topics.length === 1 && !f.msg.poll.topics[0]!.cursor && longPolls.length === 0;
+      if (!probe) longPolls.push({ at: Date.now(), names: f.msg.poll.topics.map(nameOf).sort() });
+      const a = probe ? {} : answer(longPolls.length, f);
       const acks: ServerFrame[] = f.msg.poll.topics.map((t) => ({
         corr: f.corr,
-        msg: { type: 'subAck', topicId: idOf(nameOf(t)), delivery: deliveries.length === 1 ? deliveries[0]! : DeliveryClass.Unspecified, catchingUp: false, snapshotFollows: false, deliveries },
+        msg: {
+          type: 'subAck',
+          topicId: idOf(nameOf(t)),
+          delivery: deliveries.length === 1 ? deliveries[0]! : DeliveryClass.Unspecified,
+          catchingUp: false,
+          snapshotFollows: false,
+          deliveries,
+          latest: a.latest ? { epoch: EPOCH, seq: a.latest } : undefined,
+        },
       }));
       if (probe) return { frames: [...acks, { corr: f.corr, msg: { type: 'pollEnd', timedOut: false, more: false } }] };
-      longPolls.push({ at: Date.now(), names: f.msg.poll.topics.map(nameOf).sort() });
-      const a = answer(longPolls.length, f);
       return {
         frames: [...acks, ...(a.frames ?? []).map((msg) => ({ corr: f.corr, msg })), { corr: f.corr, msg: { type: 'pollEnd', timedOut: false, more: a.more ?? false } }],
       };
@@ -1991,6 +1999,17 @@ describe('long-poll pacing', () => {
     await c.topic('rooms/1').subscribe().ready;
     await until(() => longPolls.length >= 16, 2_000, 'sixteen long polls');
     expect(longPolls[15]!.at - longPolls[0]!.at).toBeLessThan(200);
+  });
+
+  it('polls again at once while SubAck.latest moves on, even with no event delivered', async () => {
+    // A topic whose new events this client filters out still moves its latest position.
+    const { c, longPolls } = await polling(STREAM, (n) => (n <= 10 ? { latest: BigInt(n) } : { latest: 10n }));
+    await c.topic('chat/a').subscribe().ready;
+    await until(() => longPolls.length >= 11, 2_000, 'eleven long polls');
+    expect(longPolls[10]!.at - longPolls[0]!.at).toBeLessThan(200);
+    // latest stays put from the 11th answer on: the next poll is paced.
+    await until(() => longPolls.length >= 12, 2_000, 'a paced long poll');
+    expect(longPolls[11]!.at - longPolls[10]!.at).toBeGreaterThanOrEqual(190);
   });
 
   it('keeps draining at once while the node says more follows', async () => {

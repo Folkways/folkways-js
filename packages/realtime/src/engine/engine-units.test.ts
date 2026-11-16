@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { FakeRequestTransport } from '../../test/support/fake-transport';
 import { event } from '../../test/support/server-codec';
 import { mintToken } from '../../test/support/token';
 import { Code } from '../shared/codes';
@@ -11,6 +12,8 @@ import { memoryCursorStore } from './cursor-store';
 import { Outbox } from './outbox';
 import { KEYS, ScopedStore, memoryStore, scopePrefix } from './store';
 import { packetize } from './packets';
+import { httpReachable } from './poll-session';
+import { TransportError } from '../transport';
 import { type FlowState, type OutboundPublish, PublishQueue } from './publish-queue';
 import { SubscriptionRegistry, type TopicListener } from './subscriptions';
 import { TokenManager, authUrlProvider, peekJwt, publishableKeyProvider } from './token';
@@ -89,6 +92,42 @@ describe('PollPacer', () => {
       t += 1 + q.next(false, 1, 0);
     }
     expect(polls).toBeLessThan(70);
+  });
+});
+
+describe('httpReachable', () => {
+  const reply = (status: number) => new FakeRequestTransport(() => ({ status, frames: [] }));
+
+  it('counts any answer from the node below 5xx, and nothing else', async () => {
+    for (const status of [200, 401, 429]) expect(await httpReachable(reply(status), 'http://x', 't', 1_000)).toBe(true);
+    for (const status of [500, 503]) expect(await httpReachable(reply(status), 'http://x', 't', 1_000)).toBe(false);
+    const down = new FakeRequestTransport(() => {
+      throw new TransportError('connection refused');
+    });
+    expect(await httpReachable(down, 'http://x', 't', 1_000)).toBe(false);
+  });
+
+  it('sends nothing when the signal is already aborted', async () => {
+    const t = reply(200);
+    const ac = new AbortController();
+    ac.abort();
+    expect(await httpReachable(t, 'http://x', 't', 1_000, ac.signal)).toBe(false);
+    expect(t.calls).toHaveLength(0);
+  });
+
+  it('gives up at once when the signal aborts mid-request, and after timeoutMs otherwise', async () => {
+    const hang = new FakeRequestTransport(
+      (_p, _t, _f, signal) => new Promise((_r, reject) => signal?.addEventListener('abort', () => reject(new TransportError('aborted', true)), { once: true })),
+    );
+    const ac = new AbortController();
+    const t0 = Date.now();
+    const pending = httpReachable(hang, 'http://x', 't', 10_000, ac.signal);
+    setTimeout(() => ac.abort(), 20);
+    expect(await pending).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(500);
+    const t1 = Date.now();
+    expect(await httpReachable(hang, 'http://x', 't', 50)).toBe(false);
+    expect(Date.now() - t1).toBeGreaterThanOrEqual(45);
   });
 });
 

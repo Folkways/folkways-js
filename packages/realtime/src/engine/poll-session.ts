@@ -81,6 +81,7 @@ export async function httpReachable(
 ): Promise<boolean> {
   const frames: ClientFrame[] = [{ corr: 1n, msg: { type: 'ping', nonce: randomU64(), tsMs: Date.now() } }];
   const packet = packetize(frames, DEFAULT_LIMITS).packets[0]!.bytes;
+  if (signal?.aborted) return false; // closing: no request at all
   const abort = new AbortController();
   const onAbort = () => abort.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
@@ -342,7 +343,7 @@ export class PollSession implements Session {
     const recheck = anyEmpty && this.recheckNext;
     const waitMs = recheck ? 0 : anyEmpty ? Math.min(this.opts.waitMs, this.opts.emptyStateRecheckMs) : this.opts.waitMs;
     const topics = group.map((e) => this.pollBody(e, recheck));
-    const before = group.map((e) => ({ received: e.received, stateLatest: e.stateLatest }));
+    const before = group.map((e) => ({ received: e.received, latest: e.latest, stateLatest: e.stateLatest }));
     const started = Date.now();
     const frames = await this.call(
       '/v1/poll',
@@ -404,7 +405,10 @@ export class PollSession implements Session {
     }
     // Safety net: a long poll that came back at once with nothing new must
     // not be repeated at once, whatever made the node answer early.
-    const moved = group.some((e, i) => !samePosition(e.received, before[i]!.received) || !samePosition(e.stateLatest, before[i]!.stateLatest));
+    const moved = group.some((e, i) => {
+      const b = before[i]!;
+      return !samePosition(e.received, b.received) || !samePosition(e.latest, b.latest) || !samePosition(e.stateLatest, b.stateLatest);
+    });
     const delay = this.pacerFor(group).next(fresh > 0 || moved || more, elapsed, waitMs);
     if (delay > 0 && !signal.aborted) {
       this.host.log.debug('long poll returned at once with nothing new; waiting', { delayMs: delay, elapsedMs: elapsed });
