@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Code, Folkways, type Message, Realtime, RealtimeError, type RealtimeOptions, defineTopic, memoryStore } from '../src';
-import { AckMode, ContentType, DEFAULT_LIMITS, DeliveryClass, FlowAction, GapReason, OnGap, StartAt, type SubscribeBody } from '../src/transport/wire/model';
-import { FakeRequestTransport, FakeStreamTransport, until } from './support/fake-transport';
+import { AckMode, ContentType, DEFAULT_LIMITS, DeliveryClass, FlowAction, GapReason, OnGap, StartAt, type ServerFrame, type SubscribeBody, type WireEvent } from '../src/transport/wire/model';
+import { TransportError } from '../src/transport/types';
+import { type FakeConn, FakeRequestTransport, FakeStreamTransport, until } from './support/fake-transport';
 import { event } from './support/server-codec';
 import { DEV_SEGMENT, mintToken } from './support/token';
 
@@ -1403,6 +1404,7 @@ describe('http long-poll', () => {
       }
       if (f.msg.type !== 'poll') throw new Error('expected poll');
       polls++;
+      await new Promise((r) => setImmediate(r));
       const t = f.msg.poll.topics[0]!;
       if (f.msg.poll.waitMs === 0) {
         // The probe.
@@ -1686,5 +1688,456 @@ describe('rate limits and flow control (ADR-015)', () => {
     await c.connect();
     expect(c.connection.transport).toBe('websocket');
     expect(http.calls).toHaveLength(0);
+  });
+});
+
+describe('node restart', () => {
+  const NEW_EPOCH = EPOCH + 1n;
+  const ONLINE = '$online/alice';
+  const CHAT = 'chat/lobby';
+  const ids: Record<string, bigint> = { [ONLINE]: 1n, [CHAT]: 2n };
+  const nameOf = (b: SubscribeBody): string => ('name' in b.topic ? b.topic.name : '');
+
+  /**
+   * A node serving WebSocket and HTTP that can be stopped and started again.
+   * Like the real one, a one-type state topic polled with a cursor from
+   * another epoch is answered at once with a snapshot, which is empty on a
+   * fresh node; anything else waits up to `waitMs`.
+   */
+  class Node {
+    epoch = EPOCH;
+    wsUp = true;
+    httpUp = true;
+    online: WireEvent[] = [event(1n, EPOCH, 1n, 'here', { delivery: DeliveryClass.Ephemeral, publisher: 'alice', version: 1n })];
+    readonly polls: { at: number; waitMs: number; topics: SubscribeBody[] }[] = [];
+    readonly conns: FakeConn[] = [];
+    readonly ws: FakeStreamTransport;
+    readonly http: FakeRequestTransport;
+
+    constructor() {
+      const node = this;
+      this.ws = new (class extends FakeStreamTransport {
+        override async connect() {
+          if (!node.wsUp) {
+            this.attempts++;
+            throw new TransportError('connection refused');
+          }
+          const c = (await super.connect()) as FakeConn;
+          node.conns.push(c);
+          void node.serve(c);
+          return c;
+        }
+      })();
+      this.http = new FakeRequestTransport((path, _token, frames, signal) => this.onHttp(path, frames, signal));
+    }
+
+    stop(): void {
+      this.wsUp = false;
+      this.httpUp = false;
+      for (const c of this.conns) c.drop();
+    }
+
+    /** Back with a new epoch and a fresh, empty `$online`. */
+    start(opts: { ws: boolean }): void {
+      this.epoch = NEW_EPOCH;
+      this.online = [];
+      this.httpUp = true;
+      this.wsUp = opts.ws;
+    }
+
+    private ack(name: string): ServerFrame['msg'] {
+      // The old node gives every position it has; the fresh one, none.
+      const old = this.epoch === EPOCH;
+      return name === ONLINE
+        ? {
+            type: 'subAck',
+            topicId: ids[name]!,
+            delivery: DeliveryClass.Ephemeral,
+            catchingUp: false,
+            snapshotFollows: true,
+            deliveries: [DeliveryClass.Ephemeral],
+            latest: old ? { epoch: EPOCH, seq: 1n } : undefined,
+            stateLatest: old ? { epoch: EPOCH, seq: 1n } : undefined,
+          }
+        : { type: 'subAck', topicId: ids[name]!, delivery: DeliveryClass.Durable, catchingUp: false, snapshotFollows: false, deliveries: [DeliveryClass.Durable] };
+    }
+
+    private snapshot(): ServerFrame['msg'] {
+      return { type: 'snapshot', topicId: ids[ONLINE]!, snapshotId: 1n, chunk: 0, lastChunk: true, events: this.online };
+    }
+
+    private async serve(c: FakeConn): Promise<void> {
+      try {
+        await c.welcome({ identity: 'alice' });
+        for (;;) {
+          const s = await c.next('subscribe', 10_000);
+          const name = nameOf(s.msg.subscribe);
+          c.reply(s.corr, this.ack(name));
+          if (name === ONLINE) c.reply(0n, this.snapshot());
+        }
+      } catch {
+        /* the connection ended */
+      }
+    }
+
+    private async onHttp(path: string, frames: { corr: bigint; msg: { type: string } }[], signal?: AbortSignal) {
+      // A real request yields to the event loop; without this a tight loop would starve the timers.
+      await new Promise((r) => setImmediate(r));
+      if (!this.httpUp) throw new TransportError('connection refused');
+      const f = frames[0]! as (typeof frames)[0] & { msg: { type: 'poll'; poll: { topics: SubscribeBody[]; waitMs: number } } };
+      if (path === '/v1/publish') return { frames: frames.map((fr) => ({ corr: fr.corr, msg: { type: 'pong', nonce: 1n, tsMs: Date.now() } as const })) };
+      const { topics, waitMs } = f.msg.poll;
+      this.polls.push({ at: Date.now(), waitMs, topics });
+      const stale = (c?: { epoch: bigint }) => !!c && c.epoch !== this.epoch;
+      const snapshotNow = (t: SubscribeBody) =>
+        nameOf(t) === ONLINE && (t.cursor || t.stateAfter ? stale(t.cursor) || stale(t.stateAfter) : t.snapshot !== false);
+      const now = topics.some(snapshotNow);
+      if (!now && waitMs > 0) {
+        await new Promise<void>((r) => {
+          const timer = setTimeout(r, waitMs);
+          signal?.addEventListener('abort', () => (clearTimeout(timer), r()), { once: true });
+        });
+      }
+      const out: ServerFrame[] = [];
+      for (const t of topics) {
+        out.push({ corr: f.corr, msg: this.ack(nameOf(t)) });
+        if (snapshotNow(t)) out.push({ corr: f.corr, msg: this.snapshot() });
+      }
+      out.push({ corr: f.corr, msg: { type: 'pollEnd', timedOut: !now, more: false } });
+      return { frames: out };
+    }
+  }
+
+  async function subscribed(node: Node, opts: Partial<RealtimeOptions> = {}) {
+    const c = client(node.ws, {
+      endpoints: { websocket: 'ws://fake/v1/ws', http: 'http://fake' },
+      transports: ['websocket', 'http'],
+      transportOverrides: { stream: node.ws, request: node.http },
+      reconnect: { initialDelayMs: 20, maxDelayMs: 100 },
+      ...opts,
+    });
+    await c.connect();
+    const online = c.topic(ONLINE).subscribe();
+    const chat = c.topic(CHAT).subscribe();
+    await Promise.all([online.ready, chat.ready]);
+    await until(() => c.topic(ONLINE).values().size === 1, 3_000, 'online snapshot');
+    expect(c.connection.transport).toBe('websocket');
+    return c;
+  }
+
+  it('stays on WebSocket when HTTP is down too, and resubscribes once the node is back', async () => {
+    const node = new Node();
+    const c = await subscribed(node);
+    node.stop();
+    await until(() => c.connection.state !== 'connected', 2_000, 'disconnect');
+    // Down for longer than fallbackAfterFailures attempts take.
+    await until(() => node.ws.attempts >= 6, 3_000, 'failed WebSocket attempts');
+    node.start({ ws: true });
+    await until(() => c.connection.state === 'connected', 3_000, 'reconnect');
+    expect(c.connection.transport).toBe('websocket');
+    await until(() => c.topic(ONLINE).values().size === 0, 3_000, 'empty online snapshot');
+    expect(node.polls).toHaveLength(0);
+  });
+
+  it('polls about once a second on the HTTP fallback after a restart, then returns to WebSocket', async () => {
+    const node = new Node();
+    const store = memoryStore();
+    const cursorKey = `fw/${DEV_SEGMENT}/alice/c/${encodeURIComponent(ONLINE)}`;
+    const c = await subscribed(node, { webSocketRetryMs: 1_000, store });
+    for (let i = 0; (await store.get(cursorKey)) !== `${EPOCH}:1`; i++) {
+      if (i > 200) throw new Error('the $online cursor was never persisted');
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    node.stop();
+    await until(() => c.connection.state !== 'connected', 2_000, 'disconnect');
+    await new Promise((r) => setTimeout(r, 200));
+    // HTTP is back first; the WebSocket listener lags behind.
+    node.start({ ws: false });
+    await until(() => c.connection.transport === 'http', 3_000, 'HTTP fallback');
+    await until(() => c.topic(ONLINE).values().size === 0, 3_000, 'empty online snapshot');
+    // From the first long poll of both topics (the probes are done), over 3 s.
+    const first = await until(() => node.polls.find((p) => p.topics.length === 2), 3_000, 'long poll');
+    const t0 = first.at;
+    await new Promise((r) => setTimeout(r, t0 + 3_000 - Date.now()));
+    const polls = node.polls.filter((p) => p.at >= t0 && p.at < t0 + 3_000);
+    // Before the fix this was hundreds to thousands per second.
+    expect(polls.length / 3).toBeLessThanOrEqual(1.5);
+    // The empty snapshot dropped every pre-restart position of $online, in memory and in the store.
+    const afterSnapshot = node.polls.slice(node.polls.findIndex((p) => p.at >= t0));
+    expect(afterSnapshot.length).toBeGreaterThan(0);
+    for (const p of afterSnapshot) {
+      for (const t of p.topics) {
+        expect(t.cursor?.epoch).not.toBe(EPOCH);
+        expect(t.stateAfter?.epoch).not.toBe(EPOCH);
+      }
+    }
+    expect(await store.get(cursorKey)).toBeUndefined();
+    node.wsUp = true;
+    await until(() => c.connection.transport === 'websocket', 4_000, 'back on WebSocket');
+    const after = node.polls.length;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(node.polls.length).toBe(after);
+  }, 15_000);
+
+  it('paces polls even when the node answers every one at once with nothing new', async () => {
+    let polls = 0;
+    const http = new FakeRequestTransport((path, _token, frames) => {
+      const f = frames[0]!;
+      if (path === '/v1/publish') return { frames: frames.map((fr) => ({ corr: fr.corr, msg: { type: 'pong', nonce: 1n, tsMs: 0 } as const })) };
+      if (f.msg.type !== 'poll') throw new Error('expected poll');
+      polls++;
+      return {
+        frames: [
+          { corr: f.corr, msg: { type: 'subAck', topicId: 2n, delivery: DeliveryClass.Durable, catchingUp: false, latest: { epoch: EPOCH, seq: 1n }, snapshotFollows: false, deliveries: [] } },
+          { corr: f.corr, msg: { type: 'pollEnd', timedOut: false, more: false } },
+        ],
+      };
+    });
+    const c = new Realtime({
+      endpoints: { http: 'http://fake' },
+      transports: ['http'],
+      token: mintToken('alice'),
+      connectTimeoutMs: 0,
+      longPoll: { waitMs: 1 },
+      transportOverrides: { request: http },
+    });
+    clients.push(c);
+    await c.connect();
+    await c.topic(CHAT).subscribe().ready;
+    const from = polls;
+    await new Promise((r) => setTimeout(r, 2_000));
+    // 250 ms, 500, 1 s, 2 s...: a handful, never a tight loop.
+    expect(polls - from).toBeLessThanOrEqual(5);
+  }, 10_000);
+});
+
+describe('long-poll pacing', () => {
+  type PollFrame = { corr: bigint; msg: { type: 'poll'; poll: { topics: SubscribeBody[]; waitMs: number } } };
+  const nameOf = (b: SubscribeBody): string => ('name' in b.topic ? b.topic.name : '');
+  const pong = (frames: { corr: bigint }[]) => ({ frames: frames.map((fr) => ({ corr: fr.corr, msg: { type: 'pong', nonce: 1n, tsMs: 0 } as const })) });
+  const STREAM = [DeliveryClass.Durable];
+  const ROOM = [DeliveryClass.Durable, DeliveryClass.Ephemeral];
+  const ids = new Map<string, bigint>();
+  const idOf = (name: string) => ids.get(name) ?? (ids.set(name, BigInt(ids.size + 1)), ids.get(name)!);
+
+  /**
+   * An HTTP-only client against a node scripted per long poll: `answer(n)`
+   * gives the extra frames and `more` flag of the n-th long poll (probes
+   * are answered on their own). Every reply comes back at once.
+   */
+  async function polling(deliveries: DeliveryClass[], answer: (n: number, f: PollFrame) => { frames?: ServerFrame['msg'][]; more?: boolean; latest?: bigint }) {
+    const longPolls: { at: number; names: string[] }[] = [];
+    const http = new FakeRequestTransport(async (path, _token, frames) => {
+      await new Promise((r) => setImmediate(r));
+      if (path === '/v1/publish') return pong(frames);
+      const f = frames[0] as unknown as PollFrame;
+      const probe = f.msg.poll.waitMs === 0 && f.msg.poll.topics.length === 1 && !f.msg.poll.topics[0]!.cursor && longPolls.length === 0;
+      if (!probe) longPolls.push({ at: Date.now(), names: f.msg.poll.topics.map(nameOf).sort() });
+      const a = probe ? {} : answer(longPolls.length, f);
+      const acks: ServerFrame[] = f.msg.poll.topics.map((t) => ({
+        corr: f.corr,
+        msg: {
+          type: 'subAck',
+          topicId: idOf(nameOf(t)),
+          delivery: deliveries.length === 1 ? deliveries[0]! : DeliveryClass.Unspecified,
+          catchingUp: false,
+          snapshotFollows: false,
+          deliveries,
+          latest: a.latest ? { epoch: EPOCH, seq: a.latest } : undefined,
+        },
+      }));
+      if (probe) return { frames: [...acks, { corr: f.corr, msg: { type: 'pollEnd', timedOut: false, more: false } }] };
+      return {
+        frames: [...acks, ...(a.frames ?? []).map((msg) => ({ corr: f.corr, msg })), { corr: f.corr, msg: { type: 'pollEnd', timedOut: false, more: a.more ?? false } }],
+      };
+    });
+    const c = new Realtime({
+      endpoints: { http: 'http://fake' },
+      transports: ['http'],
+      token: mintToken('alice'),
+      connectTimeoutMs: 0,
+      transportOverrides: { request: http },
+    });
+    clients.push(c);
+    await c.connect();
+    return { c, http, longPolls };
+  }
+
+  const gaps = (ps: { at: number }[]) => ps.slice(1).map((p, i) => p.at - ps[i]!.at);
+
+  it('backs off further with every empty answer that came back at once', async () => {
+    const { c, longPolls } = await polling(STREAM, () => ({}));
+    await c.topic('chat/a').subscribe().ready;
+    await until(() => longPolls.length >= 4, 3_000, 'four long polls');
+    const [a, b, d] = gaps(longPolls);
+    expect(a!).toBeGreaterThanOrEqual(190);
+    expect(b!).toBeGreaterThan(a!);
+    expect(d!).toBeGreaterThan(b!);
+  }, 10_000);
+
+  it('polls again at once while each answer brings a new kv value', async () => {
+    const KV = [DeliveryClass.LastValue];
+    const { c, longPolls } = await polling(KV, (n) =>
+      n <= 15
+        ? { frames: [{ type: 'deliver', topicId: idOf('rides/1'), delivery: DeliveryClass.LastValue, replayed: false, events: [event(idOf('rides/1'), EPOCH, BigInt(n), `v${n}`, { delivery: DeliveryClass.LastValue, key: 'k' })] }] }
+        : {},
+    );
+    await c.topic('rides/1').subscribe().ready;
+    await until(() => longPolls.length >= 16, 2_000, 'sixteen long polls');
+    // Fifteen answers with data: no pause between them (one pause alone is at least 200 ms).
+    expect(longPolls[15]!.at - longPolls[0]!.at).toBeLessThan(200);
+    await until(() => longPolls.length >= 17, 2_000, 'a paced long poll');
+    expect(longPolls[16]!.at - longPolls[15]!.at).toBeGreaterThanOrEqual(190);
+  });
+
+  it('polls again at once while each answer brings a new signal (signals carry no cursor)', async () => {
+    const { c, longPolls } = await polling(ROOM, (n) =>
+      n <= 15
+        ? { frames: [{ type: 'deliver', topicId: idOf('rooms/1'), delivery: DeliveryClass.Unspecified, replayed: false, events: [event(idOf('rooms/1'), 0n, 0n, 't', { delivery: DeliveryClass.Ephemeral, name: 'typing', publisher: `u${n}` })] }] }
+        : {},
+    );
+    await c.topic('rooms/1').subscribe().ready;
+    await until(() => longPolls.length >= 16, 2_000, 'sixteen long polls');
+    expect(longPolls[15]!.at - longPolls[0]!.at).toBeLessThan(200);
+  });
+
+  it('polls again at once while SubAck.latest moves on, even with no event delivered', async () => {
+    // A topic whose new events this client filters out still moves its latest position.
+    const { c, longPolls } = await polling(STREAM, (n) => (n <= 10 ? { latest: BigInt(n) } : { latest: 10n }));
+    await c.topic('chat/a').subscribe().ready;
+    await until(() => longPolls.length >= 11, 2_000, 'eleven long polls');
+    expect(longPolls[10]!.at - longPolls[0]!.at).toBeLessThan(200);
+    // latest stays put from the 11th answer on: the next poll is paced.
+    await until(() => longPolls.length >= 12, 2_000, 'a paced long poll');
+    expect(longPolls[11]!.at - longPolls[10]!.at).toBeGreaterThanOrEqual(190);
+  });
+
+  it('keeps draining at once while the node says more follows', async () => {
+    const { c, longPolls } = await polling(STREAM, (n) => ({ more: n <= 10 }));
+    await c.topic('chat/a').subscribe().ready;
+    await until(() => longPolls.length >= 11, 2_000, 'eleven long polls');
+    expect(longPolls[10]!.at - longPolls[0]!.at).toBeLessThan(200);
+  });
+
+  it('sends nothing more when the client closes during a pause', async () => {
+    const { c, http, longPolls } = await polling(STREAM, () => ({}));
+    await c.topic('chat/a').subscribe().ready;
+    await until(() => longPolls.length >= 3, 3_000, 'three long polls');
+    // Now in a pause of about a second.
+    const t0 = Date.now();
+    await c.close();
+    expect(Date.now() - t0).toBeLessThan(200);
+    const calls = http.calls.length;
+    await new Promise((r) => setTimeout(r, 1_500));
+    expect(http.calls.length).toBe(calls);
+  }, 10_000);
+
+  it('gives a new group of topics its own pacing instead of inheriting another\'s', async () => {
+    const { c, longPolls } = await polling(STREAM, () => ({}));
+    await c.topic('chat/a').subscribe().ready;
+    await until(() => longPolls.length >= 4, 4_000, 'four long polls');
+    // chat/a alone is now paced by about 2 s; a group of chat/a and chat/b starts afresh.
+    const t0 = Date.now();
+    c.topic('chat/b').subscribe();
+    const both = await until(() => longPolls.find((p) => p.at >= t0 && p.names.length === 2), 1_000, 'a long poll of both');
+    expect(both.at - t0).toBeLessThan(500);
+    const next = await until(() => longPolls.find((p) => p.at > both.at && p.names.length === 2), 1_000, 'the next one');
+    // Its first pause is the initial one, not chat/a's.
+    expect(next.at - both.at).toBeLessThan(400);
+  }, 10_000);
+});
+
+describe('falling back to HTTP only when HTTP works', () => {
+  const pong = (frames: { corr: bigint }[]) => ({ frames: frames.map((fr) => ({ corr: fr.corr, msg: { type: 'pong', nonce: 1n, tsMs: 0 } as const })) });
+
+  function setup(handler: ConstructorParameters<typeof FakeRequestTransport>[0], opts: Partial<RealtimeOptions> = {}) {
+    const ws = new FakeStreamTransport();
+    ws.refuse = 1_000_000;
+    const http = new FakeRequestTransport(handler);
+    const c = client(ws, {
+      endpoints: { websocket: 'ws://fake/v1/ws', http: 'http://fake' },
+      transports: ['websocket', 'http'],
+      transportOverrides: { stream: ws, request: http },
+      ...opts,
+    });
+    return { ws, http, c };
+  }
+
+  /** WebSocket keeps failing, HTTP is no use: the client never leaves WebSocket, and connects once it is back. */
+  async function staysOnWebSocket(ws: FakeStreamTransport, c: Realtime) {
+    await until(() => ws.attempts >= 6, 3_000, 'repeated WebSocket attempts');
+    expect(c.connection.state).not.toBe('connected');
+    expect(c.connection.state).not.toBe('failed');
+    ws.refuse = 0;
+    await (await ws.nextConn()).welcome();
+    await until(() => c.connection.state === 'connected', 2_000, 'connected');
+    expect(c.connection.transport).toBe('websocket');
+  }
+
+  for (const status of [500, 503]) {
+    it(`does not fall back while HTTP answers ${status}`, async () => {
+      const { ws, http, c } = setup(() => ({ status, frames: [] }));
+      await staysOnWebSocket(ws, c);
+      expect(http.calls.length).toBeGreaterThan(0);
+    });
+  }
+
+  it('does not fall back while HTTP times out, and gives each check only requestTimeoutMs', async () => {
+    const { ws, http, c } = setup(
+      (_p, _t, _f, signal) => new Promise((_r, reject) => signal?.addEventListener('abort', () => reject(new TransportError('aborted', true)), { once: true })),
+      { requestTimeoutMs: 50 },
+    );
+    const t0 = Date.now();
+    await until(() => ws.attempts >= 4, 3_000, 'repeated WebSocket attempts');
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(http.calls.length).toBeGreaterThanOrEqual(3);
+    await staysOnWebSocket(ws, c);
+  });
+
+  it('falls back when HTTP answers 429: the node is up, only busy', async () => {
+    const { ws, http, c } = setup(() => ({ status: 429, frames: [{ corr: 0n, msg: { type: 'close', code: Code.RateLimited, reason: 'slow down', retryAfterMs: 20 } }] }));
+    await until(() => ws.attempts === 2 && http.calls.length >= 4, 2_000, 'HTTP connection attempts');
+    await new Promise((r) => setTimeout(r, 200));
+    expect(ws.attempts).toBe(2);
+    expect(c.connection.state).not.toBe('failed');
+  });
+
+  it('falls back when HTTP answers 401, so the normal auth handling decides (a static token fails)', async () => {
+    const { ws, c } = setup(() => ({ status: 401, frames: [{ corr: 0n, msg: { type: 'close', code: Code.AuthExpired, reason: 'expired', retryAfterMs: 0 } }] }));
+    const err = await c.connect().catch((e) => e);
+    expect(err).toBeInstanceOf(RealtimeError);
+    expect(err.code).toBe(Code.AuthExpired);
+    expect(c.connection.state).toBe('failed');
+    expect(ws.attempts).toBe(2);
+  });
+
+  it('falls back as before when HTTP works', async () => {
+    const { ws, c } = setup((_p, _t, frames) => pong(frames));
+    await c.connect();
+    expect(c.connection.transport).toBe('http');
+    expect(ws.attempts).toBe(2);
+  });
+
+  it('stops checking and sends nothing more when the client closes during a check', async () => {
+    const { ws, http, c } = setup((_p, _t, _f, signal) => new Promise((_r, reject) => signal?.addEventListener('abort', () => reject(new TransportError('aborted', true)), { once: true })));
+    await until(() => http.calls.length === 1, 2_000, 'a check under way');
+    const t0 = Date.now();
+    await c.close();
+    expect(Date.now() - t0).toBeLessThan(200);
+    const [calls, attempts] = [http.calls.length, ws.attempts];
+    await new Promise((r) => setTimeout(r, 200));
+    expect([http.calls.length, ws.attempts]).toEqual([calls, attempts]);
+  });
+
+  it('counts the failure, as before, when no token can be had for the check', async () => {
+    const { http, c } = setup((_p, _t, frames) => pong(frames));
+    const engine = c['engine'] as unknown as { tokens: { get: () => Promise<string> }; countsTowardFallback: (t: boolean, k: string) => Promise<boolean> };
+    engine.tokens.get = () => Promise.reject(new Error('provider down'));
+    const before = http.calls.length;
+    await expect(engine.countsTowardFallback(true, 'websocket')).resolves.toBe(true);
+    expect(http.calls.length).toBe(before);
+    // Neither a protocol failure nor a failure on HTTP itself counts.
+    await expect(engine.countsTowardFallback(false, 'websocket')).resolves.toBe(false);
+    await expect(engine.countsTowardFallback(true, 'http')).resolves.toBe(false);
   });
 });

@@ -20,7 +20,7 @@ import { Backoff, sleep } from './backoff';
 import { type CacheLimits, MessageCache } from './cache';
 import { Outbox } from './outbox';
 import { type Store, type StoreCipher, ScopedStore, scopePrefix } from './store';
-import { PollSession } from './poll-session';
+import { PollSession, httpReachable } from './poll-session';
 import { type FlowState, PublishQueue } from './publish-queue';
 import { TransportSelector } from './selector';
 import type { CloseInfo, Session, SessionHost, SessionInfo } from './session';
@@ -479,8 +479,8 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     let invalidStreak = 0;
     let authRetried = false;
 
-    const decide = (err: RealtimeError, transportFailure: boolean, kind: TransportKind): Decision => {
-      if (transportFailure && kind === 'websocket' && this.selector.transportFailed()) {
+    const decide = (err: RealtimeError, countsTowardFallback: boolean): Decision => {
+      if (countsTowardFallback && this.selector.transportFailed()) {
         return { delayMs: 0 };
       }
       const { code } = err;
@@ -539,7 +539,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
             ? e
             : localError(Code.Unavailable, e instanceof Error ? e.message : 'connection failed', e);
         this.log.warn('connection attempt failed', { transport: kind, code: err.codeName, reason: err.message });
-        const d = decide(err, transportFailure, kind);
+        const d = decide(err, await this.countsTowardFallback(transportFailure, kind));
         if (d.fatal) {
           this.fail(d.fatal);
           return;
@@ -592,7 +592,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
         retryAfterMs: closed.retryAfterMs,
         local: closed.local,
       });
-      const d = decide(err, closed.transportFailure, kind);
+      const d = decide(err, await this.countsTowardFallback(closed.transportFailure, kind));
       if (d.fatal) {
         this.fail(d.fatal);
         return;
@@ -600,6 +600,27 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       this.setState('reconnecting', err);
       await this.pause(d.delayMs, failures, err);
     }
+  }
+
+  /**
+   * Whether a WebSocket failure counts toward falling back to HTTP: only
+   * when HTTP works. When the node is down or restarting, HTTP fails too,
+   * and moving to it would leave WebSocket for `webSocketRetryMs` for
+   * nothing; the engine keeps reconnecting over WebSocket instead.
+   */
+  private async countsTowardFallback(transportFailure: boolean, kind: TransportKind): Promise<boolean> {
+    if (!transportFailure || kind !== 'websocket') return false;
+    if (this.selector.next() !== 'http') return true;
+    let token: string;
+    try {
+      token = await this.tokens.get();
+    } catch {
+      return true; // cannot check: count it, as before
+    }
+    if (this.stopped) return false;
+    const ok = await httpReachable(this.http, this.cfg.endpoints.http!, token, this.cfg.requestTimeoutMs, this.stopController.signal);
+    if (!ok) this.log.debug('WebSocket failed and HTTP is failing too; not falling back');
+    return ok;
   }
 
   /** While on HTTP after a fallback, probe WebSocket now and then and move back when it opens. */
