@@ -1,0 +1,7 @@
+node_modules
+dist
+
+# Your segment's settings and signing key. Never commit them.
+.env
+.env.*
+!.env.example

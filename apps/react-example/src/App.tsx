@@ -1,139 +1,154 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
-import { Folkways, type Realtime } from '@folkwaysio/realtime';
-import './App.css';
+import { useEffect, useState, type FormEvent } from 'react';
+import { Folkways, isRealtimeError, type Realtime } from '@folkwaysio/realtime';
+import { connection, login, realtimeToken, savedSignIn, saveSignIn, SignedOut, type SignIn } from './api';
+import { Chat } from './Chat';
+import { Eyebrow, LogoTile } from './ui';
 
-// The node URL from your segment's Connect tab in the Folkways dashboard.
-const NODE_URL = import.meta.env.VITE_RTE_URL ?? '';
-// Optional: your backend's token endpoint. Without it, paste a token your backend issued.
-const AUTH_URL = import.meta.env.VITE_RTE_AUTH_URL;
-const TOKEN_DOCS = 'https://docs.folkways.io/docs/js-sdk/server-tokens';
-// A topic rule has one class, so the room's messages (Durable) and its typing
-// signals (Ephemeral) live on two topics.
-const ROOM = 'chat/lobby';
-const TYPING = 'typing/lobby';
+// The node URL the last connect used, for error messages.
+let nodeUrl = '';
 
-type RoomEvents = { message: { text: string } };
-type TypingEvents = { typing: { typing: boolean } };
-
-function Chat({ client }: { client: Realtime }) {
-  const room = client.topic<RoomEvents>(ROOM);
-  const typingTopic = client.topic<TypingEvents>(TYPING);
-  const messages = useSyncExternalStore(room.messages.subscribe, room.messages.getSnapshot);
-  const typingValues = useSyncExternalStore(typingTopic.values().subscribe, typingTopic.values().getSnapshot);
-  const { state, transport } = useSyncExternalStore(client.connection.subscribe, client.connection.getSnapshot);
-  const identity = client.session?.identity;
-  const typing = [...typingValues.values()].filter((m) => (m.data as { typing?: boolean })?.typing && m.publisher !== identity).map((m) => m.publisher);
-  const [draft, setDraft] = useState('');
-  const [error, setError] = useState<string>();
-  const lastSignal = useRef(0);
-
-  useEffect(() => {
-    const sub = room.subscribe({ from: { last: 50 } });
-    sub.on('error', (e) => setError(e.message));
-    return () => void sub.unsubscribe();
-  }, [room]);
-
-  useEffect(() => {
-    const sub = typingTopic.subscribe();
-    return () => void sub.unsubscribe();
-  }, [typingTopic]);
-
-  async function send(e: FormEvent) {
-    e.preventDefault();
-    const text = draft.trim();
-    if (!text) return;
-    setDraft('');
-    void client.topic<TypingEvents>(TYPING).publish('typing', { typing: false }, { delivery: 'signal' });
-    try {
-      await client.topic<RoomEvents>(ROOM).publish('message', { text });
-    } catch (err) {
-      setError((err as Error).message);
+/** Explains a failed connect in terms of what to fix. */
+function describe(err: unknown): string {
+  // The SDK wraps errors thrown by the token function as AuthRequired, with the original as the cause.
+  if (isRealtimeError(err) && err.cause instanceof Error) return describe(err.cause);
+  if (err instanceof SignedOut) return err.message;
+  if (isRealtimeError(err)) {
+    if (err.codeName === 'AuthInvalid') {
+      return 'The node refused the token. Check that RTE_SEGMENT_ID, RTE_KEY_ID and the signing key in apps/token-server/.env belong to the same segment (HS256 secrets work on Free segments only).';
     }
+    if (err.codeName === 'Timeout') return `Can't reach the node at ${nodeUrl}. Check RTE_URL in apps/token-server/.env, and that the node is running.`;
+    return `${err.codeName}: ${err.message}`;
   }
-
-  function onType(value: string) {
-    setDraft(value);
-    if (Date.now() - lastSignal.current > 2_000) {
-      lastSignal.current = Date.now();
-      void client.topic<TypingEvents>(TYPING).publish('typing', { typing: true }, { delivery: 'signal' });
-    }
-  }
-
-  return (
-    <div className="chat">
-      <header>
-        <strong>{ROOM}</strong> · {identity} · <span className={`state ${state}`}>{state}</span>
-        {transport && <span className="transport"> via {transport}</span>}
-      </header>
-      <ul className="messages">
-        {messages.map((m) => (
-          <li key={m.id} className={`${m.publisher === identity ? 'mine' : ''} ${m.status}`}>
-            <b>{m.publisher}</b> {m.data?.text ?? String(m.data)}
-            {m.status === 'failed' && <button onClick={() => void m.retry?.()}>retry</button>}
-          </li>
-        ))}
-      </ul>
-      <div className="typing">{typing.length > 0 && `${typing.join(', ')} typing…`}</div>
-      {error && <div className="error">{error}</div>}
-      <form onSubmit={send}>
-        <input value={draft} onChange={(e) => onType(e.target.value)} placeholder="Say something" autoFocus />
-        <button type="submit">Send</button>
-      </form>
-    </div>
-  );
+  return (err as Error).message ?? String(err);
 }
 
-function App() {
-  const [token, setToken] = useState(import.meta.env.VITE_RTE_TOKEN ?? '');
+const isSignedOut = (err: unknown): boolean => err instanceof SignedOut || (isRealtimeError(err) && err.cause instanceof SignedOut);
+
+async function connect(signIn: SignIn): Promise<Realtime> {
+  // Get the first token up front: the SDK retries a failing token function
+  // until the connect times out, but an expired sign-in or a stopped token
+  // server should show at once.
+  // The node comes from the token server too, so the app has no settings of its own.
+  const [node, initial] = await Promise.all([connection(), realtimeToken(signIn.session, 'initial')]);
+  nodeUrl = node.url;
+  let first: string | undefined = initial;
+  return Folkways.connect({
+    ...node,
+    // Called on connect and again before each token expires.
+    token: ({ reason }) => {
+      const token = first;
+      first = undefined;
+      return token ?? realtimeToken(signIn.session, reason);
+    },
+    connectTimeoutMs: 10_000,
+  });
+}
+
+export default function App() {
+  const [signIn, setSignIn] = useState<SignIn | null>(savedSignIn);
   const [client, setClient] = useState<Realtime>();
   const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => () => void client?.close(), [client]);
 
-  async function connect(e: FormEvent) {
-    e.preventDefault();
+  // A reload keeps this tab's sign-in: connect again straight away.
+  useEffect(() => {
+    const saved = savedSignIn();
+    if (!saved) return;
+    let cancelled = false;
+    setBusy(true);
+    connect(saved)
+      .then((c) => (cancelled ? void c.close() : setClient(c)))
+      .catch((err) => {
+        if (cancelled) return;
+        if (isSignedOut(err)) signOut();
+        setError(describe(err));
+      })
+      .finally(() => !cancelled && setBusy(false));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function join(name: string) {
     setError(undefined);
+    setBusy(true);
     try {
-      const auth = AUTH_URL ? { authUrl: AUTH_URL } : { token: token.trim() };
-      setClient(await Folkways.connect({ url: NODE_URL, ...auth }));
+      const s = await login(name);
+      saveSignIn(s);
+      setSignIn(s);
+      setClient(await connect(s));
     } catch (err) {
-      setError((err as Error).message);
+      setError(describe(err));
+    } finally {
+      setBusy(false);
     }
   }
 
-  if (client) return <Chat client={client} />;
-  if (!NODE_URL) {
-    return (
-      <div className="login">
-        <h1>Folkways Realtime</h1>
-        <p>
-          Set <code>VITE_RTE_URL</code> in <code>.env.local</code> to the node URL from your segment&apos;s{' '}
-          <strong>Connect</strong> tab in the Folkways dashboard, then restart the dev server.
-        </p>
-      </div>
-    );
+  function signOut() {
+    setClient(undefined);
+    saveSignIn(null);
+    setSignIn(null);
   }
-  return (
-    <form className="login" onSubmit={connect}>
-      <h1>Folkways Realtime</h1>
-      {AUTH_URL ? (
-        <p>
-          Gets a token from <code>{AUTH_URL}</code>.
-        </p>
-      ) : (
-        <>
-          <p>
-            Paste a token issued by your backend (<a href={TOKEN_DOCS}>how to issue tokens</a>).
-          </p>
-          <textarea value={token} onChange={(e) => setToken(e.target.value)} rows={4} />
-        </>
-      )}
-      <button type="submit" disabled={!AUTH_URL && !token.trim()}>
-        Connect
-      </button>
-      {error && <div className="error">{error}</div>}
-    </form>
-  );
+
+  if (client && signIn) return <Chat client={client} me={signIn} onSignOut={signOut} />;
+  return <Login onJoin={join} busy={busy} error={error} resuming={busy && !!signIn} />;
 }
 
-export default App;
+function Login({ onJoin, busy, error, resuming }: { onJoin: (name: string) => void; busy: boolean; error?: string; resuming: boolean }) {
+  const [name, setName] = useState('');
+  const valid = /^[A-Za-z0-9._-]{1,32}$/.test(name.trim());
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    if (valid && !busy) onJoin(name.trim());
+  }
+
+  return (
+    <main className="login-page">
+      <div className="login-card">
+        <LogoTile size={48} />
+        <Eyebrow>Realtime chat example</Eyebrow>
+        <h1 className="fw-text-heading-2">Join the lobby</h1>
+        {resuming ? (
+          <p className="muted" role="status">
+            Reconnecting…
+          </p>
+        ) : (
+          <form onSubmit={submit} className="login-form">
+            <p className="muted">
+              Pick any name. Sign in with the same name in another tab or browser and you show up as one person with
+              several connections.
+            </p>
+            <label className="field">
+              <span>Name</span>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="alice"
+                autoFocus
+                autoComplete="nickname"
+                maxLength={32}
+                spellCheck={false}
+                aria-invalid={name.length > 0 && !valid}
+              />
+              <small className={name.length > 0 && !valid ? 'hint bad' : 'hint'}>Letters, digits, dots, dashes or underscores</small>
+            </label>
+            <button className="btn btn-primary" type="submit" disabled={!valid || busy}>
+              {busy ? 'Joining…' : 'Join chat'}
+            </button>
+          </form>
+        )}
+        {error && (
+          <p className="alert" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+      <p className="login-foot">
+        Tokens are signed by the example token server in <code>apps/token-server</code>.
+      </p>
+    </main>
+  );
+}

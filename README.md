@@ -29,7 +29,8 @@ npm install @folkwaysio/realtime
 
 You need a segment set up in the Folkways dashboard and a backend endpoint that issues tokens for your signed-in
 users. [Set up the dashboard](https://docs.folkways.io/docs/js-sdk/prerequisites) and
-[issue tokens from your backend](https://docs.folkways.io/docs/js-sdk/server-tokens) explain both.
+[issue tokens from your backend](https://docs.folkways.io/docs/js-sdk/server-tokens) explain both, and the
+[example token server](https://github.com/Folkways/folkways-js/tree/main/apps/token-server) is one you can run.
 
 ```ts
 import { Folkways } from '@folkwaysio/realtime';

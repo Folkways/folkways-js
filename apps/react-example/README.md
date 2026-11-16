@@ -1,45 +1,52 @@
 # React example
 
-A small chat on `chat/lobby` with a typing indicator on `typing/lobby`, built with `@folkwaysio/realtime` and React's
-`useSyncExternalStore`.
+A chat on `chat/lobby` built with `@folkwaysio/realtime` and React's `useSyncExternalStore`, styled with the Folkways
+"Unbroken" design tokens. You sign in with a name through the [example token server](../token-server), which signs a
+token for you.
+
+- **Messages** on `chat/lobby` (Durable): the last 50 on join, sending status and retry.
+- **Typing** on `typing/lobby` (Ephemeral signals).
+- **Who's here** from the node's `$presence/chat/lobby`: one person per name, with how many connections they have.
+- **Your connections** from `$online/user:<name>`: sign in with the same name in another tab or browser and you are
+  one person connected in two places.
+
+Every tab is its own sign-in (kept in `sessionStorage`), so one browser can hold several people, or the same person
+several times.
 
 ## Before you start
 
 In the [Folkways dashboard](https://docs.folkways.io/docs/js-sdk/prerequisites), set up a segment with:
 
-- a signing key, used by your backend to issue tokens;
-- two topic rules: `chat/>` with class **Durable** and operations `subscribe`, `publish`; and `typing/>` with class
-  **Ephemeral** and operations `subscribe`, `signal`.
+- a signing key, which the token server uses to sign your tokens;
+- two topic rules: `chat/>` with class **Durable** and presence turned on; and `typing/>` with class **Ephemeral**.
 
-Your backend issues each user a token for these topics. See
-[Issue tokens from your backend](https://docs.folkways.io/docs/js-sdk/server-tokens).
+Then set up the token server as its [README](../token-server/README.md) explains.
 
 ## Run it
 
-Create `apps/react-example/.env.local`:
+The app has no settings of its own. Your segment's details (node URL, segment ID, signing key) go only in the token
+server's `apps/token-server/.env`; the app asks the token server which node to connect to.
 
-```bash
-# The node URL from your segment's Connect tab
-VITE_RTE_URL=https://rte.example.com
-
-# Optional: your backend's token endpoint. Without it, the app asks you to paste a token.
-VITE_RTE_AUTH_URL=https://api.example.com/api/realtime-token
-```
-
-Then, from the repository root:
+From the repository root, start the SDK, the token server and the app together:
 
 ```bash
 pnpm install
-pnpm --filter @folkwaysio/realtime build
-pnpm --filter @folkwaysio/react-example dev
+pnpm dev
 ```
 
-Open the page and connect. Open a second browser window signed in as another user to chat between them.
+Open the page and sign in with a name. Open a second tab and sign in with another name, or the same one, and chat.
 
-If your token endpoint is on another origin than the dev server, it must allow CORS requests from it.
+The dev server forwards `/api` to the token server at `http://127.0.0.1:8787`, so the app and the token endpoint
+share one origin. Set `TOKEN_SERVER_URL` in `apps/react-example/.env.local` only if the token server runs elsewhere.
 
 ## What to look at
 
-- `src/App.tsx`: one client, `topic.messages` for the message list (with sending status and retry),
-  `topic.values('typing')` for who is typing, and `client.connection` for the connection state.
-- The guide [Using it with React](https://docs.folkways.io/docs/js-sdk/react) explains each part.
+| File | What it shows |
+| --- | --- |
+| `src/App.tsx` | Sign-in, and one client connected with a `token` function that asks the token server |
+| `src/Chat.tsx` | `topic.messages`, `topic.values()` for typing, presence and your connections, and `client.connection` |
+| `src/api.ts` | The calls to the token server: where to connect, sign-in and tokens |
+| `src/styles/tokens.css` | The design tokens, copied from folkways.io |
+| `vite.config.ts` | The `/api` proxy to the token server |
+
+The guide [Using it with React](https://docs.folkways.io/docs/js-sdk/react) explains each part.
