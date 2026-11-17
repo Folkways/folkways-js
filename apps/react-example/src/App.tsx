@@ -14,7 +14,7 @@ function describe(err: unknown): string {
   if (err instanceof SignedOut) return err.message;
   if (isRealtimeError(err)) {
     if (err.codeName === 'AuthInvalid') {
-      return 'The node refused the token. Check that RTE_SEGMENT_ID, RTE_KEY_ID and the signing key in apps/token-server/.env belong to the same segment (HS256 secrets work on Free segments only).';
+      return 'The node refused the token. Check that RTE_SEGMENT_ID, RTE_KEY_ID and the signing key in apps/token-server/.env belong to the same key of the same segment.';
     }
     if (err.codeName === 'Timeout') return `Can't reach the node at ${nodeUrl}. Check RTE_URL in apps/token-server/.env, and that the node is running.`;
     return `${err.codeName}: ${err.message}`;
@@ -30,10 +30,15 @@ async function connect(signIn: SignIn): Promise<Realtime> {
   // server should show at once.
   // The node comes from the token server too, so the app has no settings of its own.
   const [node, initial] = await Promise.all([connection(), realtimeToken(signIn.session, 'initial')]);
+  console.log({ node, initial });
   nodeUrl = node.url;
   let first: string | undefined = initial;
   return Folkways.connect({
-    ...node,
+    // ...node,
+    endpoints: {
+        websocket: "ws://localhost:9005/v1/ws",
+        http: "http://localhost:9006",
+    },
     // Called on connect and again before each token expires.
     token: ({ reason }) => {
       const token = first;

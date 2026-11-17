@@ -12,7 +12,7 @@ export interface Config {
   rteWsUrl?: string;
   /** The segment ID (a UUID). */
   segment: string;
-  /** The signing key's `kid` and private half. Never log `privateKey`. */
+  /** The signing key's `kid` and private half, as read; the SDK parses it. Never log `privateKey`. */
   signingKey: SigningKey;
   /** Where the private key was read from, for log lines. */
   keySource: string;
@@ -32,7 +32,6 @@ export class ConfigError extends Error {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KID = /^[A-Za-z0-9._-]{1,64}$/;
-const KEY_VARS = ['RTE_PRIVATE_KEY_FILE', 'RTE_PRIVATE_KEY', 'RTE_SECRET'] as const;
 const DEFAULT_TTL_SECONDS = 600;
 /** The node refuses tokens that live longer than 15 minutes. */
 const MAX_TTL_SECONDS = 900;
@@ -86,7 +85,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
     rteUrl,
     ...(rteWsUrl ? { rteWsUrl } : {}),
     segment,
-    signingKey: { kid, privateKey: key.privateKey, ...(key.alg ? { alg: key.alg } : {}) },
+    signingKey: { kid, privateKey: key.privateKey },
     keySource: key.source,
     tokenTtlMs: ttlSeconds! * 1000,
     sessionSecret,
@@ -96,58 +95,53 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
 
 interface PrivateKey {
   privateKey: string;
-  alg?: 'HS256';
   source: string;
 }
 
+/**
+ * Reads the private key from one of two places, as the README explains:
+ * - `RTE_PRIVATE_KEY_FILE`: the path of the key file, for a server with a disk (local, VM, mounted secret);
+ * - `RTE_PRIVATE_KEY`: the key itself, for platforms that inject secrets as environment variables.
+ * The value is not parsed here: the SDK reads every common key format, and the server signs a
+ * token at startup, so a key that can't sign stops it with the SDK's explanation.
+ */
 function readPrivateKey(env: NodeJS.ProcessEnv, cwd: string, problems: string[]): PrivateKey | undefined {
-  const set = KEY_VARS.filter((name) => (env[name]?.trim() ?? '').length > 0);
-  if (set.length === 0) {
-    problems.push("Set RTE_PRIVATE_KEY_FILE, RTE_PRIVATE_KEY or RTE_SECRET to the signing key's private half");
+  const read = (name: string) => env[name]?.trim() ?? '';
+  if (read('RTE_SECRET')) {
+    problems.push(
+      'RTE_SECRET is no longer supported: shared secrets (HS256) were removed. Signing keys are key pairs; put the private key in RTE_PRIVATE_KEY_FILE (a path to the .pem) or RTE_PRIVATE_KEY (the key itself), and remove RTE_SECRET',
+    );
     return undefined;
   }
-  if (set.length > 1) {
-    problems.push(`Set only one of RTE_PRIVATE_KEY_FILE, RTE_PRIVATE_KEY and RTE_SECRET; found ${set.join(', ')}`);
+  const file = read('RTE_PRIVATE_KEY_FILE');
+  const inline = read('RTE_PRIVATE_KEY');
+  if (file && inline) {
+    problems.push('Set only one of RTE_PRIVATE_KEY_FILE and RTE_PRIVATE_KEY');
     return undefined;
   }
-  const name = set[0]!;
-  const value = env[name]!.trim();
-
-  if (name === 'RTE_SECRET') {
-    if (value.startsWith('-----BEGIN')) {
-      problems.push('RTE_SECRET holds a PEM: put a private key in RTE_PRIVATE_KEY_FILE or RTE_PRIVATE_KEY');
+  if (!file && !inline) {
+    problems.push("Set RTE_PRIVATE_KEY_FILE to the path of the signing key's private key (.pem), or RTE_PRIVATE_KEY to the key itself");
+    return undefined;
+  }
+  if (inline) {
+    if (/^[^\n{]*\.pem$/.test(inline) && !inline.includes('-----')) {
+      problems.push(`RTE_PRIVATE_KEY looks like a file path ("${inline}"): put the path in RTE_PRIVATE_KEY_FILE instead`);
       return undefined;
     }
-    return { privateKey: value, alg: 'HS256', source: 'RTE_SECRET' };
+    return { privateKey: inline, source: 'RTE_PRIVATE_KEY' };
   }
-
-  let pem: string;
-  let source: string;
-  if (name === 'RTE_PRIVATE_KEY_FILE') {
-    const path = resolve(cwd, value);
-    try {
-      pem = readFileSync(path, 'utf8').trim();
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code ?? 'unreadable';
-      const hint = code === 'ENOENT' ? ': save the private key there, or point RTE_PRIVATE_KEY_FILE at it' : '';
-      problems.push(`RTE_PRIVATE_KEY_FILE: cannot read ${value} (${code})${hint}`);
-      return undefined;
-    }
-    source = value;
-  } else {
-    // Platforms that store secrets on one line keep the PEM's newlines as \n.
-    pem = value.replace(/\\n/g, '\n');
-    source = 'RTE_PRIVATE_KEY';
-  }
-  if (!pem.startsWith('-----BEGIN')) {
-    problems.push(`${name}: expected a PEM private key (-----BEGIN PRIVATE KEY-----); for a shared secret, use RTE_SECRET`);
+  if (file.includes('-----BEGIN') || file.startsWith('{')) {
+    problems.push('RTE_PRIVATE_KEY_FILE holds a key, not a path: put the key itself in RTE_PRIVATE_KEY instead');
     return undefined;
   }
-  if (pem.includes('PUBLIC KEY')) {
-    problems.push(`${name}: this is the public key; the server needs the private key the dashboard showed you once`);
+  try {
+    return { privateKey: readFileSync(resolve(cwd, file), 'utf8'), source: file };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? 'unreadable';
+    const hint = code === 'ENOENT' ? ': save the private key there, or point RTE_PRIVATE_KEY_FILE at it' : '';
+    problems.push(`RTE_PRIVATE_KEY_FILE: cannot read ${file} (${code})${hint}`);
     return undefined;
   }
-  return { privateKey: pem, source };
 }
 
 function readInt(value: string, fallback: number): number | undefined {

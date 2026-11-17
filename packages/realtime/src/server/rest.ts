@@ -108,8 +108,9 @@ export class Rest {
     if (typeof opts.segment !== 'string' || !UUID.test(opts.segment)) throw invalid('Rest needs the segment id (a UUID)');
     const key = opts.signingKey;
     if (!key || typeof key.kid !== 'string' || key.kid.length === 0) throw invalid('Rest needs signingKey.kid');
-    if (typeof key.privateKey !== 'string' || key.privateKey.trim().length === 0) throw invalid('Rest needs signingKey.privateKey');
-    if (key.privateKey.trim().startsWith('rte_')) {
+    const isJwk = typeof key.privateKey === 'object' && key.privateKey !== null;
+    if (!isJwk && (typeof key.privateKey !== 'string' || key.privateKey.trim().length === 0)) throw invalid('Rest needs signingKey.privateKey');
+    if (typeof key.privateKey === 'string' && key.privateKey.trim().startsWith('rte_')) {
       throw invalid('signingKey.privateKey is an API key; give the private key of a signing key (ADR-008)');
     }
     this.base = opts.url.replace(/\/+$/, '');
