@@ -30,15 +30,10 @@ async function connect(signIn: SignIn): Promise<Realtime> {
   // server should show at once.
   // The node comes from the token server too, so the app has no settings of its own.
   const [node, initial] = await Promise.all([connection(), realtimeToken(signIn.session, 'initial')]);
-  console.log({ node, initial });
   nodeUrl = node.url;
   let first: string | undefined = initial;
   return Folkways.connect({
-    // ...node,
-    endpoints: {
-        websocket: "ws://localhost:9005/v1/ws",
-        http: "http://localhost:9006",
-    },
+    ...node,
     // Called on connect and again before each token expires.
     token: ({ reason }) => {
       const token = first;
