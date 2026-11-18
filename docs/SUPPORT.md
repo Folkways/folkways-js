@@ -25,7 +25,7 @@ problem quickly. Include:
 
 Issues are public. Never post:
 
-- tokens, private signing keys or shared secrets;
+- tokens or private signing keys;
 - personal data of your users.
 
 If you posted a secret by mistake, delete it from the issue and replace it in the Folkways dashboard: add a new

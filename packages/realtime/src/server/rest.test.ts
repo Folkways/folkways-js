@@ -1,3 +1,4 @@
+import { generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import { decodeClientPacket, encodeServerPacket } from '../../test/support/server-codec';
@@ -7,7 +8,9 @@ import { Folkways, Rest } from './index';
 
 const EPOCH = 1879046969544933376n;
 const SEG = 'c7e5a92b-62a1-4b14-bd8f-8bb74c77d3ff';
-const SECRET = 'dev-only-secret-change-me-0123456789';
+/** The key most tests sign with; the ones about signing make their own. */
+const DEV = generateKeyPairSync('ed25519');
+const DEV_KEY = DEV.privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
 const subtle = globalThis.crypto.subtle;
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -61,14 +64,8 @@ async function pair(alg: 'EdDSA' | 'ES256') {
   };
 }
 
-async function hs256Verify(token: string, secret: string): Promise<boolean> {
-  const key = await subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
-  const { input, sig } = decode(token);
-  return subtle.verify('HMAC', key, sig, input);
-}
-
 const rest = (extra: Partial<ConstructorParameters<typeof Rest>[0]> = {}) =>
-  new Rest({ url: 'http://localhost:9006', segment: SEG, signingKey: { kid: 'dev-1', privateKey: SECRET }, ...extra });
+  new Rest({ url: 'http://localhost:9006', segment: SEG, signingKey: { kid: 'dev-1', privateKey: DEV_KEY }, ...extra });
 
 describe('Folkways.Rest', () => {
   it('signs tokens in process with an Ed25519 key, without calling the node', async () => {
@@ -90,15 +87,19 @@ describe('Folkways.Rest', () => {
     expect(claims.jti).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  it('signs with P-256 and HS256 keys too', async () => {
+  it('signs with P-256 keys too', async () => {
     const key = await pair('ES256');
     const es = await rest({ signingKey: { kid: 'ec-1', privateKey: key.privateKey } }).createToken({ identity: 'agent:7', kind: 'agent' });
     expect(decode(es.token).header).toMatchObject({ alg: 'ES256', kid: 'ec-1' });
     expect(await key.verify(es.token)).toBe(true);
+  });
 
-    const hs = await rest().createToken({ identity: 'alice' });
-    expect(decode(hs.token).header).toMatchObject({ alg: 'HS256', kid: 'dev-1' });
-    expect(await hs256Verify(hs.token, SECRET)).toBe(true);
+  it('signs with a private JWK object', async () => {
+    const jwk = DEV.privateKey.export({ format: 'jwk' }) as JsonWebKey;
+    const t = await rest({ signingKey: { kid: 'jwk-1', privateKey: jwk } }).createToken({ identity: 'alice' });
+    const { header, input, sig } = decode(t.token);
+    expect(header).toMatchObject({ alg: 'EdDSA', kid: 'jwk-1' });
+    expect(verify(null, input, DEV.publicKey, sig)).toBe(true);
   });
 
   it('mints anonymous tokens without a sub, and caps the lifetime at 15 minutes', async () => {
@@ -124,8 +125,8 @@ describe('Folkways.Rest', () => {
     await expect(rest({ signingKey: { kid: 'k', privateKey: pub } }).createToken({ identity: 'a' })).rejects.toMatchObject({
       message: expect.stringContaining('is a public key; give the private key (the one the dashboard showed once'),
     });
-    await expect(rest({ signingKey: { kid: 'k', alg: 'EdDSA', privateKey: SECRET } }).createToken({ identity: 'a' })).rejects.toMatchObject({
-      message: expect.stringContaining('not a PEM'),
+    await expect(rest({ signingKey: { kid: 'k', privateKey: 'an-old-hs256-shared-secret-0123456789' } }).createToken({ identity: 'a' })).rejects.toMatchObject({
+      message: expect.stringContaining('shared secrets (HS256) are no longer supported'),
     });
     await expect(rest({ signingKey: { kid: 'k', privateKey: '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----' } }).createToken({ identity: 'a' })).rejects.toMatchObject({
       code: Code.InvalidArgument,
@@ -146,7 +147,8 @@ describe('Folkways.Rest', () => {
     expect(node.calls.every((c) => c.url === 'http://localhost:9006/v1/publish')).toBe(true);
     // One token, cached across publishes
     expect(new Set(tokens).size).toBe(1);
-    expect(await hs256Verify(tokens[0]!, SECRET)).toBe(true);
+    const { input, sig } = decode(tokens[0]!);
+    expect(verify(null, input, DEV.publicKey, sig)).toBe(true);
     expect(decode(tokens[0]!).claims).toMatchObject({ seg: SEG, sub: 'billing', kind: 'service', cap: [{ topic: '>', ops: ['publish'] }] });
   });
 
@@ -183,7 +185,8 @@ describe('Folkways.Rest', () => {
     expect(() => new Rest({ apiKey: 'rte_sk_x.y', url: 'http://localhost:9006' } as never)).toThrow(/ADR-008/);
     expect(() => rest({ signingKey: { kid: 'k', privateKey: 'rte_sk_backend.0123456789abcdef0123456789abcdef' } })).toThrow(/API key/);
     expect(() => rest({ segment: 'Local Dev' })).toThrow(/segment id/);
-    expect(() => rest({ signingKey: { kid: '', privateKey: SECRET } })).toThrow(/kid/);
+    expect(() => rest({ signingKey: { kid: '', privateKey: DEV_KEY } })).toThrow(/kid/);
+    expect(() => rest({ signingKey: { kid: 'k', privateKey: '  ' } })).toThrow(/privateKey/);
     expect(() => rest({ url: 'rte.example.com' })).toThrow(/url/);
   });
 

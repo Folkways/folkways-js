@@ -34,7 +34,7 @@ version to get them.
 
 This isn't a vulnerability, but it needs quick action:
 
-- **A private signing key or shared secret:** in the Folkways dashboard, add a new signing key, switch your
+- **A private signing key:** in the Folkways dashboard, add a new signing key, switch your
   backend to it and delete the old one. Deleting a key ends every connection that uses a token signed with it.
 - **A publishable key:** these are public by design and can only read. If one is being misused, revoke it on the
   segment's **Publishable keys** tab and ship a new one.

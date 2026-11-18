@@ -64,8 +64,8 @@ token itself.
 
 Note the **Key ID**, and the **Segment ID** and **node URL** from the segment's **Connect** tab.
 
-You can also create the key pair yourself and upload only the public key. A **shared secret (HS256)** works too, for
-trying things out. See [Signing keys](https://docs.folkways.io/docs/js-sdk/authentication#signing-keys).
+You can also create the key pair yourself, with any tool, and upload only the public key. See
+[Signing keys](https://docs.folkways.io/docs/js-sdk/authentication#signing-keys).
 
 ## 2. Store the key
 
@@ -92,13 +92,25 @@ RTE_KEY_ID=backend-2026-10
 RTE_PRIVATE_KEY_FILE=./secrets/signing-key.pem
 ```
 
-The server reads the private key from one of three settings. Set exactly one:
+The server reads the private key from one of two settings. Set exactly one:
 
 | Setting | Holds | Use it when |
 | --- | --- | --- |
-| `RTE_PRIVATE_KEY_FILE` | The path of the private key file (PKCS#8 PEM, Ed25519 or P-256) | The key is a file on the server or a mounted secret |
-| `RTE_PRIVATE_KEY` | The PEM itself. Newlines may be written as `\n` | Your host injects secrets as environment variables |
-| `RTE_SECRET` | The shared secret of an HS256 key | You use a shared secret |
+| `RTE_PRIVATE_KEY_FILE` | The **path** of the private key file, absolute or relative to `apps/token-server` | The key is a file: on your laptop, on a VM, or a secret your platform mounts as a file (Kubernetes, Docker secrets) |
+| `RTE_PRIVATE_KEY` | The **key itself**. Keep its newlines, or write them as `\n` to fit it on one line | Your host injects secrets as environment variables (Vercel, Render, Fly.io, Heroku, GitHub Actions) |
+
+```bash
+# RTE_PRIVATE_KEY_FILE: a path
+RTE_PRIVATE_KEY_FILE=./secrets/signing-key.pem
+
+# RTE_PRIVATE_KEY: the key, on one line
+RTE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEI...\n-----END PRIVATE KEY-----"
+```
+
+Either one takes the key as the dashboard gives it (a PKCS#8 PEM), and also: an `EC PRIVATE KEY` PEM (what
+`openssl ecparam -genkey` writes), the PEM's base64 body without its `-----BEGIN` lines, or a private JWK. The server
+works out whether it is Ed25519 or P-256. There is no shared-secret option: `RTE_SECRET` was removed, and the server
+refuses to start while it is set.
 
 > [!WARNING]
 > The private key lets anyone sign tokens for any user of your segment. Keep it out of your repository, your app's
@@ -186,7 +198,7 @@ The server reads these from the environment. When there is a `.env` file in its 
 | `RTE_WS_URL` | unset | Only for a node that serves WebSocket on its own port, such as a local one (`ws://127.0.0.1:9005/v1/ws`) |
 | `RTE_SEGMENT_ID` | required | The segment ID (a UUID), from the **Connect** tab |
 | `RTE_KEY_ID` | required | The signing key's ID (`kid`), from the **Signing keys** tab |
-| `RTE_PRIVATE_KEY_FILE`, `RTE_PRIVATE_KEY` or `RTE_SECRET` | one required | The key's private half; see [Store the key](#2-store-the-key) |
+| `RTE_PRIVATE_KEY_FILE` or `RTE_PRIVATE_KEY` | one required | The key's private half: a path to it, or the key itself; see [Store the key](#2-store-the-key) |
 | `RTE_TOKEN_TTL_SECONDS` | `600` | How long each token lives, from 60 to 900 seconds |
 | `SESSION_SECRET` | random | Signs the sign-in sessions. At least 32 characters. Unset, a random one is made at startup, so restarting signs everyone out |
 | `HOST` | `127.0.0.1` | Address to listen on. Use `0.0.0.0` in a container |
@@ -260,12 +272,14 @@ closes every connection still using a token signed with it.
 | Problem | Fix |
 | --- | --- |
 | `RTE_… is not set` when the server starts | Fill in `.env` from `.env.example`, then restart the server |
-| `this is the public key` | You saved the public half. Use the private key the dashboard showed when the key was created |
-| `convert the key to PKCS#8 first` | Your P-256 key is in the older EC format. Convert it: `openssl pkcs8 -topk8 -nocrypt -in key.ec.pem -out key.pem` |
-| `not an Ed25519 or P-256 private key` | The file is not a private key in PKCS#8 PEM. Check that you copied all of it, including the `BEGIN` and `END` lines |
+| `RTE_SECRET is no longer supported` | Shared secrets were removed. Add an Ed25519 key pair in the dashboard, put its private key in `RTE_PRIVATE_KEY_FILE` or `RTE_PRIVATE_KEY`, set `RTE_KEY_ID` to its ID, and delete `RTE_SECRET` |
+| `is a public key` | You saved the public half. Use the private key the dashboard showed when the key was created |
+| `holds a key, not a path` / `looks like a file path` | The key and the path are in each other's setting. A path goes in `RTE_PRIVATE_KEY_FILE`, the key itself in `RTE_PRIVATE_KEY` |
+| `is encrypted` / `is an OpenSSH key` | Decrypt it (`openssl pkcs8 -in encrypted.pem -out key.pem`), or make a PEM key: `openssl genpkey -algorithm ed25519 -out key.pem` |
+| `not a private key we can read` | Check that you copied all of the key. Only Ed25519 and P-256 keys work |
 | The app says `Can't reach the token server` | Start the token server, or set `TOKEN_SERVER_URL` in the app's `.env.local` |
 | The app says `Your sign-in has expired` | The token server restarted without `SESSION_SECRET`, or the 8-hour session ended. Sign in again |
-| The app says `The node refused the token` (`AuthInvalid`) | `RTE_SEGMENT_ID` or `RTE_KEY_ID` doesn't match the key in the dashboard, the key was deleted, or an HS256 secret is used on a paid segment (they work on Free only). Check that the server's clock is right |
+| The app says `The node refused the token` (`AuthInvalid`) | `RTE_SEGMENT_ID` or `RTE_KEY_ID` doesn't match the key in the dashboard, the private key belongs to a different key than `RTE_KEY_ID`, or the key was deleted. Check that the server's clock is right |
 | The app says `Can't reach the node at …` | Check `RTE_URL` (and `RTE_WS_URL` for a local node) in `.env`, restart this server, and check that the node is running |
 | `Forbidden` when subscribing or publishing | The topic needs a rule that allows the operation, and the token's permissions (`src/permissions.ts`) must include it |
 
