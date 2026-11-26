@@ -15,7 +15,7 @@ describe('codes', () => {
     }
   });
 
-  it('maps families like rte/src/proto/codes.rs', () => {
+  it('maps code families to HTTP statuses', () => {
     for (const v of schemaCodes) {
       const status = codeInfo(v).httpStatus;
       switch (Math.floor(v / 100)) {
@@ -49,6 +49,9 @@ describe('codes', () => {
     expect(codeInfo(Code.Backpressure)).toMatchObject({ retry: 'backoff', closesConnection: true });
     expect(codeInfo(Code.RateLimited)).toMatchObject({ retry: 'backoff', closesConnection: false });
     expect(isFatalCloseCode(Code.AuthInvalid)).toBe(true);
+    expect(Code.AuthRevoked).toBe(207);
+    expect(codeInfo(Code.AuthRevoked)).toMatchObject({ httpStatus: 401, retry: 'never', closesConnection: true });
+    expect(isFatalCloseCode(Code.AuthRevoked)).toBe(true);
     expect(isFatalCloseCode(Code.Backpressure)).toBe(false);
     expect(isFatalCloseCode(Code.Draining)).toBe(false);
   });
