@@ -37,7 +37,7 @@ export interface RealtimeOptions {
    */
   authUrl?: string;
   /**
-   * A publishable key (`rte_pk_…`) for read-only apps without a backend: the
+   * A publishable key for read-only apps without a backend: the
    * client trades it at the node (`POST /v1/token`) for anonymous tokens that
    * may only subscribe and read history. Give this, `token` or `authUrl`.
    */
@@ -173,7 +173,7 @@ export function resolveOptions(o: RealtimeOptions): ResolvedOptions {
       throw invalid(
         typeof o.publishableKey === 'string' && o.publishableKey.startsWith('rte_sk_')
           ? 'secret API keys no longer exist and never belong in an app; sign tokens on your server and use authUrl'
-          : 'options.publishableKey must be a publishable key (rte_pk_…)',
+          : 'options.publishableKey must be a publishable key',
       );
     }
     if (!endpoints.http) throw invalid('options.publishableKey needs the node\'s HTTP endpoint (options.url or endpoints.http)');

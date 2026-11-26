@@ -1,5 +1,5 @@
 /**
- * Owned message model of the Folkways protocol v1 wire protocol.
+ * Owned message model of the Folkways wire protocol v1.
  *
  * Represents the public wire contract. Every u64 is a `bigint` except
  * millisecond timestamps, which are `number` (they stay far below 2^53).

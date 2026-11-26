@@ -92,7 +92,7 @@ export function authUrlProvider(
 }
 
 /**
- * A token provider that trades a publishable key (`rte_pk_…`) for an
+ * A token provider that trades a publishable key for an
  * anonymous, read-only token at the node's `POST /v1/token`. A refusal keeps
  * the node's code, so a paused key surfaces as `Suspended` and a revoked one
  * as `AuthInvalid`, and its wait, so a `RateLimited` (HTTP 429: too many

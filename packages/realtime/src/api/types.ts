@@ -1,8 +1,6 @@
 /**
  * The public types of @folkwaysio/realtime.
- *
- * because they become a public API on the first npm release. Names follow
- * the portal vocabulary: segment, topic, delivery type, event name.
+ * Names follow the portal vocabulary: segment, topic, delivery type, event name.
  */
 import type { Limits, TransportKind } from '../engine';
 import type { Cursor } from '../shared/cursor';

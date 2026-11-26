@@ -2,15 +2,12 @@
 # Regenerates the FlatBuffers bindings from the wire schema in ./proto.
 #
 # Needs flatc 24.3.25, the version the `flatbuffers` npm runtime uses
-# (set FLATC if it isn't on PATH). FOLKWAYS_PROTOCOL_SCHEMA copies a newer schema in first.
+# (set FLATC if it isn't on PATH). Update the public schema before generating.
 #
 #   pnpm proto
 set -eu
 cd "$(dirname "$0")/.."
 FLATC="${FLATC:-flatc}"
-if [ -n "${FOLKWAYS_PROTOCOL_SCHEMA:-}" ]; then
-  cp "$FOLKWAYS_PROTOCOL_SCHEMA" proto/protocol.fbs
-fi
 version="$("$FLATC" --version)"
 case "$version" in
   *"24.3.25"*) ;;

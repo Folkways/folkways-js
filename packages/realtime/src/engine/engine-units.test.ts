@@ -216,7 +216,7 @@ describe('TokenManager', () => {
     const base = { url: 'https://realtime.example.com' };
     expect(resolveOptions({ ...base, publishableKey: 'rte_pk_web.abc' }).engine.token).toBeTypeOf('function');
     expect(() => resolveOptions({ ...base, publishableKey: 'rte_sk_backend.abc' })).toThrow(/sign tokens on your server/);
-    expect(() => resolveOptions({ ...base, publishableKey: 'nope' })).toThrow(/rte_pk_/);
+    expect(() => resolveOptions({ ...base, publishableKey: 'nope' })).toThrow(/must be a publishable key/);
     expect(() => resolveOptions({ ...base, publishableKey: 'rte_pk_web.abc', token: 't' })).toThrow(/one of/);
     expect(() => resolveOptions({ ...base, authUrl: '/t', token: 't' })).toThrow(/one of/);
     expect(() => resolveOptions({ endpoints: { websocket: 'wss://realtime.example.com/v1/ws' }, publishableKey: 'rte_pk_web.abc' })).toThrow(/HTTP endpoint/);
