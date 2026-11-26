@@ -416,6 +416,7 @@ export class SocketSession implements Session {
       while (!this.ended && Date.now() < expiresAtMs) {
         try {
           const token = await tokens.refresh('expiring');
+          if (this.ended) return;
           await this.reauth(token);
           const exp = peekJwt(token).exp;
           if (exp) tokens.setExpiry(exp);
