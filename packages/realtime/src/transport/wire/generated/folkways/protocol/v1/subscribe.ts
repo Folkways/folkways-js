@@ -4,10 +4,10 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { Cursor } from '../../rte/v1/cursor.js';
-import { DeliveryClass } from '../../rte/v1/delivery-class.js';
-import { OnGap } from '../../rte/v1/on-gap.js';
-import { StartAt } from '../../rte/v1/start-at.js';
+import { Cursor } from '../../../folkways/protocol/v1/cursor.js';
+import { DeliveryClass } from '../../../folkways/protocol/v1/delivery-class.js';
+import { OnGap } from '../../../folkways/protocol/v1/on-gap.js';
+import { StartAt } from '../../../folkways/protocol/v1/start-at.js';
 
 
 export class Subscribe {

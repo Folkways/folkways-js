@@ -4,8 +4,8 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { AckMode } from '../../rte/v1/ack-mode.js';
-import { Uuid128 } from '../../rte/v1/uuid128.js';
+import { AckMode } from '../../../folkways/protocol/v1/ack-mode.js';
+import { Uuid128 } from '../../../folkways/protocol/v1/uuid128.js';
 
 
 export class PubAck {

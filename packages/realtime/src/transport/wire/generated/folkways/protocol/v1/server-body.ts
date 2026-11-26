@@ -2,22 +2,22 @@
 
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
-import { Close } from '../../rte/v1/close.js';
-import { Deliver } from '../../rte/v1/deliver.js';
-import { Extension } from '../../rte/v1/extension.js';
-import { Flow } from '../../rte/v1/flow.js';
-import { Gap } from '../../rte/v1/gap.js';
-import { OpError } from '../../rte/v1/op-error.js';
-import { OpOk } from '../../rte/v1/op-ok.js';
-import { Ping } from '../../rte/v1/ping.js';
-import { PollEnd } from '../../rte/v1/poll-end.js';
-import { Pong } from '../../rte/v1/pong.js';
-import { PubAck } from '../../rte/v1/pub-ack.js';
-import { Snapshot } from '../../rte/v1/snapshot.js';
-import { SubAck } from '../../rte/v1/sub-ack.js';
-import { SubEnded } from '../../rte/v1/sub-ended.js';
-import { TokenExpiring } from '../../rte/v1/token-expiring.js';
-import { Welcome } from '../../rte/v1/welcome.js';
+import { Close } from '../../../folkways/protocol/v1/close.js';
+import { Deliver } from '../../../folkways/protocol/v1/deliver.js';
+import { Extension } from '../../../folkways/protocol/v1/extension.js';
+import { Flow } from '../../../folkways/protocol/v1/flow.js';
+import { Gap } from '../../../folkways/protocol/v1/gap.js';
+import { OpError } from '../../../folkways/protocol/v1/op-error.js';
+import { OpOk } from '../../../folkways/protocol/v1/op-ok.js';
+import { Ping } from '../../../folkways/protocol/v1/ping.js';
+import { PollEnd } from '../../../folkways/protocol/v1/poll-end.js';
+import { Pong } from '../../../folkways/protocol/v1/pong.js';
+import { PubAck } from '../../../folkways/protocol/v1/pub-ack.js';
+import { Snapshot } from '../../../folkways/protocol/v1/snapshot.js';
+import { SubAck } from '../../../folkways/protocol/v1/sub-ack.js';
+import { SubEnded } from '../../../folkways/protocol/v1/sub-ended.js';
+import { TokenExpiring } from '../../../folkways/protocol/v1/token-expiring.js';
+import { Welcome } from '../../../folkways/protocol/v1/welcome.js';
 
 
 export enum ServerBody {
