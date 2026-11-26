@@ -152,7 +152,7 @@ export class Rest {
     return Object.freeze({ token, expiresAt: exp * 1000, identity, kind, capabilities: capabilities.map((c) => ({ topics: c.topics, ops: [...c.ops] })) });
   }
 
-  /** Publishes one event over HTTP and resolves with the node's receipt. Retrying with the same idempotencyKey is safe. */
+  /** Publishes one event over HTTP. Retries with the same key are deduplicated within the retained idempotency window. */
   async publish(topic: string, event: string, data: unknown, opts: RestPublishOptions = {}): Promise<PublishReceipt> {
     assertTopic(topic);
     if (typeof event !== 'string' || event.length === 0) throw new RealtimeError(Code.InvalidArgument, { message: 'event name must be a non-empty string', topic, local: true });
@@ -178,12 +178,13 @@ export class Rest {
     const packet = encodeClientPacket([{ corr: 1n, msg: { type: 'publish', publish: body } }]);
     let token = await this.ownToken();
     let reply = await this.withTimeout((signal) => this.http.request(this.base, '/v1/publish', token, packet, signal));
-    if (reply.status === 401) {
+    let frames = reply.packets.flatMap((p) => decodeServerPacket(p));
+    const revoked = frames.some(({ msg }) => (msg.type === 'close' || msg.type === 'opError') && msg.code === Code.AuthRevoked);
+    if (reply.status === 401 && !revoked) {
       this.own = undefined;
       token = await this.ownToken();
       reply = await this.withTimeout((signal) => this.http.request(this.base, '/v1/publish', token, packet, signal));
-    }
-    const frames = reply.packets.flatMap((p) => decodeServerPacket(p));
+      frames = reply.packets.flatMap((p) => decodeServerPacket(p));
     for (const { msg } of frames) {
       if (msg.type === 'pubAck') return toReceipt(topic, delivery, msg);
       if (msg.type === 'opError') throw new RealtimeError(msg.code, { message: msg.message, retryAfterMs: msg.retryAfterMs, topic });
