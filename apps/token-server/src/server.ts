@@ -25,9 +25,9 @@ function readConfig(): Config {
 /** The signing client, after signing one token: a key that can't sign stops the server here, not on a user's first request. */
 async function signingClient(config: Config): Promise<Rest> {
   try {
-    const rte = createRest(config);
-    await rte.createToken({ identity: 'token-server', kind: 'service', ttlMs: 60_000 });
-    return rte;
+    const folkways = createRest(config);
+    await folkways.createToken({ identity: 'token-server', kind: 'service', ttlMs: 60_000 });
+    return folkways;
   } catch (err) {
     return fail(`the signing key in ${config.keySource} can't sign tokens: ${(err as Error).message}`);
   }
@@ -38,7 +38,7 @@ const app = createApp(config, await signingClient(config));
 const server = app.listen(config.port, config.host, (err) => {
   if (err) fail(`can't listen on ${config.host}:${config.port}: ${err.message}`);
   console.log(`token-server: listening on http://${config.host}:${config.port}`);
-  console.log(`  node ${config.rteUrl}${config.rteWsUrl ? ` (WebSocket ${config.rteWsUrl})` : ''}`);
+  console.log(`  node ${config.serviceUrl}${config.webSocketUrl ? ` (WebSocket ${config.webSocketUrl})` : ''}`);
   console.log(`  segment ${config.segment}, key ${config.signingKey.kid} from ${config.keySource}, tokens last ${config.tokenTtlMs / 1000} s`);
   if (!config.sessionSecretFromEnv) console.log('  SESSION_SECRET is not set: sign-ins last until the server restarts');
   console.log("  This example signs anyone in by name. Use your app's own login before you deploy it.");

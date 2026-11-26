@@ -96,8 +96,10 @@ The tests use [Vitest](https://vitest.dev):
 | Layers | `test/layers.test.ts` | The import direction between layers |
 | Types | `test/types.test.ts` | The public types, checked by the compiler |
 | Entry points | `test/entry-points.test.ts` | Errors and exports across `@folkwaysio/realtime` and `/server` |
-| Integration | `test/integration.test.ts` | The SDK against a real Folkways node. Run by the Folkways team; skipped elsewhere |
+| Integration | `test/integration.test.ts` | The SDK against a provisioned test service; skipped unless explicitly enabled |
 | Token server | `apps/token-server/test/` | The example token server's endpoints, sign-in and settings |
+
+Integration tests require an isolated test segment with the expected topic rules and externally configured endpoints. Set `FOLKWAYS_INTEGRATION=1`, `FOLKWAYS_TEST_WS_URL`, `FOLKWAYS_TEST_HTTP_URL`, `FOLKWAYS_TEST_SEGMENT_ID`, `FOLKWAYS_TEST_KEY_ID` and `FOLKWAYS_TEST_PRIVATE_KEY` via your test environment. Never commit credentials. Provisioning is outside the SDK.
 
 Add tests next to the code you change. Engine behaviour is easiest to test with the fake transport in
 `test/support/fake-transport.ts`.

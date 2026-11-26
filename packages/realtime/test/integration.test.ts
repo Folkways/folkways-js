@@ -1,9 +1,4 @@
-/**
- * End-to-end tests against a real Folkways node, run by the Folkways team.
- * `RTE_BIN` names the node binary; the tests are skipped when it is unset.
- * The node reads its segments from a control plane running its dev seed
- * (see `startNode` in support/rte-node.ts).
- */
+/** Integration tests against an externally provisioned test service. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -17,20 +12,29 @@ import {
 import type { StreamConnection } from '../src/transport/types';
 import { WebSocketTransport } from '../src/transport/websocket';
 import { until } from './support/fake-transport';
-import { type RteNode, startNode } from './support/rte-node';
-import { mintToken } from './support/token';
+import { mintToken as signTestToken } from './support/token';
 
-let node: RteNode | undefined;
+const env = process.env;
+const enabled = env.FOLKWAYS_INTEGRATION === '1';
+function required(name: string): string {
+  const value = env[name];
+  if (!value) throw new Error(`Missing integration setting: ${name}`);
+  return value;
+}
+function mintToken(sub: string, opts: Parameters<typeof signTestToken>[1] = {}) {
+  return signTestToken(sub, { ...opts, seg: required('FOLKWAYS_TEST_SEGMENT_ID'), kid: required('FOLKWAYS_TEST_KEY_ID'), privateKey: required('FOLKWAYS_TEST_PRIVATE_KEY').replace(/\\n/g, '\n') });
+}
+
 const clients: Realtime[] = [];
 let run = 0;
 
-beforeAll(async () => {
-  node = await startNode();
-}, 30_000);
+beforeAll(() => {
+  if (!enabled) return;
+  for (const name of ['FOLKWAYS_TEST_WS_URL', 'FOLKWAYS_TEST_HTTP_URL', 'FOLKWAYS_TEST_SEGMENT_ID', 'FOLKWAYS_TEST_KEY_ID', 'FOLKWAYS_TEST_PRIVATE_KEY']) required(name);
+});
 
 afterAll(async () => {
   await Promise.all(clients.map((c) => c.close()));
-  await node?.stop();
 });
 
 /** A unique topic suffix per test, so tests never see each other's events. */
@@ -53,7 +57,7 @@ class KillableWs implements StreamTransport {
 
 async function open(sub: string, opts: Partial<RealtimeOptions> = {}): Promise<Realtime> {
   const c = await connect({
-    endpoints: { websocket: node!.ws, http: node!.http },
+    endpoints: { websocket: required('FOLKWAYS_TEST_WS_URL'), http: required('FOLKWAYS_TEST_HTTP_URL') },
     token: () => mintToken(sub),
     reconnect: { initialDelayMs: 10, maxDelayMs: 100 },
     longPoll: { waitMs: 2_000, emptyStateRecheckMs: 300 },
@@ -63,7 +67,7 @@ async function open(sub: string, opts: Partial<RealtimeOptions> = {}): Promise<R
   return c;
 }
 
-const live = describe.skipIf(!process.env.RTE_BIN);
+const live = describe.skipIf(!enabled);
 
 for (const transport of ['websocket', 'http'] as const) {
   live(`over ${transport}`, () => {

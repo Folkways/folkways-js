@@ -9,10 +9,10 @@ import { createApp, createRest } from '../src/app.js';
 import { type Config, ConfigError, loadConfig } from '../src/config.js';
 
 const SEGMENT = randomUUID();
-/** The key most tests sign with, given to the server as RTE_PRIVATE_KEY. */
+/** The key most tests sign with, given to the server as FOLKWAYS_PRIVATE_KEY. */
 const KEY = generateKeyPairSync('ed25519');
 const KEY_PEM = KEY.privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
-const BASE_ENV = { RTE_URL: 'https://rte.example.com', RTE_SEGMENT_ID: SEGMENT, RTE_KEY_ID: 'backend-1' };
+const BASE_ENV = { FOLKWAYS_URL: 'https://realtime.example.com', FOLKWAYS_SEGMENT_ID: SEGMENT, FOLKWAYS_KEY_ID: 'backend-1' };
 
 const dir = mkdtempSync(join(tmpdir(), 'token-server-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -52,7 +52,7 @@ async function start(config: Config) {
 describe('token endpoint', () => {
   let app: Awaited<ReturnType<typeof start>>;
   beforeAll(async () => {
-    app = await start(loadConfig({ ...BASE_ENV, RTE_PRIVATE_KEY: KEY_PEM }, dir));
+    app = await start(loadConfig({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY: KEY_PEM }, dir));
   });
   afterAll(() => app.stop());
 
@@ -65,7 +65,7 @@ describe('token endpoint', () => {
   it('tells the app which node to connect to', async () => {
     const res = await app.call('GET', '/api/connection');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ url: 'https://rte.example.com' });
+    expect(res.body).toEqual({ url: 'https://realtime.example.com' });
   });
 
   it('signs in with a name', async () => {
@@ -131,33 +131,33 @@ async function tokenWith(env: NodeJS.ProcessEnv): Promise<string> {
 }
 
 describe('the two ways to give the server its private key', () => {
-  it('RTE_PRIVATE_KEY_FILE: a path to the .pem, relative to the working directory', async () => {
+  it('FOLKWAYS_PRIVATE_KEY_FILE: a path to the .pem, relative to the working directory', async () => {
     const { privateKey, publicKey } = generateKeyPairSync('ed25519');
     writeFileSync(join(dir, 'signing-key.pem'), privateKey.export({ type: 'pkcs8', format: 'pem' }));
-    const config = loadConfig({ ...BASE_ENV, RTE_PRIVATE_KEY_FILE: './signing-key.pem', RTE_TOKEN_TTL_SECONDS: '900' }, dir);
+    const config = loadConfig({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY_FILE: './signing-key.pem', FOLKWAYS_TOKEN_TTL_SECONDS: '900' }, dir);
     expect(config.keySource).toBe('./signing-key.pem');
-    const token = await tokenWith({ RTE_PRIVATE_KEY_FILE: './signing-key.pem', RTE_TOKEN_TTL_SECONDS: '900' });
+    const token = await tokenWith({ FOLKWAYS_PRIVATE_KEY_FILE: './signing-key.pem', FOLKWAYS_TOKEN_TTL_SECONDS: '900' });
     const { header, claims } = decode(token);
     expect(header.alg).toBe('EdDSA');
     expect(claims.exp - claims.iat).toBe(900);
     expect(verifies(token, publicKey)).toBe(true);
   });
 
-  it('RTE_PRIVATE_KEY: the key itself, with real newlines or written as \\n', async () => {
-    const config = loadConfig({ ...BASE_ENV, RTE_PRIVATE_KEY: KEY_PEM }, dir);
-    expect(config.keySource).toBe('RTE_PRIVATE_KEY');
-    expect(verifies(await tokenWith({ RTE_PRIVATE_KEY: KEY_PEM }), KEY.publicKey)).toBe(true);
-    expect(verifies(await tokenWith({ RTE_PRIVATE_KEY: KEY_PEM.trim().replace(/\n/g, '\\n') }), KEY.publicKey)).toBe(true);
+  it('FOLKWAYS_PRIVATE_KEY: the key itself, with real newlines or written as \\n', async () => {
+    const config = loadConfig({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY: KEY_PEM }, dir);
+    expect(config.keySource).toBe('FOLKWAYS_PRIVATE_KEY');
+    expect(verifies(await tokenWith({ FOLKWAYS_PRIVATE_KEY: KEY_PEM }), KEY.publicKey)).toBe(true);
+    expect(verifies(await tokenWith({ FOLKWAYS_PRIVATE_KEY: KEY_PEM.trim().replace(/\n/g, '\\n') }), KEY.publicKey)).toBe(true);
   });
 
   it('signs ES256 with a P-256 key, in PKCS#8 or SEC1, or as a bare base64 body', async () => {
     const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
     const pkcs8 = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
     const sec1 = privateKey.export({ type: 'sec1', format: 'pem' }) as string;
-    // The bare body is what was once pasted into RTE_SECRET and signed as HS256 (FLK-211)
+    // The bare body is what was once pasted into FOLKWAYS_SECRET and signed as HS256
     const body = pkcs8.replace(/-----[A-Z ]+-----/g, '').replace(/\s+/g, '');
     for (const value of [pkcs8, sec1, body]) {
-      const token = await tokenWith({ RTE_PRIVATE_KEY: value });
+      const token = await tokenWith({ FOLKWAYS_PRIVATE_KEY: value });
       expect(decode(token).header.alg).toBe('ES256');
       expect(verifies(token, publicKey)).toBe(true);
     }
@@ -177,47 +177,47 @@ describe('loadConfig', () => {
 
   it('lists every missing setting at once, naming both key variables', () => {
     const text = problems({});
-    for (const name of ['RTE_URL', 'RTE_SEGMENT_ID', 'RTE_KEY_ID', 'RTE_PRIVATE_KEY_FILE', 'RTE_PRIVATE_KEY']) expect(text).toContain(name);
+    for (const name of ['FOLKWAYS_URL', 'FOLKWAYS_SEGMENT_ID', 'FOLKWAYS_KEY_ID', 'FOLKWAYS_PRIVATE_KEY_FILE', 'FOLKWAYS_PRIVATE_KEY']) expect(text).toContain(name);
   });
 
-  it('refuses RTE_SECRET and says where the private key goes instead', () => {
-    for (const env of [{ RTE_SECRET: 'a-shared-secret' }, { RTE_SECRET: 'a-shared-secret', RTE_PRIVATE_KEY: KEY_PEM }]) {
+  it('refuses FOLKWAYS_SECRET and says where the private key goes instead', () => {
+    for (const env of [{ FOLKWAYS_SECRET: 'a-shared-secret' }, { FOLKWAYS_SECRET: 'a-shared-secret', FOLKWAYS_PRIVATE_KEY: KEY_PEM }]) {
       const text = problems({ ...BASE_ENV, ...env });
-      expect(text).toMatch(/RTE_SECRET is no longer supported/);
-      expect(text).toContain('RTE_PRIVATE_KEY_FILE');
-      expect(text).toContain('RTE_PRIVATE_KEY');
+      expect(text).toMatch(/FOLKWAYS_SECRET is no longer supported/);
+      expect(text).toContain('FOLKWAYS_PRIVATE_KEY_FILE');
+      expect(text).toContain('FOLKWAYS_PRIVATE_KEY');
     }
   });
 
   it('takes exactly one private key setting', () => {
-    expect(problems({ ...BASE_ENV, RTE_PRIVATE_KEY: KEY_PEM, RTE_PRIVATE_KEY_FILE: './k.pem' })).toMatch(/only one of/);
+    expect(problems({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY: KEY_PEM, FOLKWAYS_PRIVATE_KEY_FILE: './k.pem' })).toMatch(/only one of/);
   });
 
   it('spots a key in the file variable and a path in the key variable', () => {
-    expect(problems({ ...BASE_ENV, RTE_PRIVATE_KEY_FILE: KEY_PEM })).toMatch(/holds a key, not a path.*RTE_PRIVATE_KEY/);
-    expect(problems({ ...BASE_ENV, RTE_PRIVATE_KEY: './secrets/signing-key.pem' })).toMatch(/looks like a file path.*RTE_PRIVATE_KEY_FILE/);
+    expect(problems({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY_FILE: KEY_PEM })).toMatch(/holds a key, not a path.*FOLKWAYS_PRIVATE_KEY/);
+    expect(problems({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY: './secrets/signing-key.pem' })).toMatch(/looks like a file path.*FOLKWAYS_PRIVATE_KEY_FILE/);
   });
 
   it('explains a missing key file', () => {
-    expect(problems({ ...BASE_ENV, RTE_PRIVATE_KEY_FILE: './missing.pem' })).toMatch(/cannot read .*ENOENT.*point RTE_PRIVATE_KEY_FILE at it/);
+    expect(problems({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY_FILE: './missing.pem' })).toMatch(/cannot read .*ENOENT.*point FOLKWAYS_PRIVATE_KEY_FILE at it/);
   });
 
   it('keeps token lifetimes within what the node accepts', () => {
-    expect(problems({ ...BASE_ENV, RTE_PRIVATE_KEY: KEY_PEM, RTE_TOKEN_TTL_SECONDS: '901' })).toMatch(/RTE_TOKEN_TTL_SECONDS/);
-    expect(problems({ ...BASE_ENV, RTE_PRIVATE_KEY: KEY_PEM, RTE_TOKEN_TTL_SECONDS: '10m' })).toMatch(/RTE_TOKEN_TTL_SECONDS/);
+    expect(problems({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY: KEY_PEM, FOLKWAYS_TOKEN_TTL_SECONDS: '901' })).toMatch(/FOLKWAYS_TOKEN_TTL_SECONDS/);
+    expect(problems({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY: KEY_PEM, FOLKWAYS_TOKEN_TTL_SECONDS: '10m' })).toMatch(/FOLKWAYS_TOKEN_TTL_SECONDS/);
   });
 
   it('checks the segment ID and node URL', () => {
-    expect(problems({ ...BASE_ENV, RTE_PRIVATE_KEY: KEY_PEM, RTE_SEGMENT_ID: 'my-segment' })).toMatch(/must be a UUID/);
-    expect(problems({ ...BASE_ENV, RTE_PRIVATE_KEY: KEY_PEM, RTE_URL: 'rte.example.com' })).toMatch(/RTE_URL must start/);
-    expect(problems({ ...BASE_ENV, RTE_PRIVATE_KEY: KEY_PEM, RTE_WS_URL: 'http://127.0.0.1:9005/v1/ws' })).toMatch(/RTE_WS_URL must start/);
+    expect(problems({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY: KEY_PEM, FOLKWAYS_SEGMENT_ID: 'my-segment' })).toMatch(/must be a UUID/);
+    expect(problems({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY: KEY_PEM, FOLKWAYS_URL: 'realtime.example.com' })).toMatch(/FOLKWAYS_URL must start/);
+    expect(problems({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY: KEY_PEM, FOLKWAYS_WS_URL: 'http://127.0.0.1:9005/v1/ws' })).toMatch(/FOLKWAYS_WS_URL must start/);
   });
 
   it('hands the app a separate WebSocket URL when one is set', async () => {
-    const app = await start(loadConfig({ ...BASE_ENV, RTE_PRIVATE_KEY: KEY_PEM, RTE_WS_URL: 'ws://127.0.0.1:9005/v1/ws' }, dir));
+    const app = await start(loadConfig({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY: KEY_PEM, FOLKWAYS_WS_URL: 'ws://127.0.0.1:9005/v1/ws' }, dir));
     try {
       const res = await app.call('GET', '/api/connection');
-      expect(res.body).toEqual({ url: 'https://rte.example.com', endpoints: { websocket: 'ws://127.0.0.1:9005/v1/ws' } });
+      expect(res.body).toEqual({ url: 'https://realtime.example.com', endpoints: { websocket: 'ws://127.0.0.1:9005/v1/ws' } });
     } finally {
       await app.stop();
     }
@@ -227,14 +227,14 @@ describe('loadConfig', () => {
 describe('a key that cannot sign is caught before the first user asks', () => {
   // server.ts signs one token with createRest at startup and exits with the SDK's message
   const startupError = (privateKey: string) =>
-    createRest(loadConfig({ ...BASE_ENV, RTE_PRIVATE_KEY: privateKey }, dir)).createToken({ identity: 'token-server', kind: 'service' });
+    createRest(loadConfig({ ...BASE_ENV, FOLKWAYS_PRIVATE_KEY: privateKey }, dir)).createToken({ identity: 'token-server', kind: 'service' });
 
   it('the public half of the key', async () => {
     const pub = KEY.publicKey.export({ type: 'spki', format: 'pem' }) as string;
     await expect(startupError(pub)).rejects.toThrow(/is a public key/);
   });
 
-  it('an old HS256 shared secret moved into RTE_PRIVATE_KEY', async () => {
+  it('an old HS256 shared secret moved into FOLKWAYS_PRIVATE_KEY', async () => {
     await expect(startupError('dev-only-secret-change-me-0123456789')).rejects.toThrow(/shared secrets \(HS256\) are no longer supported/);
   });
 });

@@ -6,10 +6,10 @@ import type { SigningKey } from '@folkwaysio/realtime/server';
 export interface Config {
   host: string;
   port: number;
-  /** The node URL, e.g. `https://rte.example.com`. */
-  rteUrl: string;
+  /** The node URL, e.g. `https://realtime.example.com`. */
+  serviceUrl: string;
   /** The node's WebSocket URL, only when it serves WebSocket apart from HTTP (a local node). */
-  rteWsUrl?: string;
+  webSocketUrl?: string;
   /** The segment ID (a UUID). */
   segment: string;
   /** The signing key's `kid` and private half, as read; the SDK parses it. Never log `privateKey`. */
@@ -46,26 +46,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
   const problems: string[] = [];
   const read = (name: string) => env[name]?.trim() ?? '';
 
-  const rteUrl = read('RTE_URL');
-  if (!rteUrl) problems.push("RTE_URL is not set: use the node URL from the segment's Connect tab");
-  else if (!/^https?:\/\/[^/]/.test(rteUrl)) problems.push(`RTE_URL must start with https:// or http://, got "${rteUrl}"`);
+  const serviceUrl = read('FOLKWAYS_URL');
+  if (!serviceUrl) problems.push("FOLKWAYS_URL is not set: use the node URL from the segment's Connect tab");
+  else if (!/^https?:\/\/[^/]/.test(serviceUrl)) problems.push(`FOLKWAYS_URL must start with https:// or http://, got "${serviceUrl}"`);
 
-  const rteWsUrl = read('RTE_WS_URL');
-  if (rteWsUrl && !/^wss?:\/\/[^/]/.test(rteWsUrl)) problems.push(`RTE_WS_URL must start with wss:// or ws://, got "${rteWsUrl}"`);
+  const webSocketUrl = read('FOLKWAYS_WS_URL');
+  if (webSocketUrl && !/^wss?:\/\/[^/]/.test(webSocketUrl)) problems.push(`FOLKWAYS_WS_URL must start with wss:// or ws://, got "${webSocketUrl}"`);
 
-  const segment = read('RTE_SEGMENT_ID');
-  if (!segment) problems.push("RTE_SEGMENT_ID is not set: use the segment ID from the segment's Connect tab");
-  else if (!UUID.test(segment)) problems.push(`RTE_SEGMENT_ID must be a UUID, got "${segment}"`);
+  const segment = read('FOLKWAYS_SEGMENT_ID');
+  if (!segment) problems.push("FOLKWAYS_SEGMENT_ID is not set: use the segment ID from the segment's Connect tab");
+  else if (!UUID.test(segment)) problems.push(`FOLKWAYS_SEGMENT_ID must be a UUID, got "${segment}"`);
 
-  const kid = read('RTE_KEY_ID');
-  if (!kid) problems.push("RTE_KEY_ID is not set: use the key ID (kid) from the segment's Signing keys tab");
-  else if (!KID.test(kid)) problems.push(`RTE_KEY_ID must be 1 to 64 letters, digits, dots, dashes or underscores, got "${kid}"`);
+  const kid = read('FOLKWAYS_KEY_ID');
+  if (!kid) problems.push("FOLKWAYS_KEY_ID is not set: use the key ID (kid) from the segment's Signing keys tab");
+  else if (!KID.test(kid)) problems.push(`FOLKWAYS_KEY_ID must be 1 to 64 letters, digits, dots, dashes or underscores, got "${kid}"`);
 
   const key = readPrivateKey(env, cwd, problems);
 
-  const ttlSeconds = readInt(read('RTE_TOKEN_TTL_SECONDS'), DEFAULT_TTL_SECONDS);
+  const ttlSeconds = readInt(read('FOLKWAYS_TOKEN_TTL_SECONDS'), DEFAULT_TTL_SECONDS);
   if (ttlSeconds === undefined || ttlSeconds < MIN_TTL_SECONDS || ttlSeconds > MAX_TTL_SECONDS) {
-    problems.push(`RTE_TOKEN_TTL_SECONDS must be a whole number from ${MIN_TTL_SECONDS} to ${MAX_TTL_SECONDS}`);
+    problems.push(`FOLKWAYS_TOKEN_TTL_SECONDS must be a whole number from ${MIN_TTL_SECONDS} to ${MAX_TTL_SECONDS}`);
   }
 
   const port = readInt(read('PORT'), 8787);
@@ -82,8 +82,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
   return {
     host: read('HOST') || '127.0.0.1',
     port: port!,
-    rteUrl,
-    ...(rteWsUrl ? { rteWsUrl } : {}),
+    serviceUrl,
+    ...(webSocketUrl ? { webSocketUrl } : {}),
     segment,
     signingKey: { kid, privateKey: key.privateKey },
     keySource: key.source,
@@ -100,46 +100,46 @@ interface PrivateKey {
 
 /**
  * Reads the private key from one of two places, as the README explains:
- * - `RTE_PRIVATE_KEY_FILE`: the path of the key file, for a server with a disk (local, VM, mounted secret);
- * - `RTE_PRIVATE_KEY`: the key itself, for platforms that inject secrets as environment variables.
+ * - `FOLKWAYS_PRIVATE_KEY_FILE`: the path of the key file, for a server with a disk (local, VM, mounted secret);
+ * - `FOLKWAYS_PRIVATE_KEY`: the key itself, for platforms that inject secrets as environment variables.
  * The value is not parsed here: the SDK reads every common key format, and the server signs a
  * token at startup, so a key that can't sign stops it with the SDK's explanation.
  */
 function readPrivateKey(env: NodeJS.ProcessEnv, cwd: string, problems: string[]): PrivateKey | undefined {
   const read = (name: string) => env[name]?.trim() ?? '';
-  if (read('RTE_SECRET')) {
+  if (read('FOLKWAYS_SECRET')) {
     problems.push(
-      'RTE_SECRET is no longer supported: shared secrets (HS256) were removed. Signing keys are key pairs; put the private key in RTE_PRIVATE_KEY_FILE (a path to the .pem) or RTE_PRIVATE_KEY (the key itself), and remove RTE_SECRET',
+      'FOLKWAYS_SECRET is no longer supported: shared secrets (HS256) were removed. Signing keys are key pairs; put the private key in FOLKWAYS_PRIVATE_KEY_FILE (a path to the .pem) or FOLKWAYS_PRIVATE_KEY (the key itself), and remove FOLKWAYS_SECRET',
     );
     return undefined;
   }
-  const file = read('RTE_PRIVATE_KEY_FILE');
-  const inline = read('RTE_PRIVATE_KEY');
+  const file = read('FOLKWAYS_PRIVATE_KEY_FILE');
+  const inline = read('FOLKWAYS_PRIVATE_KEY');
   if (file && inline) {
-    problems.push('Set only one of RTE_PRIVATE_KEY_FILE and RTE_PRIVATE_KEY');
+    problems.push('Set only one of FOLKWAYS_PRIVATE_KEY_FILE and FOLKWAYS_PRIVATE_KEY');
     return undefined;
   }
   if (!file && !inline) {
-    problems.push("Set RTE_PRIVATE_KEY_FILE to the path of the signing key's private key (.pem), or RTE_PRIVATE_KEY to the key itself");
+    problems.push("Set FOLKWAYS_PRIVATE_KEY_FILE to the path of the signing key's private key (.pem), or FOLKWAYS_PRIVATE_KEY to the key itself");
     return undefined;
   }
   if (inline) {
     if (/^[^\n{]*\.pem$/.test(inline) && !inline.includes('-----')) {
-      problems.push(`RTE_PRIVATE_KEY looks like a file path ("${inline}"): put the path in RTE_PRIVATE_KEY_FILE instead`);
+      problems.push(`FOLKWAYS_PRIVATE_KEY looks like a file path ("${inline}"): put the path in FOLKWAYS_PRIVATE_KEY_FILE instead`);
       return undefined;
     }
-    return { privateKey: inline, source: 'RTE_PRIVATE_KEY' };
+    return { privateKey: inline, source: 'FOLKWAYS_PRIVATE_KEY' };
   }
   if (file.includes('-----BEGIN') || file.startsWith('{')) {
-    problems.push('RTE_PRIVATE_KEY_FILE holds a key, not a path: put the key itself in RTE_PRIVATE_KEY instead');
+    problems.push('FOLKWAYS_PRIVATE_KEY_FILE holds a key, not a path: put the key itself in FOLKWAYS_PRIVATE_KEY instead');
     return undefined;
   }
   try {
     return { privateKey: readFileSync(resolve(cwd, file), 'utf8'), source: file };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code ?? 'unreadable';
-    const hint = code === 'ENOENT' ? ': save the private key there, or point RTE_PRIVATE_KEY_FILE at it' : '';
-    problems.push(`RTE_PRIVATE_KEY_FILE: cannot read ${file} (${code})${hint}`);
+    const hint = code === 'ENOENT' ? ': save the private key there, or point FOLKWAYS_PRIVATE_KEY_FILE at it' : '';
+    problems.push(`FOLKWAYS_PRIVATE_KEY_FILE: cannot read ${file} (${code})${hint}`);
     return undefined;
   }
 }
