@@ -4,7 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { Uuid128 } from '../../rte/v1/uuid128.js';
+import { Uuid128 } from '../../../folkways/protocol/v1/uuid128.js';
 
 
 export class Hello {

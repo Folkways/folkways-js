@@ -4,7 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { ContentType } from '../../rte/v1/content-type.js';
+import { ContentType } from '../../../folkways/protocol/v1/content-type.js';
 
 
 export class Extension {
