@@ -174,6 +174,15 @@ describe('Folkways.Rest', () => {
     expect(decode(calls[1]!.slice(7)).claims.cap).toEqual([{ topic: 'chat/>', ops: ['publish'] }]);
   });
 
+  it('does not replace a revoked service token or retry the publish', async () => {
+    const node = fakeNode(() => ({ type: 'close', code: Code.AuthRevoked, reason: 'revoked', retryAfterMs: 0 }), 401);
+    await expect(rest({ fetch: node.fetch }).publish('chat/1', 'm', 'x')).rejects.toMatchObject({
+      code: Code.AuthRevoked,
+      message: 'revoked',
+    });
+    expect(node.calls).toHaveLength(1);
+  });
+
   it('turns OpError into a RealtimeError and refuses signals', async () => {
     const node = fakeNode(() => ({ type: 'opError', code: Code.Forbidden, message: 'no', retryAfterMs: 0, topicId: 0n }));
     const rte = rest({ fetch: node.fetch });
