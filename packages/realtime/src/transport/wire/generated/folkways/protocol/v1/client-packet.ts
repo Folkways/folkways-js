@@ -4,7 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { ClientFrame } from '../../rte/v1/client-frame.js';
+import { ClientFrame } from '../../../folkways/protocol/v1/client-frame.js';
 
 
 export class ClientPacket {

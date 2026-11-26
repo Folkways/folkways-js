@@ -2,17 +2,17 @@
 
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
-import { Close } from '../../rte/v1/close.js';
-import { CursorAck } from '../../rte/v1/cursor-ack.js';
-import { Extension } from '../../rte/v1/extension.js';
-import { Hello } from '../../rte/v1/hello.js';
-import { Ping } from '../../rte/v1/ping.js';
-import { Poll } from '../../rte/v1/poll.js';
-import { Pong } from '../../rte/v1/pong.js';
-import { Publish } from '../../rte/v1/publish.js';
-import { Reauth } from '../../rte/v1/reauth.js';
-import { Subscribe } from '../../rte/v1/subscribe.js';
-import { Unsubscribe } from '../../rte/v1/unsubscribe.js';
+import { Close } from '../../../folkways/protocol/v1/close.js';
+import { CursorAck } from '../../../folkways/protocol/v1/cursor-ack.js';
+import { Extension } from '../../../folkways/protocol/v1/extension.js';
+import { Hello } from '../../../folkways/protocol/v1/hello.js';
+import { Ping } from '../../../folkways/protocol/v1/ping.js';
+import { Poll } from '../../../folkways/protocol/v1/poll.js';
+import { Pong } from '../../../folkways/protocol/v1/pong.js';
+import { Publish } from '../../../folkways/protocol/v1/publish.js';
+import { Reauth } from '../../../folkways/protocol/v1/reauth.js';
+import { Subscribe } from '../../../folkways/protocol/v1/subscribe.js';
+import { Unsubscribe } from '../../../folkways/protocol/v1/unsubscribe.js';
 
 
 export enum ClientBody {
