@@ -152,6 +152,8 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
   private wakeController = new AbortController();
   private waiters: { resolve: () => void; reject: (e: RealtimeError) => void }[] = [];
   private fatalError?: RealtimeError;
+  /** A revoked session requires an explicit token update before restarting. */
+  private revocationBlocked = false;
   private clockOffset = 0;
   private bestRtt = Number.POSITIVE_INFINITY;
   private everConnected = false;
@@ -264,6 +266,9 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
    * fatal error. After `failed`, starts over.
    */
   start(): Promise<void> {
+    if (this.revocationBlocked && this.fatalError?.code === Code.AuthRevoked) {
+      return Promise.reject(this.fatalError);
+    }
     if (this.stateValue === 'failed' && !this.closedForGood) {
       this.stopped = false;
       this.fatalError = undefined;
@@ -318,6 +323,9 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     // Fetch the new token first, so a failure leaves the current one in place.
     const fresh = new TokenManager(source);
     const token = await fresh.get();
+    if (this.revocationBlocked && token === this.tokens.current) {
+      throw this.fatalError!;
+    }
     const claims = peekJwt(token);
     const info = this.sessionInfo;
     const segment = info?.segmentId ?? peekJwt(this.tokens.current ?? '').seg;
@@ -326,6 +334,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     }
     this.tokens.setSource(source);
     this.tokens.adopt(token);
+    this.revocationBlocked = false;
     const previous = info?.identity;
     const sameIdentity = !info || info.anonymous || claims.sub === undefined || claims.sub === previous;
     if (sameIdentity) {
@@ -480,6 +489,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     let authRetried = false;
 
     const decide = (err: RealtimeError, countsTowardFallback: boolean): Decision => {
+      if (err.code === Code.AuthRevoked) return { fatal: err, delayMs: 0 };
       if (countsTowardFallback && this.selector.transportFailed()) {
         return { delayMs: 0 };
       }
@@ -695,6 +705,7 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     this.log.error('connection failed', { code: err.codeName, reason: err.message });
     this.stopped = true;
     this.fatalError = err;
+    if (err.code === Code.AuthRevoked) this.revocationBlocked = true;
     clearTimeout(this.wsProbe);
     this.session?.close(Code.ClientClosed, 'client failed');
     this.publishes.rejectAll(err);
