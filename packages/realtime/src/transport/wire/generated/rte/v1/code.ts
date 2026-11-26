@@ -18,6 +18,7 @@ export enum Code {
   Suspended = 204,
   ResumeRejected = 205,
   Replaced = 206,
+  AuthRevoked = 207,
   RateLimited = 300,
   QuotaExceeded = 301,
   PayloadTooLarge = 302,
