@@ -261,6 +261,11 @@ export class SocketSession implements Session {
 
   private onFrame({ corr, msg }: ServerFrame): void {
     const { registry, log } = this.host;
+    if (msg.type === 'opError' && msg.code === Code.AuthRevoked) {
+      this.serverClose = { code: msg.code, reason: msg.message, retryAfterMs: msg.retryAfterMs };
+      this.onServerClose();
+      return;
+    }
     switch (msg.type) {
       case 'welcome':
         this.waiter?.resolve(msg);
@@ -417,6 +422,7 @@ export class SocketSession implements Session {
           this.host.tokenRefreshed(exp);
           return;
         } catch (err) {
+          if (this.ended) return;
           log.warn('token refresh failed; retrying', { err: (err as Error).message });
           await sleep(backoff.next(), this.endController.signal);
         }
@@ -487,7 +493,9 @@ export class SocketSession implements Session {
       if (p.kind === 'subscribe') clearTimeout(p.timer);
       if (p.kind === 'reauth') {
         clearTimeout(p.timer);
-        p.reject(localError(Code.NotConnected, 'session ended'));
+        p.reject(info.code === Code.AuthRevoked
+          ? new RealtimeError(info.code, { message: info.reason, retryAfterMs: info.retryAfterMs })
+          : localError(Code.NotConnected, 'session ended'));
       }
     }
     this.pending.clear();
