@@ -8,7 +8,7 @@ import { type FetchLike, parseRetryAfter } from '../transport';
  */
 export type TokenReason = 'initial' | 'expiring' | 'rejected';
 
-/** Returns a signed RTE token, typically by asking your backend. */
+/** Returns a signed Folkways token, typically by asking your backend. */
 export type TokenProvider = (ctx: { reason: TokenReason }) => string | Promise<string>;
 
 export type TokenSource = string | TokenProvider;

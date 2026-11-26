@@ -32,7 +32,7 @@ export interface TopicRule {
   readonly events: Readonly<Record<string, Delivery>>;
   readonly access: 'token' | 'members';
   readonly presence: boolean;
-  /** kv events whose key must equal the publisher (rte#20). */
+  /** kv events whose key must equal the publisher. */
   readonly keyIsPublisher: readonly string[];
   readonly ttlMs: Readonly<Record<string, number>>;
 }
@@ -50,7 +50,7 @@ export interface TopicDefinition<E extends EventMap, P extends string, S extends
   open(client: Realtime, params: Record<TopicParams<P>, string>): Topic<E, S>;
   /** The topic rule (`chat/{room}` → pattern `chat/*`). */
   rule(): TopicRule;
-  /** The operations a member needs, for `rte.members.add(...)` and token ceilings. */
+  /** The operations a member needs, for `folkways.members.add(...)` and token ceilings. */
   memberOps(): Op[];
 }
 

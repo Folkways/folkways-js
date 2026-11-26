@@ -130,10 +130,10 @@ describe('importSigner refuses what is not an Ed25519 or P-256 private key', () 
   });
 });
 
-describe('the mistake that started FLK-211', () => {
+describe('private key encodings', () => {
   it('a P-256 key pasted without its PEM lines signs ES256, not HS256', async () => {
     const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
-    // What was put in RTE_SECRET: the PEM's body, starting MEECAQ… or MIGHAgEA…
+    // the PEM's body, starting MEECAQ… or MIGHAgEA…
     const body = pemBody(privateKey.export({ type: 'pkcs8', format: 'pem' }) as string);
     expect(body).toMatch(/^M/);
     await signsVerifiably({ kid: 'acme-rides-staging-2026-11-2', privateKey: body }, publicKey, 'ES256');

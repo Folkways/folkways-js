@@ -2,7 +2,7 @@
  * @folkwaysio/realtime/server: the backend side.
  *
  *   import { Folkways } from '@folkwaysio/realtime/server';
- *   const rte = new Folkways.Rest({ url, segment, signingKey: { kid, privateKey } });
+ *   const folkways = new Folkways.Rest({ url, segment, signingKey: { kid, privateKey } });
  */
 import { Rest } from './rest';
 

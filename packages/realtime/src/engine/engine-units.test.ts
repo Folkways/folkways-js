@@ -173,9 +173,9 @@ describe('TokenManager', () => {
       calls.push({ url, headers: init.headers, body: new TextDecoder().decode(init.body) });
       return next;
     };
-    const p = authUrlProvider('/api/rte-token', { 'x-app': 'yes' }, fetchFn);
+    const p = authUrlProvider('/api/realtime-token', { 'x-app': 'yes' }, fetchFn);
     expect(await p({ reason: 'initial' })).toBe('tok-json');
-    expect(calls[0]).toMatchObject({ url: '/api/rte-token', headers: { 'x-app': 'yes' }, body: '{"reason":"initial"}' });
+    expect(calls[0]).toMatchObject({ url: '/api/realtime-token', headers: { 'x-app': 'yes' }, body: '{"reason":"initial"}' });
     next = reply(200, 'text/plain', ' tok-text\n');
     expect(await p({ reason: 'expiring' })).toBe('tok-text');
     next = reply(403, 'text/plain', 'no');
@@ -193,9 +193,9 @@ describe('TokenManager', () => {
         arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(next.body)).buffer as ArrayBuffer,
       };
     };
-    const p = publishableKeyProvider('https://rte.example.com/', 'rte_pk_web.abc', fetchFn);
+    const p = publishableKeyProvider('https://realtime.example.com/', 'rte_pk_web.abc', fetchFn);
     expect(await p({ reason: 'initial' })).toBe('anon-tok');
-    expect(calls[0]).toMatchObject({ url: 'https://rte.example.com/v1/token', headers: { authorization: 'Bearer rte_pk_web.abc' }, body: '{}' });
+    expect(calls[0]).toMatchObject({ url: 'https://realtime.example.com/v1/token', headers: { authorization: 'Bearer rte_pk_web.abc' }, body: '{}' });
     next = { status: 403, body: { code: Code.Suspended, error: 'Suspended', message: 'api key paused' } };
     await expect(p({ reason: 'expiring' })).rejects.toMatchObject({ code: Code.Suspended, message: expect.stringContaining('api key paused') });
     next = { status: 429, body: { code: Code.RateLimited, error: 'RateLimited', message: 'too many failed authentications', retry_after_ms: 42_000 } };
@@ -208,18 +208,18 @@ describe('TokenManager', () => {
       headers: { get: (h: string) => (h.toLowerCase() === 'retry-after' ? '7' : null) },
       arrayBuffer: async () => new TextEncoder().encode('Too Many Requests').buffer as ArrayBuffer,
     });
-    const p = publishableKeyProvider('https://rte.example.com', 'rte_pk_web.abc', fetchFn);
+    const p = publishableKeyProvider('https://realtime.example.com', 'rte_pk_web.abc', fetchFn);
     await expect(p({ reason: 'initial' })).rejects.toMatchObject({ code: Code.AuthRequired, retryAfterMs: 7_000 });
   });
 
   it('takes one token source, and never a secret API key', () => {
-    const base = { url: 'https://rte.example.com' };
+    const base = { url: 'https://realtime.example.com' };
     expect(resolveOptions({ ...base, publishableKey: 'rte_pk_web.abc' }).engine.token).toBeTypeOf('function');
     expect(() => resolveOptions({ ...base, publishableKey: 'rte_sk_backend.abc' })).toThrow(/sign tokens on your server/);
     expect(() => resolveOptions({ ...base, publishableKey: 'nope' })).toThrow(/rte_pk_/);
     expect(() => resolveOptions({ ...base, publishableKey: 'rte_pk_web.abc', token: 't' })).toThrow(/one of/);
     expect(() => resolveOptions({ ...base, authUrl: '/t', token: 't' })).toThrow(/one of/);
-    expect(() => resolveOptions({ endpoints: { websocket: 'wss://rte.example.com/v1/ws' }, publishableKey: 'rte_pk_web.abc' })).toThrow(/HTTP endpoint/);
+    expect(() => resolveOptions({ endpoints: { websocket: 'wss://realtime.example.com/v1/ws' }, publishableKey: 'rte_pk_web.abc' })).toThrow(/HTTP endpoint/);
   });
 
   it('reports provider failures as AuthRequired', async () => {
@@ -360,7 +360,7 @@ describe('PublishQueue', () => {
     await expect(p2).rejects.toMatchObject({ code: Code.PayloadTooLarge });
   });
 
-  describe('retries and Flow (ADR-015)', () => {
+  describe('retries and Flow', () => {
     afterEach(() => {
       vi.useRealTimers();
     });
@@ -655,7 +655,7 @@ describe('SubscriptionRegistry', () => {
     expect(e.processed).toEqual({ epoch: 2n, seq: 1n });
   });
 
-  describe('events of several types in one topic (ADR-001)', () => {
+  describe('events of several types in one topic', () => {
     const { Durable: S, LastValue: KV, Ephemeral: SIG } = DeliveryClass;
     const deliver = (...events: ReturnType<typeof event>[]) => ({ topicId: 1n, delivery: DeliveryClass.Unspecified, replayed: false, events });
 
@@ -687,7 +687,7 @@ describe('SubscriptionRegistry', () => {
       expect(e.kv.get('location')!.has('user:7')).toBe(true);
     });
 
-    it('falls back to the frame and topic class for nodes before ADR-001', async () => {
+    it('falls back to the frame and topic class for nodes before the feature was introduced', async () => {
       const r = new SubscriptionRegistry({ cursorStore: memoryCursorStore(), logger: silentLogger, onChange: () => {} });
       const types: number[] = [];
       const l: TopicListener = { ...listener().l, onEvent: (d) => void types.push(d.delivery) };

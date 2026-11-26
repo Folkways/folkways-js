@@ -408,10 +408,10 @@ describe('updateToken', () => {
         arrayBuffer: async () => new TextEncoder().encode(JSON.stringify({ token })).buffer as ArrayBuffer,
       };
     };
-    client(fake, { token: undefined, authUrl: 'https://app.example/api/rte-token', fetch: fetchFn });
+    client(fake, { token: undefined, authUrl: 'https://app.example/api/realtime-token', fetch: fetchFn });
     const hello = await (await fake.nextConn()).welcome();
     expect(hello.msg).toMatchObject({ hello: { token } });
-    expect(seen).toEqual(['https://app.example/api/rte-token']);
+    expect(seen).toEqual(['https://app.example/api/realtime-token']);
   });
 });
 
@@ -1633,7 +1633,7 @@ describe('http long-poll', () => {
   });
 });
 
-describe('rate limits and flow control (ADR-015)', () => {
+describe('rate limits and flow control', () => {
   const ack = (seq: bigint) => ({ type: 'pubAck', topicId: 1n, level: AckMode.Accepted, cursor: { epoch: EPOCH, seq }, duplicate: false, serverTsMs: 1 }) as const;
   const flow = (action: FlowAction, retryAfterMs: number) => ({ corr: 0n, msg: { type: 'flow', action, retryAfterMs, topicId: 0n } as const });
 

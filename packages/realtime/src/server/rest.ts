@@ -9,7 +9,7 @@ import { AckMode, type FetchLike, HttpTransport, type PublishBody, decodeServerP
 import { type Signer, type SigningKey, importSigner, signJwt } from './sign';
 
 export interface RestOptions {
-  /** Base URL of the node's HTTP port, e.g. `https://rte.example.com`. */
+  /** Base URL of the node's HTTP port, e.g. `https://realtime.example.com`. */
   url: string;
   /** The segment's id (a UUID, from the dashboard). Every token names it. */
   segment: string;
@@ -75,17 +75,17 @@ function isBrowser(): boolean {
  * The backend side of Folkways: signs short-lived tokens for your users with
  * one of the segment's signing keys, and publishes over HTTP without keeping
  * a connection. Signing happens in process; minting a token makes no network
- * call. There are no secret API keys (ADR-008).
+ * call. There are no secret API keys.
  *
  *   import { Folkways } from '@folkwaysio/realtime/server';
- *   const rte = new Folkways.Rest({
- *     url: 'https://rte.example.com',
- *     segment: process.env.RTE_SEGMENT!,
- *     signingKey: { kid: 'backend-2026-10', privateKey: process.env.RTE_PRIVATE_KEY! },
+ *   const folkways = new Folkways.Rest({
+ *     url: 'https://realtime.example.com',
+ *     segment: process.env.FOLKWAYS_SEGMENT_ID!,
+ *     signingKey: { kid: 'backend-2026-10', privateKey: process.env.FOLKWAYS_PRIVATE_KEY! },
  *   });
- *   const { token } = await rte.createToken({ identity: 'user:42', capabilities: [{ topics: 'chat/*', ops: ['subscribe', 'publish'] }] });
+ *   const { token } = await folkways.createToken({ identity: 'user:42', capabilities: [{ topics: 'chat/*', ops: ['subscribe', 'publish'] }] });
  *
- * Member lists and DMs (`rte.members`, `rte.dm`) arrive with the node's endpoints for them.
+ * Member lists and DMs (`folkways.members`, `folkways.dm`) arrive with the node's endpoints for them.
  */
 export class Rest {
   private readonly http: HttpTransport;
@@ -97,7 +97,7 @@ export class Rest {
   constructor(private readonly opts: RestOptions) {
     if (!opts) throw invalid('Rest needs options');
     if ((opts as { apiKey?: unknown }).apiKey !== undefined) {
-      throw invalid('apiKey was removed: secret API keys no longer exist (ADR-008). Pass segment and signingKey: { kid, privateKey } instead');
+      throw invalid('apiKey was removed: secret API keys no longer exist. Pass segment and signingKey: { kid, privateKey } instead');
     }
     if (isBrowser()) {
       throw invalid('Rest signs tokens with a private key and must never run in a browser; mint tokens on your server and use authUrl in the client');
@@ -111,7 +111,7 @@ export class Rest {
     const isJwk = typeof key.privateKey === 'object' && key.privateKey !== null;
     if (!isJwk && (typeof key.privateKey !== 'string' || key.privateKey.trim().length === 0)) throw invalid('Rest needs signingKey.privateKey');
     if (typeof key.privateKey === 'string' && key.privateKey.trim().startsWith('rte_')) {
-      throw invalid('signingKey.privateKey is an API key; give the private key of a signing key (ADR-008)');
+      throw invalid('signingKey.privateKey is an API key; give the private key of a signing key');
     }
     this.base = opts.url.replace(/\/+$/, '');
     this.http = new HttpTransport(opts.fetch);

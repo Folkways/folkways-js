@@ -19,8 +19,8 @@ import { VERSION } from './version';
 
 export interface RealtimeOptions {
   /**
-   * Base URL of the node, e.g. `https://rte.example.com`. Gives
-   * `wss://rte.example.com/v1/ws` and `https://rte.example.com/v1/{publish,poll}`.
+   * Base URL of the node, e.g. `https://realtime.example.com`. Gives
+   * `wss://realtime.example.com/v1/ws` and `https://realtime.example.com/v1/{publish,poll}`.
    */
   url?: string;
   /** Explicit endpoints; each overrides what `url` gives. */
