@@ -12,7 +12,7 @@ import { Topic } from './topic';
 import { TopicSet } from './topic-set';
 import type { CloseOptions, ConnectOptions, Connection, Delivery, EventFilter, EventMap, LiveView, Message, Session, TokenSource } from './types';
 
-/** Welcome feature announcing personal `$user/{identity}` topics (rte#17). */
+/** Welcome feature announcing personal `$user/{identity}` topics. */
 export const USER_TOPICS_FEATURE = 'user-topics';
 
 const oneOf = (want: string | readonly string[] | undefined, v: string): boolean =>
@@ -28,9 +28,9 @@ function matches(f: EventFilter, m: Message, me: string | null | undefined): boo
 }
 
 /**
- * A client of one RTE segment. Create it, then `connect()`:
+ * A client of one Folkways segment. Create it, then `connect()`:
  *
- *   const client = new Folkways.Realtime({ url, authUrl: '/api/rte-token' });
+ *   const client = new Folkways.Realtime({ url, authUrl: '/api/realtime-token' });
  *   const session = await client.connect();
  *
  * `Folkways.connect(config)` does both in one call.
@@ -195,7 +195,7 @@ export class Realtime {
     }
   }
 
-  /** Every identified connection follows its own `$user/{identity}` once the node offers it (rte#17). */
+  /** Every identified connection follows its own `$user/{identity}` once the node offers it. */
   private followUserTopic(): void {
     const s = this.session;
     if (!s?.identity || !s.features.includes(USER_TOPICS_FEATURE)) return;

@@ -1,4 +1,4 @@
-// RTE wire protocol, v1.
+// Folkways wire protocol, v1.
 //
 // One schema for both directions. A buffer is a packet of 1..64 frames.
 // Client packets carry file identifier "RTEC", server packets "RTES"; the
@@ -9,7 +9,7 @@
 // or enum value, and zero always means the safe default.
 // No table carries a segment id: the segment comes only from the verified token.
 
-namespace RTE.V1;
+namespace Folkways.Protocol.V1;
 
 // ---------------------------------------------------------------- enums
 
@@ -143,14 +143,14 @@ table Event {
   content_type: ContentType;
   headers: [Header];
   payload: [ubyte];
-  // ADR-001: this event's own type, so one topic can mix types.
-  // Unspecified means the topic's type (nodes before ADR-001).
+  // this event's own type, so one topic can mix types.
+  // Unspecified means the topic's type (older services).
   delivery: DeliveryClass;
   // Event name chosen by the publisher, e.g. "message", "typing", "read".
   name: string;
   // Stable id minted by the topic owner (AiraID); survives node restarts.
   uid: Uuid128;
-  // ADR-001: in a topic with several types, kv and signal events take no
+  // in a topic with several types, kv and signal events take no
   // sequence number; they carry the topic's state version instead, which
   // HTTP long-poll resumes from (Subscribe.state_after). 0 otherwise.
   version: ulong;
@@ -173,7 +173,7 @@ table Limits {
   max_headers: uint = 16;
   heartbeat_ms: uint = 30000;
   idle_timeout_ms: uint = 90000;
-  // ADR-015: the rate limits that apply to this connection, from the
+  // the rate limits that apply to this connection, from the
   // segment's plan and preset. 0 means not announced: a client then does
   // not pace itself and relies on RateLimited and Flow. Counting is per
   // node, so in a cluster the limits are approximate.
@@ -253,7 +253,7 @@ table Publish {
   ttl_ms: uint;
   client_ts_ms: ulong;
   headers: [Header];
-  // ADR-001: event name; `delivery` above becomes the event's type.
+  // event name; `delivery` above becomes the event's type.
   name: string;
 }
 
@@ -265,9 +265,9 @@ table Subscribe {
   last_n: uint;
   on_gap: OnGap;
   snapshot: bool = true;
-  // ADR-001: the event types this subscriber receives; empty means all.
+  // the event types this subscriber receives; empty means all.
   types: [DeliveryClass];
-  // ADR-001: the state version (epoch and Event.version) of the last kv or
+  // the state version (epoch and Event.version) of the last kv or
   // signal event seen in a topic with several types. HTTP long-poll then
   // returns only state changed after it; without it, a snapshot.
   state_after: Cursor;
@@ -304,7 +304,7 @@ table Welcome {
   // True when the token named no user: `identity` is then the node-assigned
   // "anon:<session_id>" label, valid for this connection only.
   anonymous: bool;
-  // ADR-001: the verified segment and its environment, taken from the
+  // the verified segment and its environment, taken from the
   // token, never from the client.
   segment_id: string;
   environment: string;
@@ -332,7 +332,7 @@ table PubAck {
   seq: ulong;
   duplicate: bool;
   server_ts_ms: ulong;
-  // ADR-001: the uid the owner minted for this event (stream and kv), so
+  // the uid the owner minted for this event (stream and kv), so
   // a sender can point at its own message before it is delivered back.
   uid: Uuid128;
 }
@@ -344,9 +344,9 @@ table SubAck {
   oldest: Cursor;
   latest: Cursor;
   snapshot_follows: bool;
-  // ADR-001: the event types the topic's rule allows.
+  // the event types the topic's rule allows.
   deliveries: [DeliveryClass];
-  // ADR-001: in a topic with several types, the latest state version
+  // in a topic with several types, the latest state version
   // (epoch and Event.version) when this answer was made. A poller sends
   // it back as Subscribe.state_after once it has applied the answer.
   state_latest: Cursor;

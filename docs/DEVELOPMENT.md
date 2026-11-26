@@ -35,7 +35,7 @@ packages/realtime/        the SDK, published as @folkwaysio/realtime
   src/server/             @folkwaysio/realtime/server: Rest
   src/stores/             persistent stores, one entry point each
   test/                   engine, layer, type, entry-point and integration tests
-  proto/rte.fbs           the wire schema
+  proto/protocol.fbs           the wire schema
 apps/react-example/       a chat built on the SDK
 apps/token-server/        an Express backend that signs the example's tokens
 docs/                     these guides
@@ -148,7 +148,7 @@ them; change both copies together.
 
 ## Wire protocol bindings
 
-`packages/realtime/proto/rte.fbs` is the FlatBuffers schema of the wire protocol, and
+`packages/realtime/proto/protocol.fbs` is the FlatBuffers schema of the wire protocol, and
 `src/transport/wire/generated/` holds the TypeScript generated from it. Don't edit the generated files. To
 regenerate them after the schema changes, install [flatc](https://github.com/google/flatbuffers/releases) 24.3.25
 (the version the `flatbuffers` runtime uses) and run:

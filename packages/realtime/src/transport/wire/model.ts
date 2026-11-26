@@ -1,18 +1,18 @@
 /**
- * Owned message model of the RTE v1 wire protocol.
+ * Owned message model of the Folkways protocol v1 wire protocol.
  *
- * Mirrors `rte/src/proto/codec.rs`. Every u64 is a `bigint` except
+ * Represents the public wire contract. Every u64 is a `bigint` except
  * millisecond timestamps, which are `number` (they stay far below 2^53).
- * Enums are the ones generated from `rte.fbs`.
+ * Enums are the ones generated from `protocol.fbs`.
  */
 import type { Cursor } from '../../shared/cursor';
-import { AckMode } from './generated/rte/v1/ack-mode.js';
-import { ContentType } from './generated/rte/v1/content-type.js';
-import { DeliveryClass } from './generated/rte/v1/delivery-class.js';
-import { FlowAction } from './generated/rte/v1/flow-action.js';
-import { GapReason } from './generated/rte/v1/gap-reason.js';
-import { OnGap } from './generated/rte/v1/on-gap.js';
-import { StartAt } from './generated/rte/v1/start-at.js';
+import { AckMode } from './generated/folkways/protocol/v1/ack-mode.js';
+import { ContentType } from './generated/folkways/protocol/v1/content-type.js';
+import { DeliveryClass } from './generated/folkways/protocol/v1/delivery-class.js';
+import { FlowAction } from './generated/folkways/protocol/v1/flow-action.js';
+import { GapReason } from './generated/folkways/protocol/v1/gap-reason.js';
+import { OnGap } from './generated/folkways/protocol/v1/on-gap.js';
+import { StartAt } from './generated/folkways/protocol/v1/start-at.js';
 
 export { AckMode, ContentType, DeliveryClass, FlowAction, GapReason, OnGap, StartAt };
 
@@ -43,7 +43,7 @@ export interface Limits {
   readonly maxHeaders: number;
   readonly heartbeatMs: number;
   readonly idleTimeoutMs: number;
-  // Rate limits (ADR-015), from the segment's plan and preset. Absent when
+  // Rate limits, from the segment's plan and preset. Absent when
   // the node does not announce them (an older node, or HTTP, which has no
   // `Welcome`). Counted per node, so approximate in a cluster.
   /** Publishes per second from this connection (sustained). Over it: `RateLimited`. */
@@ -70,7 +70,7 @@ export interface Limits {
   readonly newConnectionsPerMin?: number;
 }
 
-/** The ADR-015 rate fields of `Limits`, in schema order. */
+/** The rate fields of `Limits`, in schema order. */
 export const RATE_LIMIT_FIELDS = [
   'publishPerSec',
   'publishBurst',
@@ -113,11 +113,11 @@ export interface WireEvent {
   readonly contentType: number;
   readonly headers: readonly Header[];
   readonly payload: Uint8Array;
-  /** This event's own type; `Unspecified` from nodes before ADR-001 (use the topic's). */
+  /** This event's own type; `Unspecified` from nodes before this feature (use the topic's). */
   readonly delivery: DeliveryClass;
-  /** Event name chosen by the publisher; absent from nodes before ADR-001. */
+  /** Event name chosen by the publisher; absent from nodes before this feature. */
   readonly name?: string;
-  /** Stable id minted by the topic owner (AiraID); absent from nodes before ADR-001. */
+  /** Stable id minted by the topic owner (AiraID); absent from nodes before this feature. */
   readonly uid?: Uuid128;
   /**
    * State version of a kv or signal event in a topic with several types,
@@ -156,7 +156,7 @@ export interface PublishBody {
   readonly ttlMs?: number;
   readonly clientTsMs?: number;
   readonly headers?: readonly Header[];
-  /** Event name (ADR-001); ignored by nodes before it. */
+  /** Event name; ignored by nodes before it. */
   readonly name?: string;
 }
 
@@ -168,7 +168,7 @@ export interface SubscribeBody {
   readonly onGap?: OnGap;
   /** Defaults to true, as in the schema. */
   readonly snapshot?: boolean;
-  /** Event types to receive (ADR-001); empty or absent means all. Ignored by nodes before it. */
+  /** Event types to receive; empty or absent means all. Ignored by nodes before it. */
   readonly types?: readonly DeliveryClass[];
   /**
    * Long-poll of a topic with several types: the last `SubAck.stateLatest`
@@ -220,7 +220,7 @@ export interface Welcome {
   readonly features: readonly string[];
   /** The token named no user; `identity` is the node-assigned `anon:<session_id>` label. */
   readonly anonymous: boolean;
-  /** The verified segment (ADR-001, rte#19); empty from older nodes. */
+  /** The verified segment; empty from older nodes. */
   readonly segmentId: string;
   /** The segment's environment, e.g. `production`; empty from older nodes. */
   readonly environment: string;
@@ -234,7 +234,7 @@ export interface PubAck {
   readonly cursor: Cursor;
   readonly duplicate: boolean;
   readonly serverTsMs: number;
-  /** The event's stable id (ADR-001); absent from older nodes. */
+  /** The event's stable id; absent from older nodes. */
   readonly uid?: Uuid128;
 }
 
@@ -245,7 +245,7 @@ export interface SubAck {
   readonly oldest?: Cursor;
   readonly latest?: Cursor;
   readonly snapshotFollows: boolean;
-  /** Event types the topic's rule allows (ADR-001); empty from older nodes. */
+  /** Event types the topic's rule allows; empty from older nodes. */
   readonly deliveries: readonly DeliveryClass[];
   /** Latest state version (epoch, version) of a topic with several types; absent otherwise. */
   readonly stateLatest?: Cursor;

@@ -12,7 +12,7 @@ export interface RealtimeErrorOptions {
 
 /**
  * Every failure the SDK reports: server `OpError`/`Close` codes and local
- * failures alike. `code` is the RTE code (`Code.*`), `retry` says what may be
+ * failures alike. `code` is the protocol code (`Code.*`), `retry` says what may be
  * done next.
  */
 export class RealtimeError extends Error {

@@ -13,21 +13,21 @@ export interface SessionInfo {
   readonly expiresAtMs?: number;
   readonly server?: string;
   readonly anonymous: boolean;
-  /** From Welcome (rte#19), else the token's `seg` claim. */
+  /** From Welcome, else the token's `seg` claim. */
   readonly segmentId?: string;
   readonly environment?: string;
-  /** From Welcome (rte#19), else the token's `cap` claim. */
+  /** From Welcome, else the token's `cap` claim. */
   readonly capabilities: readonly WireCapability[];
   readonly features: readonly string[];
 }
 
 /** Why a session ended. */
 export interface CloseInfo {
-  /** RTE code from the node's `Close`, or the SDK's view of the failure. */
+  /** protocol code from the node's `Close`, or the SDK's view of the failure. */
   readonly code: number;
   readonly reason: string;
   readonly retryAfterMs?: number;
-  /** The transport failed below the protocol (no RTE `Close` was received). */
+  /** The transport failed below the protocol (no protocol `Close` was received). */
   readonly transportFailure: boolean;
   /** The failure was detected by the SDK, not reported by the node. */
   readonly local: boolean;
