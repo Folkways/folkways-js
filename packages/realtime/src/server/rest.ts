@@ -10,6 +10,7 @@ import { AckMode, type FetchLike, HttpTransport, type PublishBody, decodeServerP
 import { type Signer, type SigningKey, importSigner, signJwt } from './sign';
 import { createMembersApi, type MembersApi } from './members';
 import { requestJson } from './json';
+import { createDmApi, type DmApi } from './dm';
 
 export interface RestOptions {
   /** Base URL of the node's HTTP port, e.g. `https://realtime.example.com`. */
@@ -92,6 +93,8 @@ function isBrowser(): boolean {
 export class Rest {
   /** Manage members of topics configured with access: members. */
   readonly members: MembersApi;
+  /** Open direct or group message rooms and invite their members. */
+  readonly dm: DmApi;
   private readonly http: HttpTransport;
   private readonly base: string;
   private signer?: Promise<Signer>;
@@ -121,6 +124,7 @@ export class Rest {
     this.base = opts.url.replace(/\/+$/, '');
     this.http = new HttpTransport(opts.fetch);
     this.members = createMembersApi((path, body, status, topic) => this.json(path, body, status, topic));
+    this.dm = createDmApi((path, body) => this.json(path, body, 200));
   }
 
   /** Signs a short-lived token for one identity, in process. */

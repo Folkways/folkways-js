@@ -106,6 +106,14 @@ Use the backend SDK to manage a topic configured with `access: members`. With a 
 
 Both add and set replace the specified identities' operations, rather than merging them. Membership does not override token or topic-rule restrictions. Changes are acknowledged after storage; if a mutation fails with Unavailable or times out, removals may already apply and grants may not. Inspect the current list or explicitly retry the intended change; the SDK does not automatically repeat JSON mutations.
 
+## Direct and group messages
+
+Open a room from your trusted backend with `await folkways.dm.open(['alice', 'bob'], { data: { startedBy: 'alice' } })`. The service returns the room topic, sorted distinct members and one invitation receipt per member. It sends an `invite` stream event on each member's personal topic. Clients can subscribe to their own personal topic and then to the returned room, subject to token and rule permissions.
+
+Use a rule matching `dm/>` (or your custom prefix). The backend needs `publish` on both the room and every member's personal topic. Rooms are stable for the same segment, prefix and member set; room names are not access credentials. A members-only rule adds missing members without resetting existing permissions. Two to fifty distinct members are supported.
+
+Repeat the same request after a partial failure to recover unsent invitations within the service's bounded deduplication window (up to ten minutes, subject to retained idempotency state). Each invitation has a `duplicate` flag. Changing the invitation data can send new invitations to the same room. The SDK does not automatically repeat a failed request.
+
 ## Entry points
 
 | Import | Use it in |

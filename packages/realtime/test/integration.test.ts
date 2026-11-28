@@ -337,6 +337,48 @@ live('topic membership', () => {
   }, 30_000);
 });
 
+live('direct message rooms', () => {
+  it('opens one room, delivers invites to online and offline members, and preserves restrictions on reopen', async () => {
+    const aliceId = `alice:${uniq()}`;
+    const bobId = `bob:${uniq()}`;
+    const options = {
+      url: required('FOLKWAYS_TEST_HTTP_URL'),
+      segment: required('FOLKWAYS_TEST_SEGMENT_ID'),
+      signingKey: { kid: required('FOLKWAYS_TEST_KEY_ID'), privateKey: required('FOLKWAYS_TEST_PRIVATE_KEY').replace(/\\n/g, '\n') },
+    };
+    const backend = new Rest({ ...options, capabilities: [{ topics: 'dm/>', ops: ['publish'] }, { topics: '$user/>', ops: ['publish'] }] });
+    const denied = new Rest({ ...options, capabilities: [{ topics: 'dm/>', ops: ['publish'] }, { topics: `$user/${aliceId}`, ops: ['publish'] }] });
+    const alice = await open(aliceId, { transports: ['websocket'] });
+    const invites: Message[] = [];
+    await alice.topic(`$user/${aliceId}`).subscribe((m) => { invites.push(m); }).ready;
+    const data = { startedBy: aliceId };
+    await expect(denied.dm.open([aliceId, bobId], { data })).rejects.toMatchObject({ code: Code.Forbidden });
+    const room = await backend.dm.open([bobId, aliceId, aliceId], { data });
+    try {
+      expect(room.members).toEqual([aliceId, bobId].sort());
+      expect(room.invites.every((i) => !i.duplicate)).toBe(true);
+      await until(() => invites.length === 1, 8_000, 'online invitation');
+      expect(invites[0]).toMatchObject({ name: 'invite', data: { type: 'dm', topic: room.topic, members: room.members, data } });
+      const bob = await open(bobId, { transports: ['http'] });
+      const replayed: Message[] = [];
+      await bob.topic(`$user/${bobId}`).subscribe((m) => { replayed.push(m); }, { from: 'oldest' }).ready;
+      await until(() => replayed.length === 1, 8_000, 'offline invitation replay');
+      expect(replayed[0]).toMatchObject({ name: 'invite', data: { type: 'dm', topic: room.topic, members: room.members, data } });
+      await backend.members.set(room.topic, bobId, ['subscribe']);
+      const again = await backend.dm.open([aliceId, bobId], { data });
+      expect(again.topic).toBe(room.topic);
+      expect(again.invites.every((i) => i.duplicate)).toBe(true);
+      expect((await backend.members.list(room.topic)).members.find((m) => m.identity === bobId)?.ops).toEqual(['subscribe']);
+      const changed = await backend.dm.open([aliceId, bobId], { data: { ...data, subject: 'New subject' } });
+      expect(changed.topic).toBe(room.topic);
+      expect(changed.invites.every((i) => !i.duplicate)).toBe(true);
+      await until(() => invites.length === 2 && replayed.length === 2, 8_000, 'new invitation content');
+    } finally {
+      await backend.members.clear(room.topic);
+    }
+  }, 40_000);
+});
+
 live('ephemeral signals', () => {
   it('delivers signals and keeps the latest per sender', async () => {
     const topic = `typing/${uniq()}`;
