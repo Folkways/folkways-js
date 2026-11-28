@@ -245,7 +245,7 @@ for (const transport of ['websocket', 'http'] as const) {
       const topic = `$user/${identity}`;
       const alice = await open(identity, opts);
       const messages: Message[] = [];
-      await alice.topic(topic).subscribe((m) => messages.push(m)).ready;
+      await alice.topic(topic).subscribe((m) => { messages.push(m); }).ready;
       const serviceOptions = {
         url: required('FOLKWAYS_TEST_HTTP_URL'),
         segment: required('FOLKWAYS_TEST_SEGMENT_ID'),
