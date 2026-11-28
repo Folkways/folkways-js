@@ -91,6 +91,8 @@ jobs:
         run: |
           FLATC="$RUNNER_TEMP/flatbuffers-build/flatc" pnpm --filter @folkwaysio/realtime proto
           if [[ -n "$(git status --porcelain --untracked-files=all -- packages/realtime/src/transport/wire/generated)" ]]; then
+            git status --short --untracked-files=all -- packages/realtime/src/transport/wire/generated
+            git diff -- packages/realtime/src/transport/wire/generated
             echo "::error::Generated protocol bindings differ. Regenerate with the pinned compiler and commit the result."
             exit 1
           fi

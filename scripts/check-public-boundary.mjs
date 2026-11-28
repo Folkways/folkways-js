@@ -15,7 +15,9 @@ export function findings(text) {
     rule,
     fingerprint: createHash('sha256').update(value).digest('hex'),
   });
-  for (const m of text.matchAll(/(?<![@\w])Folkways\/([a-z0-9_.-]+)/gi)) {
+  // Bare owner/repository names and explicit GitHub links are repository references.
+  // A directory component in a relative source import is not a repository name.
+  for (const m of text.matchAll(/(?:\b(?:github\.com[/:]|api\.github\.com\/repos\/|raw\.githubusercontent\.com\/)|(?<![@\w/]))Folkways\/([a-z0-9_.-]+)/gi)) {
     if (!publicRepos.has(m[1].toLowerCase())) add('repository reference', m[0]);
   }
   for (const m of text.matchAll(/\b(?:https?|wss?):\/\/([a-z0-9.-]+)/gi)) {
