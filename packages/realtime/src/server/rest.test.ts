@@ -94,6 +94,7 @@ describe('Folkways.Rest', () => {
     expect(claims.iat as number).toBeGreaterThanOrEqual(before);
     expect(t.expiresAt).toBe((claims.exp as number) * 1000);
     expect(claims.jti).toMatch(/^[0-9a-f-]{36}$/);
+    expect(t.jti).toBe(claims.jti);
   });
 
   it('signs with P-256 keys too', async () => {
@@ -118,6 +119,24 @@ describe('Folkways.Rest', () => {
     expect(claims.kind).toBe('anonymous');
     expect((claims.exp as number) - (claims.iat as number)).toBe(900);
     expect(t.identity).toBeNull();
+    expect(t.jti).toBe(claims.jti);
+  });
+
+  it('exposes a unique signed token identifier for every issued token', async () => {
+    const api = rest();
+    const issued = await Promise.all([
+      api.createToken({ identity: 'alice' }),
+      api.createToken({ identity: 'alice' }),
+      api.createToken({ kind: 'anonymous' }),
+      api.createToken({ kind: 'service', identity: 'backend' }),
+      api.createToken({ kind: 'agent', identity: 'agent:1' }),
+    ]);
+    expect(new Set(issued.map(t => t.jti)).size).toBe(issued.length);
+    for (const t of issued) {
+      const signed = decode(t.token);
+      expect(t.jti).toBe(signed.claims.jti);
+      expect(verify(null, signed.input, DEV.publicKey, signed.sig)).toBe(true);
+    }
   });
 
   it('refuses tokens the node would refuse', async () => {

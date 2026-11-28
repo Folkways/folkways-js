@@ -379,6 +379,51 @@ live('direct message rooms', () => {
   }, 40_000);
 });
 
+live('kick and token revocation', () => {
+  it('disconnects a kicked identity without revoking its token, then revokes it across both transports', async () => {
+    const identity = `admin-test:${uniq()}`;
+    const topic = `chat/${uniq()}`;
+    const options = {
+      url: required('FOLKWAYS_TEST_HTTP_URL'),
+      segment: required('FOLKWAYS_TEST_SEGMENT_ID'),
+      signingKey: { kid: required('FOLKWAYS_TEST_KEY_ID'), privateKey: required('FOLKWAYS_TEST_PRIVATE_KEY').replace(/\\n/g, '\n') },
+    };
+    const backend = new Rest({ ...options, capabilities: [{ topics: '$user/>', ops: ['publish'] }] });
+    const narrow = new Rest({ ...options, capabilities: [{ topics: `$user/${identity}`, ops: ['publish'] }] });
+    const issued = await backend.createToken({ identity, capabilities: [{ topics: topic, ops: ['publish', 'subscribe'] }] });
+    const other = await open(`other:${uniq()}`, { transports: ['websocket'] });
+    const first = await open(identity, { transports: ['websocket'], token: issued.token });
+    await expect(narrow.revoke(issued.jti)).rejects.toMatchObject({ code: Code.Forbidden });
+    await expect(narrow.kick(`unrelated:${uniq()}`)).rejects.toMatchObject({ code: Code.Forbidden });
+    await narrow.kick(identity);
+    await until(() => first.connection.state === 'failed', 8_000, 'kicked WebSocket');
+    expect(first.connection.error?.code).toBe(Code.AuthRevoked);
+    expect(other.connection.state).toBe('connected');
+    await expect(first.connect()).rejects.toMatchObject({ code: Code.AuthRevoked });
+    // A kick does not revoke the JWT, even though the original SDK instance
+    // treats AuthRevoked as terminal and requires an explicit new credential.
+    const second = await open(identity, { transports: ['websocket'], token: issued.token });
+    await backend.revoke(issued.jti);
+    await until(() => second.connection.state === 'failed', 8_000, 'revoked WebSocket');
+    expect(second.connection.error?.code).toBe(Code.AuthRevoked);
+    for (const transport of ['websocket', 'http'] as const) {
+      const refused = new Realtime({
+        endpoints: { websocket: required('FOLKWAYS_TEST_WS_URL'), http: required('FOLKWAYS_TEST_HTTP_URL') },
+        transports: [transport],
+        token: issued.token,
+        connectTimeoutMs: 5_000,
+      });
+      clients.push(refused);
+      await expect(refused.connect()).rejects.toMatchObject({ code: Code.AuthRevoked });
+    }
+    const replacement = await backend.createToken({ identity, capabilities: [{ topics: topic, ops: ['publish'] }] });
+    await second.updateToken(replacement.token);
+    await second.connect();
+    await second.topic(topic).publish('message', 'fresh credential');
+    expect(other.connection.state).toBe('connected');
+  }, 40_000);
+});
+
 live('ephemeral signals', () => {
   it('delivers signals and keeps the latest per sender', async () => {
     const topic = `typing/${uniq()}`;

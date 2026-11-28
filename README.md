@@ -114,6 +114,17 @@ Use a rule matching `dm/>` (or your custom prefix). The backend needs `publish` 
 
 Repeat the same request after a partial failure to recover unsent invitations within the service's bounded deduplication window (up to ten minutes, subject to retained idempotency state). Each invitation has a `duplicate` flag. Changing the invitation data can send new invitations to the same room. The SDK does not automatically repeat a failed request.
 
+## Disconnecting clients and revoking tokens
+
+The backend SDK exposes `issued.jti` on the result of `createToken()`. Keep the token identifier and expiration in your application's authorized session records when you need to revoke a specific credential later; there is no need to store the raw JWT for that purpose.
+
+- `await folkways.kick('user:42')` disconnects the identity's WebSockets. It needs service `publish` permission on `$user/user:42`. The token itself remains valid.
+- `await folkways.revoke(issued.jti)` invalidates the specific token and disconnects WebSockets using it. It needs service `publish` permission on all personal topics (`$user/>` or a broader permission).
+
+These operations return no value on success and do not confirm that an identity or token existed. They apply to the receiving service instance; revocations are in memory, do not survive a restart, and must not be treated as a global ban. To prevent future access, stop issuing credentials for the identity and revoke its outstanding token identifiers.
+
+The client treats `AuthRevoked` as terminal, including after a kick; provide an explicitly authorized fresh token before reconnecting. The backend does not automatically retry kick or revoke requests. Revocation of its own credential stops authenticated operations on that SDK instance.
+
 ## Entry points
 
 | Import | Use it in |
