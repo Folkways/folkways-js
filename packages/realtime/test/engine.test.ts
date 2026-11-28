@@ -1971,7 +1971,7 @@ describe('node restart', () => {
     expect(node.polls).toHaveLength(0);
   });
 
-  it('polls about once a second on the HTTP fallback after a restart, then returns to WebSocket', async () => {
+  it('paces empty-state polls on the HTTP fallback after a restart, then returns to WebSocket', async () => {
     const node = new Node();
     const store = memoryStore();
     const cursorKey = `fw/${DEV_SEGMENT}/alice/c/${encodeURIComponent(ONLINE)}`;
@@ -1987,15 +1987,27 @@ describe('node restart', () => {
     node.start({ ws: false });
     await until(() => c.connection.transport === 'http', 3_000, 'HTTP fallback');
     await until(() => c.topic(ONLINE).values().size === 0, 3_000, 'empty online snapshot');
-    // From the first long poll of both topics (the probes are done), over 3 s.
+    // Start at the first combined poll, after the individual topic probes.
+    // Observe both held polls and immediate empty-state rechecks, rather
+    // than counting requests across an arbitrary wall-clock window.
     const first = await until(() => node.polls.find((p) => p.topics.length === 2), 3_000, 'long poll');
-    const t0 = first.at;
-    await new Promise((r) => setTimeout(r, t0 + 3_000 - Date.now()));
-    const polls = node.polls.filter((p) => p.at >= t0 && p.at < t0 + 3_000);
-    // Before the fix this was hundreds to thousands per second.
-    expect(polls.length / 3).toBeLessThanOrEqual(1.5);
+    const firstIndex = node.polls.indexOf(first);
+    await until(() => node.polls.length >= firstIndex + 5, 8_000, 'five recovery polls');
+    const afterSnapshot = node.polls.slice(firstIndex);
+    const polls = afterSnapshot.slice(0, 5);
+    expect(polls.every((p) => p.topics.length === 2)).toBe(true);
+    expect(polls.some((p) => p.waitMs === 0)).toBe(true);
+    expect(polls.some((p) => p.waitMs > 0)).toBe(true);
+    for (let i = 1; i < polls.length; i++) {
+      const previous = polls[i - 1]!;
+      const next = polls[i]!;
+      // A held poll spends its requested wait on the service; a quiet
+      // immediate recheck must spend at least the minimum pacer delay
+      // (250 ms with -20% jitter). Allow small timer rounding only.
+      const minimum = previous.waitMs > 0 ? previous.waitMs : 200;
+      expect(next.at - previous.at, `recovery poll ${i}: previous wait=${previous.waitMs}ms`).toBeGreaterThanOrEqual(minimum - 20);
+    }
     // The empty snapshot dropped every pre-restart position of $online, in memory and in the store.
-    const afterSnapshot = node.polls.slice(node.polls.findIndex((p) => p.at >= t0));
     expect(afterSnapshot.length).toBeGreaterThan(0);
     for (const p of afterSnapshot) {
       for (const t of p.topics) {

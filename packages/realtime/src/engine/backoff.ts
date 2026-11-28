@@ -7,7 +7,7 @@ export interface BackoffOptions {
  * Exponential backoff with full jitter: attempt n waits a uniformly random
  * time in [0, cap], cap = min(max, initial * 2^n). With the server's
  * `retry_after_ms` as a floor it waits floor + [0, min(cap, floor)] instead,
- * so clients told the same wait (a rate-limited segment, FLK-21) do not all
+ * so clients told the same wait (a rate-limited segment) do not all
  * come back at the same instant.
  */
 export class Backoff {
