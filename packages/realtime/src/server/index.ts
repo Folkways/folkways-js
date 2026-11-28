@@ -7,6 +7,7 @@
 import { Rest } from './rest';
 
 export { Rest, type CreateTokenOptions, type IssuedToken, type RestOptions, type RestPublishOptions } from './rest';
+export type { MembersApi, TopicMember, MemberList } from './members';
 export { type SigningAlgorithm, type SigningKey } from './sign';
 export { Code, codeName } from '../shared/codes';
 export { RealtimeError, isRealtimeError } from '../shared/errors';

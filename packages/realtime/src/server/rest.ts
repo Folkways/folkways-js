@@ -8,6 +8,8 @@ import { parse128, random128 } from '../shared/random';
 import { assertServerPublishTopic } from '../shared/topic';
 import { AckMode, type FetchLike, HttpTransport, type PublishBody, decodeServerPacket, encodeClientPacket } from '../transport';
 import { type Signer, type SigningKey, importSigner, signJwt } from './sign';
+import { createMembersApi, type MembersApi } from './members';
+import { requestJson } from './json';
 
 export interface RestOptions {
   /** Base URL of the node's HTTP port, e.g. `https://realtime.example.com`. */
@@ -18,7 +20,7 @@ export interface RestOptions {
   signingKey: SigningKey;
   /** Identity this server publishes as. Default `server`. */
   identity?: string;
-  /** Rights of this server's own token, used by `publish()`. Default: publish on every topic. */
+  /** Rights of this server's own token, used by publishing and service APIs. Default: publish on every topic. */
   capabilities?: readonly Permission[];
   /** fetch implementation, for runtimes without a global one. */
   fetch?: FetchLike;
@@ -88,6 +90,8 @@ function isBrowser(): boolean {
  *
  */
 export class Rest {
+  /** Manage members of topics configured with access: members. */
+  readonly members: MembersApi;
   private readonly http: HttpTransport;
   private readonly base: string;
   private signer?: Promise<Signer>;
@@ -116,6 +120,7 @@ export class Rest {
     }
     this.base = opts.url.replace(/\/+$/, '');
     this.http = new HttpTransport(opts.fetch);
+    this.members = createMembersApi((path, body, status, topic) => this.json(path, body, status, topic));
   }
 
   /** Signs a short-lived token for one identity, in process. */
@@ -195,6 +200,21 @@ export class Rest {
       if (msg.type === 'close') throw new RealtimeError(msg.code, { message: msg.reason, retryAfterMs: msg.retryAfterMs, topic });
     }
     throw new RealtimeError(Code.Unavailable, { message: `HTTP ${reply.status} without a receipt`, topic, retryAfterMs: reply.retryAfterMs });
+  }
+
+  /** Service JSON operations share the same credential cache and revocation latch as publish. */
+  private async json(path: string, body: object, status: 200 | 204, topic?: string): Promise<unknown> {
+    const token = await this.ownToken();
+    try {
+      return await this.withTimeout((signal) => requestJson(this.opts.fetch, this.base, path, token, body, status, signal, topic));
+    } catch (err) {
+      if (err instanceof RealtimeError && err.code === Code.AuthRevoked) {
+        this.revoked = err;
+        this.own = undefined;
+      }
+      // No automatic retry: a failed response may follow a partially applied mutation.
+      throw err;
+    }
   }
 
   private checkRevocation(frames: ReturnType<typeof decodeServerPacket>): void {

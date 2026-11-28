@@ -94,6 +94,18 @@ See [Publishing](https://docs.folkways.io/docs/js-sdk/publishing), [Subscribing]
 
 A backend using `@folkwaysio/realtime/server` can send a stream event to `$user/{identity}` with `Rest.publish()`. The identity must be a single valid topic level (for example `user:42`). Grant the service token `publish` on the intended personal topic or a deliberately scoped pattern such as `$user/>`. The service enforces authorization; allowing the topic syntax in the SDK does not grant rights. Online and presence topics remain unavailable for backend publishing through this API.
 
+## Topic membership
+
+Use the backend SDK to manage a topic configured with `access: members`. With a `Rest` instance named `folkways` and a service token granting `publish` on the topic, call:
+
+- `await folkways.members.add('private/room', ['alice', 'bob'], ['subscribe', 'publish'])`
+- `await folkways.members.set('private/room', 'bob', ['subscribe'])`
+- `await folkways.members.list('private/room')` returns the topic and its members with their operations.
+- `await folkways.members.remove('private/room', ['bob'])`
+- `await folkways.members.clear('private/room')` removes every member.
+
+Both add and set replace the specified identities' operations, rather than merging them. Membership does not override token or topic-rule restrictions. Changes are acknowledged after storage; if a mutation fails with Unavailable or times out, removals may already apply and grants may not. Inspect the current list or explicitly retry the intended change; the SDK does not automatically repeat JSON mutations.
+
 ## Entry points
 
 | Import | Use it in |

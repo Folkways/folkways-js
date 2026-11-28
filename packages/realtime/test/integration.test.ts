@@ -302,6 +302,41 @@ for (const transport of ['websocket', 'http'] as const) {
   });
 }
 
+live('topic membership', () => {
+  it('adds, narrows, removes and clears access with service credentials', async () => {
+    const topic = `private/${uniq()}`;
+    const identity = `member:${uniq()}`;
+    const options = {
+      url: required('FOLKWAYS_TEST_HTTP_URL'),
+      segment: required('FOLKWAYS_TEST_SEGMENT_ID'),
+      signingKey: { kid: required('FOLKWAYS_TEST_KEY_ID'), privateKey: required('FOLKWAYS_TEST_PRIVATE_KEY').replace(/\\n/g, '\n') },
+    };
+    const backend = new Rest({ ...options, capabilities: [{ topics: topic, ops: ['publish'] }] });
+    const denied = new Rest({ ...options, capabilities: [{ topics: topic, ops: ['subscribe'] }] });
+    try {
+      await expect(denied.members.list(topic)).rejects.toMatchObject({ code: Code.Forbidden });
+      await backend.members.add(topic, [identity], ['subscribe', 'publish']);
+      expect(await backend.members.list(topic)).toEqual({ topic, members: [{ identity, ops: ['subscribe', 'publish'] }] });
+      const member = await open(identity, { transports: ['websocket'] });
+      const room = member.topic(topic);
+      const sub = room.subscribe();
+      await sub.ready;
+      await room.publish('message', 'allowed');
+      await backend.members.set(topic, identity, ['subscribe']);
+      await expect(room.publish('message', 'denied')).rejects.toMatchObject({ code: Code.Forbidden });
+      expect((await backend.members.list(topic)).members).toEqual([{ identity, ops: ['subscribe'] }]);
+      await backend.members.remove(topic, [identity]);
+      expect((await backend.members.list(topic)).members).toEqual([]);
+      await expect(room.publish('message', 'removed')).rejects.toMatchObject({ code: Code.Forbidden });
+      await backend.members.add(topic, [identity], ['subscribe']);
+      await backend.members.clear(topic);
+      expect((await backend.members.list(topic)).members).toEqual([]);
+    } finally {
+      await backend.members.clear(topic);
+    }
+  }, 30_000);
+});
+
 live('ephemeral signals', () => {
   it('delivers signals and keeps the latest per sender', async () => {
     const topic = `typing/${uniq()}`;
