@@ -1710,6 +1710,74 @@ describe('http long-poll', () => {
     expect(room.values('read').get('bob')?.data).toBe('new');
   });
 
+  it.each(['stream', 'kv'] as const)('refreshes current state when an HTTP %s filter widens during a held poll', async (initial) => {
+    const ALL = [DeliveryClass.Durable, DeliveryClass.LastValue, DeliveryClass.Ephemeral];
+    const STATE = EPOCH + 1n;
+    const version = { epoch: STATE, seq: 2n };
+    const cursor = { epoch: EPOCH, seq: 1n };
+    const filter = initial === 'stream' ? DeliveryClass.Durable : DeliveryClass.LastValue;
+    const polls: { body: SubscribeBody; waitMs: number }[] = [];
+    let aborted = false;
+    const read = event(7n, STATE, 0n, 'read', { delivery: DeliveryClass.LastValue, name: 'read', key: 'bob', version: 1n });
+    const typing = event(7n, STATE, 0n, 'typing', { delivery: DeliveryClass.Ephemeral, name: 'typing', publisher: 'bob', version: 2n, expiresAtMs: (1n << 64n) - 1n });
+    const stream = (seq: bigint) => event(7n, EPOCH, seq, String(seq), { delivery: DeliveryClass.Durable, name: 'message' });
+    const http = new FakeRequestTransport(async (_path, _token, frames, signal) => {
+      const f = frames[0]!;
+      if (f.msg.type !== 'poll') return { frames: [{ corr: f.corr, msg: { type: 'pong', nonce: 1n, tsMs: 0 } }] };
+      const body = f.msg.poll.topics[0]!;
+      polls.push({ body, waitMs: f.msg.poll.waitMs ?? 0 });
+      const ack = (snapshotFollows: boolean, latest = cursor) => ({ corr: f.corr, msg: { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Unspecified, catchingUp: false, snapshotFollows, deliveries: ALL, latest, stateLatest: version } }) as const;
+      const end = { corr: f.corr, msg: { type: 'pollEnd', timedOut: false, more: false } } as const;
+      const snapshot = (id: bigint, events: WireEvent[]): ServerFrame => ({ corr: f.corr, msg: { type: 'snapshot', topicId: 7n, snapshotId: id, chunk: 0, lastChunk: true, fence: cursor, events } });
+      const delivery = (...events: WireEvent[]): ServerFrame => ({ corr: f.corr, msg: { type: 'deliver', topicId: 7n, delivery: DeliveryClass.Unspecified, replayed: false, events } });
+      if (polls.length === 1) {
+        return { frames: [ack(initial === 'kv'), initial === 'kv' ? snapshot(1n, [read]) : delivery(stream(1n)), end] };
+      }
+      if (polls.length === 2) {
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) { aborted = true; resolve(); }
+          else signal?.addEventListener('abort', () => { aborted = true; resolve(); }, { once: true });
+        });
+        return { frames: [] };
+      }
+      if (polls.length === 3) return { frames: [ack(true), snapshot(2n, [read, typing]), end] };
+      if (polls.length === 4) return { frames: [ack(false, { epoch: EPOCH, seq: 2n }), delivery(stream(2n)), end] };
+      await new Promise<void>((resolve) => {
+        if (signal?.aborted) resolve();
+        else signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return { frames: [] };
+    });
+    const c = new Realtime({
+      endpoints: { http: 'http://fake' }, transports: ['http'], token: mintToken('alice'),
+      connectTimeoutMs: 0, transportOverrides: { request: http },
+    });
+    clients.push(c);
+    await c.connect();
+    const room = c.topic('rooms/1');
+    const narrow: string[] = [];
+    const wide: string[] = [];
+    await room.subscribe((m) => { if (m.delivery === 'stream') narrow.push(String(m.data)); }, { types: [initial], from: 'oldest' }).ready;
+    await until(() => polls.length >= 2);
+    expect(polls[0]!.body.types).toEqual([filter]);
+    expect(polls[1]!.body.stateAfter).toEqual(version);
+    expect(polls[1]!.waitMs).toBeGreaterThan(0);
+    const widened = room.subscribe((m) => { if (m.delivery === 'stream') wide.push(String(m.data)); });
+    await widened.ready;
+    await until(() => polls.length >= 5 && wide.length === 1, 3_000, 'widened state and stream delta');
+    expect(aborted).toBe(true);
+    expect(polls[2]!.waitMs).toBe(0);
+    expect(polls[2]!.body).toMatchObject({ start: StartAt.After, cursor, types: [], snapshot: true });
+    expect(polls[2]!.body.stateAfter).toBeUndefined();
+    expect(polls[3]!.body.stateAfter).toEqual(version);
+    expect(polls[3]!.body.cursor).toEqual(cursor);
+    expect(polls[4]!.body.cursor).toEqual({ epoch: EPOCH, seq: 2n });
+    expect(room.values('read').get('bob')?.data).toBe('read');
+    expect(room.values('typing').get('bob')?.data).toBe('typing');
+    expect(wide).toEqual(['2']);
+    expect(narrow).toEqual(initial === 'stream' ? ['1', '2'] : []);
+  });
+
   it.each(['connect', 'publish', 'poll'] as const)('stops HTTP on revocation during %s without refreshing', async (phase) => {
     const provider = vi.fn(() => mintToken('alice'));
     const http = new FakeRequestTransport((path, _token, frames) => {

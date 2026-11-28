@@ -214,6 +214,31 @@ for (const transport of ['websocket', 'http'] as const) {
       await expect(alice.topic(topic).publish('read', { upTo: 'x' }, { delivery: 'kv', key: 'bob' })).rejects.toMatchObject({ code: Code.Forbidden });
     }, 20_000);
 
+    it.each(['stream', 'kv'] as const)('recovers existing state when a %s subscription widens', async (initial) => {
+      const topic = `rooms/${uniq()}`;
+      const bob = await open('bob', opts);
+      const pub = bob.topic(topic);
+      await pub.publish('read', 'already present', { delivery: 'kv' });
+      await pub.publish('typing', 'already typing', { delivery: 'signal', ttlMs: 30_000 });
+      const alice = await open('alice', opts);
+      const room = alice.topic(topic);
+      const seen: string[] = [];
+      await room.subscribe((m) => { if (m.delivery === 'stream') seen.push(m.id); }, { types: [initial] }).ready;
+      const first = await pub.publish('message', 'first');
+      if (initial === 'stream') await until(() => seen.length === 1, 8_000, 'first stream event');
+      else await until(() => room.values('read').has('bob'), 8_000, 'initial KV snapshot');
+      expect(room.values('typing').has('bob')).toBe(false);
+      const expanded = room.subscribe();
+      await expanded.ready;
+      await until(() => room.values('read').has('bob') && room.values('typing').has('bob'), 8_000, 'existing state after filter expansion');
+      expect(room.values('read').get('bob')?.data).toBe('already present');
+      expect(room.values('typing').get('bob')?.data).toBe('already typing');
+      const second = await pub.publish('message', 'second');
+      await until(() => room.messages.getSnapshot().some((m) => m.id === second.id), 8_000, 'stream continues');
+      if (initial === 'stream') expect(seen).toEqual([first.id, second.id]);
+      else expect(seen).toEqual([]);
+    }, 30_000);
+
     it('preserves stream ordering through state changes, reauthentication and snapshot recovery', async () => {
       const topic = `rooms/${uniq()}`;
       const alice = await open('alice', { ...opts, signalTtlMs: 50 });
