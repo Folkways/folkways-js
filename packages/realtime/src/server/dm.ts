@@ -33,7 +33,7 @@ const invalid = (message: string) => new RealtimeError(Code.InvalidArgument, { m
 const malformed = () => new RealtimeError(Code.BadFrame, { message: 'invalid direct-message response' });
 
 function parseOpened(value: unknown, members: readonly string[], prefix: string): DmOpened {
-  if (!jsonObject(value) || typeof value.topic !== 'string' || topicError(value.topic) ||
+  if (!jsonObject(value) || typeof value.topic !== 'string' || topicError(value.topic) || /[^A-Za-z0-9._~:@=+/-]/.test(value.topic) ||
       !value.topic.startsWith(prefix + '/') || value.topic.slice(prefix.length + 1).includes('/') ||
       !Array.isArray(value.members) || value.members.length !== members.length ||
       !members.every((m, i) => value.members instanceof Array && value.members[i] === m) ||
@@ -55,7 +55,7 @@ export function createDmApi(call: (path: string, body: object) => Promise<unknow
       if (distinct.length < 2 || distinct.length > 50) throw invalid('a room needs 2 to 50 distinct members');
       if (!jsonObject(options)) throw invalid('direct-message options must be an object');
       const prefix = options.prefix ?? 'dm';
-      if (typeof prefix !== 'string' || topicError(prefix + '/' + '0'.repeat(24))) {
+      if (typeof prefix !== 'string' || /[^A-Za-z0-9._~:@=+/-]/.test(prefix) || topicError(prefix + '/' + '0'.repeat(24))) {
         throw new RealtimeError(Code.InvalidTopic, { message: 'prefix must fit a valid room topic', local: true });
       }
       // Snapshot data before any asynchronous signing or fetch, and reject values
