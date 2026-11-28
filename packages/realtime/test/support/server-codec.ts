@@ -49,6 +49,7 @@ function events(b: B, evs: readonly WireEvent[], create: (b: B, offs: number[]) 
     if (name) fb.Event.addName(b, name);
     if (e.uid) fb.Event.addUid(b, fb.Uuid128.createUuid128(b, e.uid.hi, e.uid.lo));
     if (e.version) fb.Event.addVersion(b, e.version);
+    if (e.expiresAtMs) fb.Event.addExpiresAtMs(b, e.expiresAtMs);
     return fb.Event.endEvent(b);
   });
   return create(b, offs);
@@ -198,14 +199,14 @@ function body(b: B, m: ServerMsg): [fb.ServerBody, number] {
   }
 }
 
-export function encodeServerPacket(frames: readonly ServerFrame[], ident = 'RTES'): Uint8Array {
+export function encodeServerPacket(frames: readonly ServerFrame[], ident = 'RTES', serverTimeMs = frames.some(({ msg }) => (msg.type === 'deliver' || msg.type === 'snapshot') && msg.events.some((e) => e.expiresAtMs)) ? BigInt(Date.now()) : 0n): Uint8Array {
   const b = new flatbuffers.Builder(256);
   const offs = frames.map((f) => {
     const [type, off] = body(b, f.msg);
     return fb.ServerFrame.createServerFrame(b, f.corr, type, off);
   });
   const vec = fb.ServerPacket.createFramesVector(b, offs);
-  b.finish(fb.ServerPacket.createServerPacket(b, vec), ident);
+  b.finish(fb.ServerPacket.createServerPacket(b, vec, serverTimeMs), ident);
   return b.asUint8Array().slice();
 }
 

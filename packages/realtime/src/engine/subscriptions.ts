@@ -2,6 +2,7 @@ import { Code } from '../shared/codes';
 import { type Cursor, isAfter, sameCursor } from '../shared/cursor';
 import { RealtimeError } from '../shared/errors';
 import type { Logger } from '../shared/logger';
+import { signalNow } from '../shared/signal-clock';
 import {
   type Deliver,
   type Gap,
@@ -82,6 +83,8 @@ export interface StoredValue {
   readonly event: WireEvent;
   readonly delivery: DeliveryClass;
   readonly receivedAt: number;
+  /** Local deadline for authoritative signal metadata. */
+  readonly signalDeadline?: number;
   /** Loaded from the local store; replaced by the first live snapshot. */
   readonly cached?: boolean;
 }
@@ -212,7 +215,7 @@ export class TopicEntry {
   }
 
   /** Records a kv or signal event in the value maps. */
-  storeValue(event: WireEvent, delivery: DeliveryClass, now: number, cached = false): void {
+  storeValue(event: WireEvent, delivery: DeliveryClass, now: number, cached = false, previousSignals?: ValueMaps): StoredValue | undefined {
     if (event.version && !cached) this.noteState({ epoch: event.epoch, seq: event.version });
     const maps = delivery === DeliveryClass.LastValue ? this.kv : delivery === DeliveryClass.Ephemeral ? this.signals : undefined;
     if (!maps) return;
@@ -225,7 +228,19 @@ export class TopicEntry {
       return;
     }
     if (!m) maps.set(name, (m = new Map()));
-    m.set(key, { event, delivery, receivedAt: now, cached });
+    const signal = delivery === DeliveryClass.Ephemeral;
+    const previous = signal ? m.get(key) ?? previousSignals?.get(name)?.get(key) : undefined;
+    const same = previous && previous.event.epoch === event.epoch && previous.event.seq === event.seq
+      && previous.event.version === event.version && previous.event.serverTsMs === event.serverTsMs
+      && previous.event.expiresAtMs === event.expiresAtMs;
+    let signalDeadline = signal ? event.signalDeadline : undefined;
+    if (same && previous.signalDeadline !== undefined) {
+      // Never extend a known deadline for a repeated snapshot or delivery.
+      signalDeadline = Math.min(previous.signalDeadline, signalDeadline ?? Infinity);
+    }
+    const value = { event, delivery, receivedAt: signal ? signalNow() : now, cached, signalDeadline };
+    m.set(key, value);
+    return value;
   }
 
   /** The kv values as a flat list, for the cache. */
@@ -470,6 +485,7 @@ export class SubscriptionRegistry {
     entry.snapshotBuf = undefined;
     const now = this.now();
     entry.kv.clear();
+    const previousSignals = new Map(entry.signals);
     entry.signals.clear();
     const stateOnly = entry.isStateOnly;
     if (stateOnly) {
@@ -487,8 +503,8 @@ export class SubscriptionRegistry {
     const delivered: DeliveredEvent[] = [];
     for (const event of events) {
       const delivery = entry.deliveryOf(event);
-      entry.storeValue(event, delivery, now);
-      if (!event.tombstone) delivered.push({ topic: entry.name, event, delivery, replayed: false, fromSnapshot: true });
+      const value = entry.storeValue(event, delivery, now, false, previousSignals);
+      if (!event.tombstone && !(value?.signalDeadline !== undefined && value.signalDeadline <= signalNow())) delivered.push({ topic: entry.name, event, delivery, replayed: false, fromSnapshot: true });
       if (event.seq === 0n) continue;
       const c = { epoch: event.epoch, seq: event.seq };
       if (!top || (c.epoch === top.epoch && c.seq > top.seq)) top = c;
@@ -580,7 +596,8 @@ export class SubscriptionRegistry {
     const out: DeliveredEvent[] = [];
     for (const maps of [entry.kv, entry.signals]) {
       for (const byKey of maps.values()) {
-        for (const { event, delivery } of byKey.values()) {
+        for (const { event, delivery, signalDeadline } of byKey.values()) {
+          if (signalDeadline !== undefined && signalDeadline <= signalNow()) continue;
           out.push({ topic: entry.name, event, delivery, replayed: false, fromSnapshot: true });
         }
       }

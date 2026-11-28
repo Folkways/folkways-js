@@ -4,7 +4,7 @@ import { Code, Folkways, type Message, Realtime, RealtimeError, type RealtimeOpt
 import { AckMode, ContentType, DEFAULT_LIMITS, DeliveryClass, FlowAction, GapReason, OnGap, StartAt, type ServerFrame, type SubscribeBody, type WireEvent } from '../src/transport/wire/model';
 import { TransportError } from '../src/transport/types';
 import { type FakeConn, FakeRequestTransport, FakeStreamTransport, until } from './support/fake-transport';
-import { event } from './support/server-codec';
+import { encodeServerPacket, event } from './support/server-codec';
 import { DEV_SEGMENT, mintToken } from './support/token';
 
 const EPOCH = 1879046969544933376n;
@@ -1087,6 +1087,39 @@ describe('topic views', () => {
     expect([...room.values().keys()].sort()).toEqual(['location/bob', 'read/bob', 'typing/carol']);
     await until(() => typing.size === 0, 1_000, 'signal expiry');
     expect(typingChanges).toBeGreaterThanOrEqual(2);
+  });
+  it('honors signal deadlines in live values and snapshots without renewing repeated signals', async () => {
+    const { c, conn } = await connected({ signalTtlMs: 30 });
+    const room = c.topic('chat/45');
+    const sub = room.subscribe();
+    const request = await conn.next('subscribe');
+    conn.reply(request.corr, {
+      type: 'subAck', topicId: 9n, delivery: DeliveryClass.Unspecified, catchingUp: false,
+      snapshotFollows: false, deliveries: [DeliveryClass.Durable, DeliveryClass.LastValue, DeliveryClass.Ephemeral],
+    });
+    await sub.ready;
+    const clock = 1_800_000_000_000n;
+    const finite = event(9n, EPOCH, 0n, 'on', { delivery: DeliveryClass.Ephemeral, version: 1n, name: 'typing', publisher: 'alice', expiresAtMs: clock + 350n });
+    const indefinite = event(9n, EPOCH, 0n, 'on', { delivery: DeliveryClass.Ephemeral, version: 2n, name: 'typing', publisher: 'bob', expiresAtMs: (1n << 64n) - 1n });
+    const expired = event(9n, EPOCH, 0n, 'old', { delivery: DeliveryClass.Ephemeral, version: 3n, name: 'typing', publisher: 'carol', expiresAtMs: clock - 1n });
+    const snapshot = (id: bigint, events: WireEvent[], sample: bigint) => conn.onPacket(encodeServerPacket(
+      [{ corr: 0n, msg: { type: 'snapshot', topicId: 9n, snapshotId: id, chunk: 0, lastChunk: true, events } }], 'RTES', sample,
+    ));
+    snapshot(1n, [finite, indefinite, expired], clock);
+    await new Promise((r) => setTimeout(r, 60));
+    const typing = room.values('typing'); // created after receiving the snapshot
+    expect([...typing.keys()].sort()).toEqual(['alice', 'bob']);
+    await until(() => !typing.has('alice'), 1_000, 'authoritative expiry');
+    expect(typing.has('bob')).toBe(true);
+    // A repeated snapshot carrying the same event and an older clock sample
+    // cannot resurrect the expired value.
+    snapshot(2n, [finite, indefinite], clock);
+    await new Promise((r) => setTimeout(r, 20));
+    expect([...typing.keys()]).toEqual(['bob']);
+    const replacement = { ...finite, version: 4n, expiresAtMs: clock + 500n };
+    conn.onPacket(encodeServerPacket([{ corr: 0n, msg: { type: 'deliver', topicId: 9n, delivery: DeliveryClass.Ephemeral, replayed: false, events: [replacement] } }], 'RTES', clock));
+    await until(() => typing.has('alice'));
+    expect(typing.has('bob')).toBe(true);
   });
 });
 

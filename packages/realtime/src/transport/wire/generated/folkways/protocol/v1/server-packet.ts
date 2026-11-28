@@ -35,8 +35,13 @@ framesLength():number {
   return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
 }
 
+serverTimeMs():bigint {
+  const offset = this.bb!.__offset(this.bb_pos, 6);
+  return offset ? this.bb!.readUint64(this.bb_pos + offset) : BigInt('0');
+}
+
 static startServerPacket(builder:flatbuffers.Builder) {
-  builder.startObject(1);
+  builder.startObject(2);
 }
 
 static addFrames(builder:flatbuffers.Builder, framesOffset:flatbuffers.Offset) {
@@ -55,15 +60,20 @@ static startFramesVector(builder:flatbuffers.Builder, numElems:number) {
   builder.startVector(4, numElems, 4);
 }
 
+static addServerTimeMs(builder:flatbuffers.Builder, serverTimeMs:bigint) {
+  builder.addFieldInt64(1, serverTimeMs, BigInt('0'));
+}
+
 static endServerPacket(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   builder.requiredField(offset, 4) // frames
   return offset;
 }
 
-static createServerPacket(builder:flatbuffers.Builder, framesOffset:flatbuffers.Offset):flatbuffers.Offset {
+static createServerPacket(builder:flatbuffers.Builder, framesOffset:flatbuffers.Offset, serverTimeMs:bigint):flatbuffers.Offset {
   ServerPacket.startServerPacket(builder);
   ServerPacket.addFrames(builder, framesOffset);
+  ServerPacket.addServerTimeMs(builder, serverTimeMs);
   return ServerPacket.endServerPacket(builder);
 }
 }

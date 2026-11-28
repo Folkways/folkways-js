@@ -124,8 +124,13 @@ version():bigint {
   return offset ? this.bb!.readUint64(this.bb_pos + offset) : BigInt('0');
 }
 
+expiresAtMs():bigint {
+  const offset = this.bb!.__offset(this.bb_pos, 34);
+  return offset ? this.bb!.readUint64(this.bb_pos + offset) : BigInt('0');
+}
+
 static startEvent(builder:flatbuffers.Builder) {
-  builder.startObject(15);
+  builder.startObject(16);
 }
 
 static addTopicId(builder:flatbuffers.Builder, topicId:bigint) {
@@ -210,6 +215,10 @@ static addUid(builder:flatbuffers.Builder, uidOffset:flatbuffers.Offset) {
 
 static addVersion(builder:flatbuffers.Builder, version:bigint) {
   builder.addFieldInt64(14, version, BigInt('0'));
+}
+
+static addExpiresAtMs(builder:flatbuffers.Builder, expiresAtMs:bigint) {
+  builder.addFieldInt64(15, expiresAtMs, BigInt('0'));
 }
 
 static endEvent(builder:flatbuffers.Builder):flatbuffers.Offset {

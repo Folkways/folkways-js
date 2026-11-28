@@ -154,6 +154,8 @@ table Event {
   // sequence number; they carry the topic's state version instead, which
   // HTTP long-poll resumes from (Subscribe.state_after). 0 otherwise.
   version: ulong;
+  // Signal deadline in Unix milliseconds; 0 means unknown, max ulong means no expiry.
+  expires_at_ms: ulong;
 }
 
 // A right the node granted: operations on the topics a pattern matches.
@@ -448,6 +450,8 @@ table ClientPacket {
 // Finished with identifier "RTES".
 table ServerPacket {
   frames: [ServerFrame] (required);
+  // Server clock when a packet with signal expiry metadata is encoded; 0 means absent.
+  server_time_ms: ulong;
 }
 
 root_type ClientPacket;
