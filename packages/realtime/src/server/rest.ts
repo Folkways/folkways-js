@@ -5,7 +5,7 @@ import { Code } from '../shared/codes';
 import { RealtimeError } from '../shared/errors';
 import { eventNameError } from '../shared/event-name';
 import { parse128, random128 } from '../shared/random';
-import { assertTopic } from '../shared/topic';
+import { assertServerPublishTopic } from '../shared/topic';
 import { AckMode, type FetchLike, HttpTransport, type PublishBody, decodeServerPacket, encodeClientPacket } from '../transport';
 import { type Signer, type SigningKey, importSigner, signJwt } from './sign';
 
@@ -153,9 +153,9 @@ export class Rest {
     return Object.freeze({ token, expiresAt: exp * 1000, identity, kind, capabilities: capabilities.map((c) => ({ topics: c.topics, ops: [...c.ops] })) });
   }
 
-  /** Publishes over HTTP. A revoked service credential disables publishing on this instance; create a new instance explicitly to resume. Retries with the same key are deduplicated within the retained idempotency window. */
+  /** Publishes over HTTP, including authorized personal topics (`$user/{identity}`). A revoked service credential disables publishing on this instance; create a new instance explicitly to resume. Retries with the same key are deduplicated within the retained idempotency window. */
   async publish(topic: string, event: string, data: unknown, opts: RestPublishOptions = {}): Promise<PublishReceipt> {
-    assertTopic(topic);
+    assertServerPublishTopic(topic);
     const nameError = eventNameError(event);
     if (nameError) throw new RealtimeError(Code.InvalidArgument, { message: nameError, topic, local: true });
     const delivery = opts.delivery ?? 'stream';

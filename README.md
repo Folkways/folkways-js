@@ -90,6 +90,10 @@ Read more in [Topics and events](https://docs.folkways.io/docs/js-sdk/topics-and
 
 See [Publishing](https://docs.folkways.io/docs/js-sdk/publishing), [Subscribing](https://docs.folkways.io/docs/js-sdk/subscribing) and [Current limitations](https://docs.folkways.io/docs/js-sdk/limitations).
 
+## Personal topics
+
+A backend using `@folkwaysio/realtime/server` can send a stream event to `$user/{identity}` with `Rest.publish()`. The identity must be a single valid topic level (for example `user:42`). Grant the service token `publish` on the intended personal topic or a deliberately scoped pattern such as `$user/>`. The service enforces authorization; allowing the topic syntax in the SDK does not grant rights. Online and presence topics remain unavailable for backend publishing through this API.
+
 ## Entry points
 
 | Import | Use it in |

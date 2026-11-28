@@ -9,6 +9,7 @@ import {
   type StreamTransport,
   connect,
 } from '../src';
+import { Rest } from '../src/server';
 import type { StreamConnection } from '../src/transport/types';
 import { WebSocketTransport } from '../src/transport/websocket';
 import { until } from './support/fake-transport';
@@ -238,6 +239,26 @@ for (const transport of ['websocket', 'http'] as const) {
       if (initial === 'stream') expect(seen).toEqual([first.id, second.id]);
       else expect(seen).toEqual([]);
     }, 30_000);
+
+    it('delivers authorized backend notices to personal topics and rejects unauthorized writes', async () => {
+      const identity = `user:${uniq()}`;
+      const topic = `$user/${identity}`;
+      const alice = await open(identity, opts);
+      const messages: Message[] = [];
+      await alice.topic(topic).subscribe((m) => messages.push(m)).ready;
+      const serviceOptions = {
+        url: required('FOLKWAYS_TEST_HTTP_URL'),
+        segment: required('FOLKWAYS_TEST_SEGMENT_ID'),
+        signingKey: { kid: required('FOLKWAYS_TEST_KEY_ID'), privateKey: required('FOLKWAYS_TEST_PRIVATE_KEY').replace(/\\n/g, '\n') },
+        identity: 'backend',
+      };
+      const service = new Rest({ ...serviceOptions, capabilities: [{ topics: topic, ops: ['publish'] }] });
+      const receipt = await service.publish(topic, 'notice', 'paid');
+      await until(() => messages.some((m) => m.id === receipt.id), 8_000, 'personal notice');
+      expect(messages.find((m) => m.id === receipt.id)).toMatchObject({ name: 'notice', data: 'paid', publisher: 'backend' });
+      const denied = new Rest({ ...serviceOptions, capabilities: [{ topics: 'chat/>', ops: ['publish'] }] });
+      await expect(denied.publish(topic, 'notice', 'denied')).rejects.toMatchObject({ code: Code.Forbidden });
+    }, 20_000);
 
     it('preserves stream ordering through state changes, reauthentication and snapshot recovery', async () => {
       const topic = `rooms/${uniq()}`;
