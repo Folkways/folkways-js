@@ -71,7 +71,7 @@ describe('connection', () => {
     const c = client(fake, { token: provider });
     const conn = await fake.nextConn();
     await conn.next('hello');
-    const failure = expect(c.connect()).rejects.toMatchObject({ code: Code.AuthRevoked, message: 'revoked' });
+    const failure = expect(c.connect()).rejects.toMatchObject({ code: Code.AuthRevoked, message: 'AuthRevoked: revoked' });
     conn.serverClose(Code.AuthRevoked, 'revoked');
     await failure;
     expect(c.connection.state).toBe('failed');
@@ -109,7 +109,7 @@ describe('connection', () => {
     const conn = await fake.nextConn();
     await conn.welcome();
     await c.connect();
-    const failed = expect(c.updateToken(mintToken('alice', { ttlSecs: 900 }))).rejects.toMatchObject({ code: Code.AuthRevoked, message: 'revoked' });
+    const failed = expect(c.updateToken(mintToken('alice', { ttlSecs: 900 }))).rejects.toMatchObject({ code: Code.AuthRevoked, message: 'AuthRevoked: revoked' });
     const reauth = await conn.next('reauth');
     conn.reply(reauth.corr, { type: 'opError', code: Code.AuthRevoked, message: 'revoked', retryAfterMs: 0, topicId: 0n });
     await failed;

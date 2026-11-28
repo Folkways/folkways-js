@@ -179,7 +179,7 @@ describe('Folkways.Rest', () => {
     const service = rest({ fetch: node.fetch });
     await expect(service.publish('chat/1', 'm', 'x')).rejects.toMatchObject({
       code: Code.AuthRevoked,
-      message: 'revoked',
+      message: 'AuthRevoked: revoked',
     });
     await expect(service.publish('chat/1', 'm', 'again')).rejects.toMatchObject({ code: Code.AuthRevoked });
     expect(node.calls).toHaveLength(1);
