@@ -1,5 +1,5 @@
 /** Integration tests against an externally provisioned test service. */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   Code,
@@ -33,8 +33,8 @@ beforeAll(() => {
   for (const name of ['FOLKWAYS_TEST_WS_URL', 'FOLKWAYS_TEST_HTTP_URL', 'FOLKWAYS_TEST_SEGMENT_ID', 'FOLKWAYS_TEST_KEY_ID', 'FOLKWAYS_TEST_PRIVATE_KEY']) required(name);
 });
 
-afterAll(async () => {
-  await Promise.all(clients.map((c) => c.close()));
+afterEach(async () => {
+  await Promise.all(clients.splice(0).map((c) => c.close()));
 });
 
 /** A unique topic suffix per test, so tests never see each other's events. */
@@ -170,7 +170,7 @@ for (const transport of ['websocket', 'http'] as const) {
       expect(got).toEqual(['kept']);
     });
 
-    it('carries messages, read receipts and typing in one room (rooms/* in the seeds)', async () => {
+    it('carries messages, read receipts and typing in one room (rooms/* fixture)', async () => {
       const topic = `rooms/${uniq()}`;
       const alice = await open('alice', opts);
       const room = alice.topic(topic);
@@ -185,24 +185,25 @@ for (const transport of ['websocket', 'http'] as const) {
       const bob = await open('bob', opts);
       const msg = await bob.topic(topic).publish('message', { text: 'hi' });
       const read = await bob.topic(topic).publish('read', { upTo: msg.uid }, { delivery: 'kv' });
-      await bob.topic(topic).publish('typing', { on: true }, { delivery: 'signal' });
+      await bob.topic(topic).publish('typing', { on: true }, { delivery: 'signal', ttlMs: 10_000 });
       expect(msg.uid).toMatch(/^[0-9a-f]{32}$/);
       expect(msg.cursor!.seq).toBe(1n);
       expect(read.cursor).toBeUndefined();
       expect(read.uid).toMatch(/^[0-9a-f]{32}$/);
 
-      await until(() => all.length === 3, 8_000, 'message, receipt and signal');
-      expect(all.map((m) => [m.name, m.delivery, m.publisher])).toEqual([
+      await until(() => all.some((m) => m.name === 'message') && room.values('read').has('bob') && room.values('typing').has('bob'), 8_000, 'message, receipt and signal');
+      // Only the stream promises an order; a state poll may coalesce values or deliver them separately.
+      expect(all.map((m) => [m.name, m.delivery, m.publisher])).toEqual(expect.arrayContaining([
         ['message', 'stream', 'bob'],
         ['read', 'kv', 'bob'],
         ['typing', 'signal', 'bob'],
-      ]);
+      ]));
       expect(room.values('read').get('bob')!.data).toEqual({ upTo: msg.uid });
       expect(room.values('typing').get('bob')!.data).toEqual({ on: true });
 
       // A later receipt arrives as a change, over long-poll too.
       await bob.topic(topic).publish('read', { upTo: 'later' }, { delivery: 'kv' });
-      await until(() => (room.values('read').get('bob')?.data as { upTo: string }).upTo === 'later', 8_000, 'second receipt');
+      await until(() => (room.values('read').get('bob')?.data as { upTo: string } | undefined)?.upTo === 'later', 8_000, 'second receipt');
 
       // The inbox asked for stream events only.
       await new Promise((r) => setTimeout(r, 300));
@@ -211,7 +212,47 @@ for (const transport of ['websocket', 'http'] as const) {
       // The rule fixes each event's type, and read receipts belong to their publisher.
       await expect(bob.topic(topic).publish('typing', { on: true }, { delivery: 'stream' })).rejects.toMatchObject({ code: Code.ClassMismatch });
       await expect(alice.topic(topic).publish('read', { upTo: 'x' }, { delivery: 'kv', key: 'bob' })).rejects.toMatchObject({ code: Code.Forbidden });
-    });
+    }, 20_000);
+
+    it('preserves stream ordering through state changes, reauthentication and snapshot recovery', async () => {
+      const topic = `rooms/${uniq()}`;
+      const alice = await open('alice', { ...opts, signalTtlMs: 50 });
+      const bob = await open('bob', opts);
+      const room = alice.topic(topic);
+      const publisher = bob.topic(topic);
+      const messages: Message[] = [];
+      const sub = room.subscribe((m) => { if (m.delivery === 'stream') messages.push(m); });
+      await sub.ready;
+      const a = await publisher.publish('message', 'first');
+      await until(() => messages.length === 1, 8_000, 'first stream event');
+      await publisher.publish('read', 'first', { delivery: 'kv' });
+      await until(() => room.values('read').get('bob')?.data === 'first', 8_000, 'read state');
+      await expect(publisher.publish('typing', 'on', { delivery: 'signal', ttlMs: 6_000 })).resolves.toBeUndefined();
+      const typing = room.values('typing');
+      await until(() => typing.has('bob'), 8_000, 'signal visible');
+      await new Promise((r) => setTimeout(r, 150));
+      expect(typing.has('bob')).toBe(true); // exceeds the legacy 50 ms fallback
+      await alice.updateToken(mintToken('alice', { ttlSecs: 900 }));
+      await publisher.publish('read', null, { delivery: 'kv', remove: true });
+      await until(() => !room.values('read').has('bob'), 8_000, 'tombstone');
+      const b = await publisher.publish('message', 'second');
+      expect(b.cursor).toEqual({ epoch: a.cursor!.epoch, seq: a.cursor!.seq + 1n });
+      await until(() => messages.length === 2, 8_000, 'second stream event');
+      expect(messages.map((m) => m.id)).toEqual([a.id, b.id]);
+      await until(() => !typing.has('bob'), 8_000, 'signal expiry');
+      // A new subscriber must replay only the stream after the requested cursor
+      // and see an empty current-state snapshot.
+      const fresh = await open('carol', opts);
+      const replay: Message[] = [];
+      const snapshots: Message[][] = [];
+      const freshSub = fresh.topic(topic).subscribe((m) => { if (m.delivery === 'stream') replay.push(m); }, { from: { after: a.cursor! } });
+      freshSub.on('snapshot', (events) => snapshots.push(events));
+      await freshSub.ready;
+      await until(() => replay.length === 1 && snapshots.length >= 1, 8_000, 'replay and empty state snapshot');
+      expect(replay.map((m) => m.id)).toEqual([b.id]);
+      expect(snapshots[0]).toEqual([]);
+      expect(fresh.topic(topic).values().size).toBe(0);
+    }, 45_000);
   });
 }
 
@@ -226,7 +267,7 @@ live('ephemeral signals', () => {
     void bob.topic(topic).publish('typing', { typing: true }, { delivery: 'signal' });
     await until(() => alice.topic(topic).values('typing').get('bob'), 8_000, 'signal');
     expect(alice.topic(topic).values('typing').get('bob')!.data).toEqual({ typing: true });
-    // publish() on an Ephemeral topic still gets a receipt.
+    // A signal resolves without a receipt.
     await expect(bob.topic(topic).publish('typing', { typing: false }, { delivery: 'signal' })).resolves.toBeUndefined();
   });
 });

@@ -1654,6 +1654,62 @@ describe('http long-poll', () => {
     expect(bodies[2]).toMatchObject({ stateAfter: { epoch: EPOCH, seq: 2n } });
   });
 
+  it('keeps independent stream and state cursors across an empty state epoch replacement over HTTP', async () => {
+    const ALL = [DeliveryClass.Durable, DeliveryClass.LastValue, DeliveryClass.Ephemeral];
+    const STATE = EPOCH + 1n;
+    const NEW_STATE = EPOCH + 2n;
+    const bodies: SubscribeBody[] = [];
+    const http = new FakeRequestTransport(async (_path, _token, frames, signal) => {
+      const f = frames[0]!;
+      if (f.msg.type !== 'poll') return { frames: [{ corr: f.corr, msg: { type: 'pong', nonce: 1n, tsMs: 0 } }] };
+      bodies.push(f.msg.poll.topics[0]!);
+      const end = { corr: f.corr, msg: { type: 'pollEnd', timedOut: false, more: false } } as const;
+      const ack = (seq: bigint, epoch: bigint, version: bigint, snapshotFollows: boolean) =>
+        ({ corr: f.corr, msg: { type: 'subAck', topicId: 7n, delivery: DeliveryClass.Unspecified, catchingUp: false, latest: { epoch: EPOCH, seq }, snapshotFollows, deliveries: ALL, stateLatest: { epoch, seq: version } } }) as const;
+      const deliver = (...events: WireEvent[]): ServerFrame => ({ corr: f.corr, msg: { type: 'deliver', topicId: 7n, delivery: DeliveryClass.Unspecified, replayed: false, events } });
+      const snap = (id: bigint, seq: bigint, events: WireEvent[]): ServerFrame => ({ corr: f.corr, msg: { type: 'snapshot', topicId: 7n, snapshotId: id, chunk: 0, lastChunk: true, fence: { epoch: EPOCH, seq }, events } });
+      const stream = (seq: bigint, payload: string) => event(7n, EPOCH, seq, payload, { delivery: DeliveryClass.Durable, name: 'message' });
+      const state = (epoch: bigint, version: bigint, name: string, payload: string) => event(7n, epoch, 0n, payload, { delivery: DeliveryClass.LastValue, name, key: 'bob', version });
+      if (bodies.length === 1) {
+        return { frames: [ack(1n, STATE, 2n, true), deliver(stream(1n, 'one')), snap(1n, 1n, [state(STATE, 1n, 'read', 'r'), state(STATE, 2n, 'location', 'l')]), end] };
+      }
+      if (bodies.length === 2) {
+        return { frames: [ack(2n, STATE, 3n, false), deliver({ ...state(STATE, 3n, 'read', ''), tombstone: true }, stream(2n, 'two')), end] };
+      }
+      if (bodies.length === 3) {
+        return { frames: [ack(2n, NEW_STATE, 0n, true), snap(2n, 2n, []), end] };
+      }
+      if (bodies.length === 4) {
+        return { frames: [ack(3n, NEW_STATE, 1n, false), deliver(stream(3n, 'three'), state(NEW_STATE, 1n, 'read', 'new')), end] };
+      }
+      await new Promise<void>((r) => signal?.addEventListener('abort', () => r(), { once: true }));
+      return { frames: [] };
+    });
+    const c = new Realtime({
+      endpoints: { http: 'http://fake' }, transports: ['http'], token: mintToken('alice'),
+      connectTimeoutMs: 0, transportOverrides: { request: http },
+    });
+    clients.push(c);
+    await c.connect();
+    const room = c.topic('rooms/1');
+    const streams: string[] = [];
+    const snapshots: Message[][] = [];
+    const sub = room.subscribe((m) => { if (m.delivery === 'stream') streams.push(String(m.data)); }, { from: 'oldest' });
+    sub.on('snapshot', (s) => snapshots.push(s));
+    await sub.ready;
+    await until(() => bodies.length >= 5 && streams.length === 3);
+    expect(bodies.slice(1, 5).map((b) => [b.cursor, b.stateAfter])).toEqual([
+      [{ epoch: EPOCH, seq: 1n }, { epoch: STATE, seq: 2n }],
+      [{ epoch: EPOCH, seq: 2n }, { epoch: STATE, seq: 3n }],
+      [{ epoch: EPOCH, seq: 2n }, { epoch: NEW_STATE, seq: 0n }],
+      [{ epoch: EPOCH, seq: 3n }, { epoch: NEW_STATE, seq: 1n }],
+    ]);
+    expect(streams).toEqual(['one', 'two', 'three']);
+    expect(snapshots.map((s) => s.map((m) => m.name))).toEqual([['read', 'location'], []]);
+    expect([...room.values().keys()]).toEqual(['read/bob']);
+    expect(room.values('read').get('bob')?.data).toBe('new');
+  });
+
   it.each(['connect', 'publish', 'poll'] as const)('stops HTTP on revocation during %s without refreshing', async (phase) => {
     const provider = vi.fn(() => mintToken('alice'));
     const http = new FakeRequestTransport((path, _token, frames) => {
