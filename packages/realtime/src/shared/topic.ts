@@ -43,6 +43,19 @@ export function assertTopic(name: string, maxBytes?: number, allowSystem = false
   if (err) throw new RealtimeError(Code.InvalidTopic, { message: err, topic: String(name), local: true });
 }
 
+/** Personal topics use a single identity level. Leave room for every identity system prefix. */
+export function assertServerPublishTopic(name: string): void {
+  if (typeof name === 'string' && name.startsWith('$user/')) {
+    assertTopic(name, MAX_TOPIC_BYTES, true);
+    const identity = name.slice('$user/'.length);
+    if (!LEVEL.test(identity) || '$presence/'.length + identity.length > MAX_TOPIC_BYTES) {
+      throw new RealtimeError(Code.InvalidTopic, { message: 'personal topic identity must be one valid topic level of at most 245 bytes', topic: name, local: true });
+    }
+    return;
+  }
+  assertTopic(name);
+}
+
 /**
  * True when `topic` matches `pattern` with the node's rules: levels split
  * on `/`, `*` matches exactly one level, a trailing `>` one or more.

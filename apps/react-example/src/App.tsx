@@ -32,8 +32,10 @@ async function connect(signIn: SignIn): Promise<Realtime> {
   const [node, initial] = await Promise.all([connection(), realtimeToken(signIn.session, 'initial')]);
   nodeUrl = node.url;
   let first: string | undefined = initial;
+  const transport = new URLSearchParams(window.location.search).get('transport');
   return Folkways.connect({
     ...node,
+    ...(transport === 'websocket' || transport === 'http' ? { transports: [transport] } : {}),
     // Called on connect and again before each token expires.
     token: ({ reason }) => {
       const token = first;

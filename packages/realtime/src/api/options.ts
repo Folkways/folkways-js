@@ -101,7 +101,7 @@ export interface RealtimeOptions {
    * `{ messagesPerTopic: 100, maxBytes: 5 MB }`; `false` turns it off.
    */
   cache?: { messagesPerTopic?: number; maxBytes?: number } | false;
-  /** Local signal view lifetime approximation in ms, not the service-side TTL. Default 5 000. */
+  /** Fallback local signal view lifetime in ms when authoritative expiry metadata is unavailable. Default 5 000. */
   signalTtlMs?: number;
   /** HTTP long-poll tuning. */
   longPoll?: Partial<{ waitMs: number; maxEvents: number; emptyStateRecheckMs: number }>;

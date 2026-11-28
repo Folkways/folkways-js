@@ -101,6 +101,14 @@ The tests use [Vitest](https://vitest.dev):
 
 Integration tests require an isolated test segment with the expected topic rules and externally configured endpoints. Set `FOLKWAYS_INTEGRATION=1`, `FOLKWAYS_TEST_WS_URL`, `FOLKWAYS_TEST_HTTP_URL`, `FOLKWAYS_TEST_SEGMENT_ID`, `FOLKWAYS_TEST_KEY_ID` and `FOLKWAYS_TEST_PRIVATE_KEY` via your test environment. Never commit credentials. Provisioning is outside the SDK.
 
+For the mixed-topic integration suite, provision a disposable segment with token access and these rules: `chat/>` (stream), `rides/*/location` (KV), `typing/>` (signal), and `rooms/*` (stream, KV and signal, with named events `message`, `read` and `typing`; `read` uses the publisher as its key). Permit subscribe, publish, set and signal as appropriate; leave unmatched `other/>` denied. Retain enough history for replay tests and allow the suite's explicit signal TTL overrides. Run against the current protocol revision with expiry metadata available. Provision `private/>` as a members-only stream rule with publish and subscribe operations for membership tests. Provision `dm/>` as a members-only stream rule with publish and subscribe operations for direct-message tests. Provision `example-chat/*` with the mixed event definitions from the [React example](../apps/react-example/README.md#before-you-start), presence enabled and subscribe, publish, set, signal, history and presence allowed. Never point tests at customer data.
+
+```bash
+FOLKWAYS_INTEGRATION=1 pnpm --filter @folkwaysio/realtime test:integration
+```
+
+The live suite tests WebSocket and HTTP separately and in combination, and uses a unique topic per case. Public CI runs the fake-transport tests, not the live suite; a green public build alone does not establish service interoperability.
+
 Add tests next to the code you change. Engine behaviour is easiest to test with the fake transport in
 `test/support/fake-transport.ts`.
 

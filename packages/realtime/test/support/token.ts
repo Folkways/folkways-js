@@ -7,7 +7,7 @@ const TEST_KEY = generateKeyPairSync('ed25519').privateKey;
 
 export interface Capability {
   topic: string;
-  ops: ('publish' | 'subscribe' | 'signal' | 'history' | 'presence')[];
+  ops: ('publish' | 'subscribe' | 'set' | 'signal' | 'history' | 'presence')[];
 }
 
 const b64url = (s: string | Buffer) => Buffer.from(s).toString('base64url');

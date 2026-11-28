@@ -124,6 +124,10 @@ export interface WireEvent {
    * where such events take no sequence number; absent otherwise.
    */
   readonly version?: bigint;
+  /** Absolute signal deadline; absent for legacy packets; max uint64 means indefinite. */
+  readonly expiresAtMs?: bigint;
+  /** Local monotonic deadline estimated at packet decoding; Infinity means indefinite. */
+  readonly signalDeadline?: number;
 }
 
 /** A right granted by the node: `ops` on the topics `topic` (a pattern) matches. */

@@ -1,5 +1,5 @@
 /** Integration tests against an externally provisioned test service. */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   Code,
@@ -8,7 +8,9 @@ import {
   type RealtimeOptions,
   type StreamTransport,
   connect,
+  defineTopic,
 } from '../src';
+import { Rest } from '../src/server';
 import type { StreamConnection } from '../src/transport/types';
 import { WebSocketTransport } from '../src/transport/websocket';
 import { until } from './support/fake-transport';
@@ -33,8 +35,8 @@ beforeAll(() => {
   for (const name of ['FOLKWAYS_TEST_WS_URL', 'FOLKWAYS_TEST_HTTP_URL', 'FOLKWAYS_TEST_SEGMENT_ID', 'FOLKWAYS_TEST_KEY_ID', 'FOLKWAYS_TEST_PRIVATE_KEY']) required(name);
 });
 
-afterAll(async () => {
-  await Promise.all(clients.map((c) => c.close()));
+afterEach(async () => {
+  await Promise.all(clients.splice(0).map((c) => c.close()));
 });
 
 /** A unique topic suffix per test, so tests never see each other's events. */
@@ -117,6 +119,43 @@ for (const transport of ['websocket', 'http'] as const) {
       expect([...alice.topic(topic).values('location').keys()]).toEqual(['driver-2']);
     });
 
+    it('uses one typed chat room for messages, UID read state, typing and recovery', async () => {
+      const definition = defineTopic<{ message: { text: string }; read: { messageUid: string }; typing: { typing: boolean } }>()('example-chat/{room}', {
+        events: { message: 'stream', read: { delivery: 'kv', keyIsPublisher: true, ttlMs: 86_400_000 }, typing: { delivery: 'signal', ttlMs: 3_000 } },
+        presence: true,
+      });
+      const roomId = uniq();
+      const topic = definition.topic({ room: roomId });
+      const aliceId = `alice:${uniq()}`, bobId = `bob:${uniq()}`;
+      const cap: NonNullable<NonNullable<Parameters<typeof mintToken>[1]>['cap']> = [{ topic, ops: ['subscribe', 'publish', 'set', 'history', 'signal', 'presence'] }];
+      const alice = await open(aliceId, { ...opts, token: () => mintToken(aliceId, { cap }) });
+      const bob = await open(bobId, { ...opts, token: () => mintToken(bobId, { cap }) });
+      const aRoom = definition.open(alice, { room: roomId });
+      const bRoom = definition.open(bob, { room: roomId });
+      const presence = alice.topic(`$presence/${topic}`);
+      await aRoom.subscribe({ from: { last: 50 } }).ready;
+      await bRoom.subscribe().ready;
+      await presence.subscribe({ from: 'oldest' }).ready;
+      const receipt = await aRoom.publish('message', { text: 'hello' });
+      expect(receipt.uid).toBeTruthy();
+      await until(() => bRoom.messages.getSnapshot().some(m => m.uid === receipt.uid), 8_000, 'stream message');
+      await bRoom.publish('read', { messageUid: receipt.uid! });
+      await until(() => (aRoom.values('read').get(bobId)?.data as { messageUid?: string } | undefined)?.messageUid === receipt.uid, 8_000, 'read position');
+      await bRoom.publish('typing', { typing: true });
+      await until(() => aRoom.values('typing').has(bobId), 8_000, 'typing signal');
+      await until(() => !aRoom.values('typing').has(bobId), 8_000, 'typing expiry');
+      expect(aRoom.messages.getSnapshot().map(m => m.name)).toEqual(['message']);
+      const present = () => [...presence.values().values()].some(m => (m.data as { identity?: string } | undefined)?.identity === bobId);
+      if (transport === 'websocket') await until(present, 8_000, 'room presence');
+      else expect(present()).toBe(false);
+      await bob.close();
+      const reopened = await open(bobId, { ...opts, token: () => mintToken(bobId, { cap }) });
+      const replay = definition.open(reopened, { room: roomId });
+      await replay.subscribe({ from: 'oldest' }).ready;
+      await until(() => replay.messages.getSnapshot().some(m => m.uid === receipt.uid) && replay.values('read').has(bobId), 8_000, 'reopened room history and state');
+      expect(replay.values('typing').has(bobId)).toBe(false);
+    }, 45_000);
+
     it('reports Forbidden for topics without a rule or right', async () => {
       const alice = await open('alice', opts);
       await expect(alice.topic(`other/${uniq()}`).publish('message', 'x')).rejects.toMatchObject({ code: Code.Forbidden, local: false });
@@ -170,7 +209,7 @@ for (const transport of ['websocket', 'http'] as const) {
       expect(got).toEqual(['kept']);
     });
 
-    it('carries messages, read receipts and typing in one room (rooms/* in the seeds)', async () => {
+    it('carries messages, read receipts and typing in one room (rooms/* fixture)', async () => {
       const topic = `rooms/${uniq()}`;
       const alice = await open('alice', opts);
       const room = alice.topic(topic);
@@ -185,24 +224,25 @@ for (const transport of ['websocket', 'http'] as const) {
       const bob = await open('bob', opts);
       const msg = await bob.topic(topic).publish('message', { text: 'hi' });
       const read = await bob.topic(topic).publish('read', { upTo: msg.uid }, { delivery: 'kv' });
-      await bob.topic(topic).publish('typing', { on: true }, { delivery: 'signal' });
+      await bob.topic(topic).publish('typing', { on: true }, { delivery: 'signal', ttlMs: 10_000 });
       expect(msg.uid).toMatch(/^[0-9a-f]{32}$/);
       expect(msg.cursor!.seq).toBe(1n);
       expect(read.cursor).toBeUndefined();
       expect(read.uid).toMatch(/^[0-9a-f]{32}$/);
 
-      await until(() => all.length === 3, 8_000, 'message, receipt and signal');
-      expect(all.map((m) => [m.name, m.delivery, m.publisher])).toEqual([
+      await until(() => all.some((m) => m.name === 'message') && room.values('read').has('bob') && room.values('typing').has('bob'), 8_000, 'message, receipt and signal');
+      // Only the stream promises an order; a state poll may coalesce values or deliver them separately.
+      expect(all.map((m) => [m.name, m.delivery, m.publisher])).toEqual(expect.arrayContaining([
         ['message', 'stream', 'bob'],
         ['read', 'kv', 'bob'],
         ['typing', 'signal', 'bob'],
-      ]);
+      ]));
       expect(room.values('read').get('bob')!.data).toEqual({ upTo: msg.uid });
       expect(room.values('typing').get('bob')!.data).toEqual({ on: true });
 
       // A later receipt arrives as a change, over long-poll too.
       await bob.topic(topic).publish('read', { upTo: 'later' }, { delivery: 'kv' });
-      await until(() => (room.values('read').get('bob')?.data as { upTo: string }).upTo === 'later', 8_000, 'second receipt');
+      await until(() => (room.values('read').get('bob')?.data as { upTo: string } | undefined)?.upTo === 'later', 8_000, 'second receipt');
 
       // The inbox asked for stream events only.
       await new Promise((r) => setTimeout(r, 300));
@@ -211,9 +251,216 @@ for (const transport of ['websocket', 'http'] as const) {
       // The rule fixes each event's type, and read receipts belong to their publisher.
       await expect(bob.topic(topic).publish('typing', { on: true }, { delivery: 'stream' })).rejects.toMatchObject({ code: Code.ClassMismatch });
       await expect(alice.topic(topic).publish('read', { upTo: 'x' }, { delivery: 'kv', key: 'bob' })).rejects.toMatchObject({ code: Code.Forbidden });
-    });
+    }, 20_000);
+
+    it.each(['stream', 'kv'] as const)('recovers existing state when a %s subscription widens', async (initial) => {
+      const topic = `rooms/${uniq()}`;
+      const bob = await open('bob', opts);
+      const pub = bob.topic(topic);
+      await pub.publish('read', 'already present', { delivery: 'kv' });
+      await pub.publish('typing', 'already typing', { delivery: 'signal', ttlMs: 30_000 });
+      const alice = await open('alice', opts);
+      const room = alice.topic(topic);
+      const seen: string[] = [];
+      await room.subscribe((m) => { if (m.delivery === 'stream') seen.push(m.id); }, { types: [initial] }).ready;
+      const first = await pub.publish('message', 'first');
+      if (initial === 'stream') await until(() => seen.length === 1, 8_000, 'first stream event');
+      else await until(() => room.values('read').has('bob'), 8_000, 'initial KV snapshot');
+      expect(room.values('typing').has('bob')).toBe(false);
+      const expanded = room.subscribe();
+      await expanded.ready;
+      await until(() => room.values('read').has('bob') && room.values('typing').has('bob'), 8_000, 'existing state after filter expansion');
+      expect(room.values('read').get('bob')?.data).toBe('already present');
+      expect(room.values('typing').get('bob')?.data).toBe('already typing');
+      const second = await pub.publish('message', 'second');
+      await until(() => room.messages.getSnapshot().some((m) => m.id === second.id), 8_000, 'stream continues');
+      if (initial === 'stream') expect(seen).toEqual([first.id, second.id]);
+      else expect(seen).toEqual([]);
+    }, 30_000);
+
+    it('delivers authorized backend notices to personal topics and rejects unauthorized writes', async () => {
+      const identity = `user:${uniq()}`;
+      const topic = `$user/${identity}`;
+      const alice = await open(identity, opts);
+      const messages: Message[] = [];
+      await alice.topic(topic).subscribe((m) => { messages.push(m); }).ready;
+      const serviceOptions = {
+        url: required('FOLKWAYS_TEST_HTTP_URL'),
+        segment: required('FOLKWAYS_TEST_SEGMENT_ID'),
+        signingKey: { kid: required('FOLKWAYS_TEST_KEY_ID'), privateKey: required('FOLKWAYS_TEST_PRIVATE_KEY').replace(/\\n/g, '\n') },
+        identity: 'backend',
+      };
+      const service = new Rest({ ...serviceOptions, capabilities: [{ topics: topic, ops: ['publish'] }] });
+      const receipt = await service.publish(topic, 'notice', 'paid');
+      await until(() => messages.some((m) => m.id === receipt.id), 8_000, 'personal notice');
+      expect(messages.find((m) => m.id === receipt.id)).toMatchObject({ name: 'notice', data: 'paid', publisher: 'backend' });
+      const denied = new Rest({ ...serviceOptions, capabilities: [{ topics: 'chat/>', ops: ['publish'] }] });
+      await expect(denied.publish(topic, 'notice', 'denied')).rejects.toMatchObject({ code: Code.Forbidden });
+    }, 20_000);
+
+    it('preserves stream ordering through state changes, reauthentication and snapshot recovery', async () => {
+      const topic = `rooms/${uniq()}`;
+      const alice = await open('alice', { ...opts, signalTtlMs: 50 });
+      const bob = await open('bob', opts);
+      const room = alice.topic(topic);
+      const publisher = bob.topic(topic);
+      const messages: Message[] = [];
+      const sub = room.subscribe((m) => { if (m.delivery === 'stream') messages.push(m); });
+      await sub.ready;
+      const a = await publisher.publish('message', 'first');
+      await until(() => messages.length === 1, 8_000, 'first stream event');
+      await publisher.publish('read', 'first', { delivery: 'kv' });
+      await until(() => room.values('read').get('bob')?.data === 'first', 8_000, 'read state');
+      await expect(publisher.publish('typing', 'on', { delivery: 'signal', ttlMs: 6_000 })).resolves.toBeUndefined();
+      const typing = room.values('typing');
+      await until(() => typing.has('bob'), 8_000, 'signal visible');
+      await new Promise((r) => setTimeout(r, 150));
+      expect(typing.has('bob')).toBe(true); // exceeds the legacy 50 ms fallback
+      await alice.updateToken(mintToken('alice', { ttlSecs: 900 }));
+      await publisher.publish('read', null, { delivery: 'kv', remove: true });
+      await until(() => !room.values('read').has('bob'), 8_000, 'tombstone');
+      const b = await publisher.publish('message', 'second');
+      expect(b.cursor).toEqual({ epoch: a.cursor!.epoch, seq: a.cursor!.seq + 1n });
+      await until(() => messages.length === 2, 8_000, 'second stream event');
+      expect(messages.map((m) => m.id)).toEqual([a.id, b.id]);
+      await until(() => !typing.has('bob'), 8_000, 'signal expiry');
+      // A new subscriber must replay only the stream after the requested cursor
+      // and see an empty current-state snapshot.
+      const fresh = await open('carol', opts);
+      const replay: Message[] = [];
+      const snapshots: Message[][] = [];
+      const freshSub = fresh.topic(topic).subscribe((m) => { if (m.delivery === 'stream') replay.push(m); }, { from: { after: a.cursor! } });
+      freshSub.on('snapshot', (events) => snapshots.push(events));
+      await freshSub.ready;
+      await until(() => replay.length === 1 && snapshots.length >= 1, 8_000, 'replay and empty state snapshot');
+      expect(replay.map((m) => m.id)).toEqual([b.id]);
+      expect(snapshots[0]).toEqual([]);
+      expect(fresh.topic(topic).values().size).toBe(0);
+    }, 45_000);
   });
 }
+
+live('topic membership', () => {
+  it('adds, narrows, removes and clears access with service credentials', async () => {
+    const topic = `private/${uniq()}`;
+    const identity = `member:${uniq()}`;
+    const options = {
+      url: required('FOLKWAYS_TEST_HTTP_URL'),
+      segment: required('FOLKWAYS_TEST_SEGMENT_ID'),
+      signingKey: { kid: required('FOLKWAYS_TEST_KEY_ID'), privateKey: required('FOLKWAYS_TEST_PRIVATE_KEY').replace(/\\n/g, '\n') },
+    };
+    const backend = new Rest({ ...options, capabilities: [{ topics: topic, ops: ['publish'] }] });
+    const denied = new Rest({ ...options, capabilities: [{ topics: topic, ops: ['subscribe'] }] });
+    try {
+      await expect(denied.members.list(topic)).rejects.toMatchObject({ code: Code.Forbidden });
+      await backend.members.add(topic, [identity], ['subscribe', 'publish']);
+      expect(await backend.members.list(topic)).toEqual({ topic, members: [{ identity, ops: ['subscribe', 'publish'] }] });
+      const member = await open(identity, { transports: ['websocket'] });
+      const room = member.topic(topic);
+      const sub = room.subscribe();
+      await sub.ready;
+      await room.publish('message', 'allowed');
+      await backend.members.set(topic, identity, ['subscribe']);
+      await expect(room.publish('message', 'denied')).rejects.toMatchObject({ code: Code.Forbidden });
+      expect((await backend.members.list(topic)).members).toEqual([{ identity, ops: ['subscribe'] }]);
+      await backend.members.remove(topic, [identity]);
+      expect((await backend.members.list(topic)).members).toEqual([]);
+      await expect(room.publish('message', 'removed')).rejects.toMatchObject({ code: Code.Forbidden });
+      await backend.members.add(topic, [identity], ['subscribe']);
+      await backend.members.clear(topic);
+      expect((await backend.members.list(topic)).members).toEqual([]);
+    } finally {
+      await backend.members.clear(topic);
+    }
+  }, 30_000);
+});
+
+live('direct message rooms', () => {
+  it('opens one room, delivers invites to online and offline members, and preserves restrictions on reopen', async () => {
+    const aliceId = `alice:${uniq()}`;
+    const bobId = `bob:${uniq()}`;
+    const options = {
+      url: required('FOLKWAYS_TEST_HTTP_URL'),
+      segment: required('FOLKWAYS_TEST_SEGMENT_ID'),
+      signingKey: { kid: required('FOLKWAYS_TEST_KEY_ID'), privateKey: required('FOLKWAYS_TEST_PRIVATE_KEY').replace(/\\n/g, '\n') },
+    };
+    const backend = new Rest({ ...options, capabilities: [{ topics: 'dm/>', ops: ['publish'] }, { topics: '$user/>', ops: ['publish'] }] });
+    const denied = new Rest({ ...options, capabilities: [{ topics: 'dm/>', ops: ['publish'] }, { topics: `$user/${aliceId}`, ops: ['publish'] }] });
+    const alice = await open(aliceId, { transports: ['websocket'] });
+    const invites: Message[] = [];
+    await alice.topic(`$user/${aliceId}`).subscribe((m) => { invites.push(m); }).ready;
+    const data = { startedBy: aliceId };
+    await expect(denied.dm.open([aliceId, bobId], { data })).rejects.toMatchObject({ code: Code.Forbidden });
+    const room = await backend.dm.open([bobId, aliceId, aliceId], { data });
+    try {
+      expect(room.members).toEqual([aliceId, bobId].sort());
+      expect(room.invites.every((i) => !i.duplicate)).toBe(true);
+      await until(() => invites.length === 1, 8_000, 'online invitation');
+      expect(invites[0]).toMatchObject({ name: 'invite', data: { type: 'dm', topic: room.topic, members: room.members, data } });
+      const bob = await open(bobId, { transports: ['http'] });
+      const replayed: Message[] = [];
+      await bob.topic(`$user/${bobId}`).subscribe((m) => { replayed.push(m); }, { from: 'oldest' }).ready;
+      await until(() => replayed.length === 1, 8_000, 'offline invitation replay');
+      expect(replayed[0]).toMatchObject({ name: 'invite', data: { type: 'dm', topic: room.topic, members: room.members, data } });
+      await backend.members.set(room.topic, bobId, ['subscribe']);
+      const again = await backend.dm.open([aliceId, bobId], { data });
+      expect(again.topic).toBe(room.topic);
+      expect(again.invites.every((i) => i.duplicate)).toBe(true);
+      expect((await backend.members.list(room.topic)).members.find((m) => m.identity === bobId)?.ops).toEqual(['subscribe']);
+      const changed = await backend.dm.open([aliceId, bobId], { data: { ...data, subject: 'New subject' } });
+      expect(changed.topic).toBe(room.topic);
+      expect(changed.invites.every((i) => !i.duplicate)).toBe(true);
+      await until(() => invites.length === 2 && replayed.length === 2, 8_000, 'new invitation content');
+    } finally {
+      await backend.members.clear(room.topic);
+    }
+  }, 40_000);
+});
+
+live('kick and token revocation', () => {
+  it('disconnects a kicked identity without revoking its token, then revokes it across both transports', async () => {
+    const identity = `admin-test:${uniq()}`;
+    const topic = `chat/${uniq()}`;
+    const options = {
+      url: required('FOLKWAYS_TEST_HTTP_URL'),
+      segment: required('FOLKWAYS_TEST_SEGMENT_ID'),
+      signingKey: { kid: required('FOLKWAYS_TEST_KEY_ID'), privateKey: required('FOLKWAYS_TEST_PRIVATE_KEY').replace(/\\n/g, '\n') },
+    };
+    const backend = new Rest({ ...options, capabilities: [{ topics: '$user/>', ops: ['publish'] }] });
+    const narrow = new Rest({ ...options, capabilities: [{ topics: `$user/${identity}`, ops: ['publish'] }] });
+    const issued = await backend.createToken({ identity, capabilities: [{ topics: topic, ops: ['publish', 'subscribe'] }] });
+    const other = await open(`other:${uniq()}`, { transports: ['websocket'] });
+    const first = await open(identity, { transports: ['websocket'], token: issued.token });
+    await expect(narrow.revoke(issued.jti)).rejects.toMatchObject({ code: Code.Forbidden });
+    await expect(narrow.kick(`unrelated:${uniq()}`)).rejects.toMatchObject({ code: Code.Forbidden });
+    await narrow.kick(identity);
+    await until(() => first.connection.state === 'failed', 8_000, 'kicked WebSocket');
+    expect(first.connection.error?.code).toBe(Code.AuthRevoked);
+    expect(other.connection.state).toBe('connected');
+    await expect(first.connect()).rejects.toMatchObject({ code: Code.AuthRevoked });
+    // A kick does not revoke the JWT, even though the original SDK instance
+    // treats AuthRevoked as terminal and requires an explicit new credential.
+    const second = await open(identity, { transports: ['websocket'], token: issued.token });
+    await backend.revoke(issued.jti);
+    await until(() => second.connection.state === 'failed', 8_000, 'revoked WebSocket');
+    expect(second.connection.error?.code).toBe(Code.AuthRevoked);
+    for (const transport of ['websocket', 'http'] as const) {
+      const refused = new Realtime({
+        endpoints: { websocket: required('FOLKWAYS_TEST_WS_URL'), http: required('FOLKWAYS_TEST_HTTP_URL') },
+        transports: [transport],
+        token: issued.token,
+        connectTimeoutMs: 5_000,
+      });
+      clients.push(refused);
+      await expect(refused.connect()).rejects.toMatchObject({ code: Code.AuthRevoked });
+    }
+    const replacement = await backend.createToken({ identity, capabilities: [{ topics: topic, ops: ['publish'] }] });
+    await second.updateToken(replacement.token);
+    await second.connect();
+    await second.topic(topic).publish('message', 'fresh credential');
+    expect(other.connection.state).toBe('connected');
+  }, 40_000);
+});
 
 live('ephemeral signals', () => {
   it('delivers signals and keeps the latest per sender', async () => {
@@ -226,7 +473,7 @@ live('ephemeral signals', () => {
     void bob.topic(topic).publish('typing', { typing: true }, { delivery: 'signal' });
     await until(() => alice.topic(topic).values('typing').get('bob'), 8_000, 'signal');
     expect(alice.topic(topic).values('typing').get('bob')!.data).toEqual({ typing: true });
-    // publish() on an Ephemeral topic still gets a receipt.
+    // A signal resolves without a receipt.
     await expect(bob.topic(topic).publish('typing', { typing: false }, { delivery: 'signal' })).resolves.toBeUndefined();
   });
 });

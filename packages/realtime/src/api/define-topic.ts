@@ -1,6 +1,7 @@
 import { Code } from '../shared/codes';
 import { RealtimeError } from '../shared/errors';
 import { topicError } from '../shared/topic';
+import { eventNameError } from '../shared/event-name';
 import type { Realtime } from './realtime';
 import type { Topic } from './topic';
 import { validTtlMs } from './ttl';
@@ -30,13 +31,16 @@ export interface TopicDefinitionSpec<E extends EventMap, D extends EventDefiniti
 export interface TopicRule {
   readonly pattern: string;
   readonly types: readonly Delivery[];
-  readonly events: Readonly<Record<string, Delivery>>;
+  readonly events: Readonly<Record<string, {
+    readonly delivery: Delivery;
+    /** KV key must equal the publisher. */
+    readonly key_is_publisher?: boolean;
+    /** KV or signal lifetime in milliseconds; zero means until replaced. */
+    readonly ttl_ms?: number;
+  }>>;
+  readonly strict_events: true;
   readonly access: 'token' | 'members';
   readonly presence: boolean;
-  /** kv events whose key must equal the publisher. */
-  readonly keyIsPublisher: readonly string[];
-  /** Default lifetime of each KV or signal event; zero means until replaced. */
-  readonly ttlMs: Readonly<Record<string, number>>;
 }
 
 /** The `{name}` placeholders of a pattern, as a union of names. */
@@ -92,22 +96,26 @@ export function defineTopic<E extends EventMap, P extends string>(
 
 function build<E extends EventMap, P extends string>(pattern: P, spec: TopicDefinitionSpec<E>): TopicDefinition<E, P> {
   if (typeof pattern !== 'string' || pattern.length === 0) throw invalid('defineTopic needs a pattern such as "chat/{room}"');
-  if (!spec || typeof spec.events !== 'object' || Object.keys(spec.events).length === 0) throw invalid('defineTopic needs at least one event');
+  if (!spec || !spec.events || typeof spec.events !== 'object' || Array.isArray(spec.events) || Object.keys(spec.events).length === 0) throw invalid('defineTopic needs at least one event');
   const params = [...pattern.matchAll(/\{([^}/]+)\}/g)].map((m) => m[1]!);
   const rulePattern = pattern.replace(/\{[^}/]+\}/g, '*');
   const probe = topicError(rulePattern.replace(/\*/g, 'x'));
   if (probe) throw invalid(`pattern "${pattern}": ${probe}`);
 
-  const events = {} as Record<string, { delivery: Delivery; keyIsPublisher: boolean; ttlMs?: number }>;
+  const events: Record<string, { delivery: Delivery; keyIsPublisher: boolean; ttlMs?: number }> = Object.create(null);
   for (const [name, def] of Object.entries(spec.events as Record<string, EventDefinition>)) {
+    const nameError = eventNameError(name);
+    if (nameError) throw invalid(`event "${name}": ${nameError}`);
     const d = typeof def === 'string' ? { delivery: def } : def;
+    if (!d || typeof d !== 'object' || Array.isArray(d)) throw invalid(`event "${name}": expected a delivery type or options`);
+    if (d.keyIsPublisher !== undefined && typeof d.keyIsPublisher !== 'boolean') throw invalid(`event "${name}": keyIsPublisher must be a boolean`);
     if (!['stream', 'kv', 'signal'].includes(d.delivery)) throw invalid(`event "${name}": unknown delivery "${String(d.delivery)}"`);
     if (d.keyIsPublisher && d.delivery !== 'kv') throw invalid(`event "${name}": keyIsPublisher applies to kv events only`);
     if (d.ttlMs !== undefined) {
       if (d.delivery === 'stream') throw invalid(`event "${name}": ttlMs applies to kv and signal events only`);
       if (!validTtlMs(d.ttlMs)) throw invalid(`event "${name}": ttlMs must be an integer between 0 and 4294967295`);
     }
-    events[name] = { delivery: d.delivery, keyIsPublisher: d.keyIsPublisher ?? false, ttlMs: d.ttlMs };
+    events[name] = Object.freeze({ delivery: d.delivery, keyIsPublisher: d.keyIsPublisher ?? false, ttlMs: d.ttlMs });
   }
   Object.freeze(events);
 
@@ -135,22 +143,18 @@ function build<E extends EventMap, P extends string>(pattern: P, spec: TopicDefi
       return t as Topic<E>;
     },
     rule(): TopicRule {
-      const map: Record<string, Delivery> = {};
-      const ttl: Record<string, number> = {};
-      for (const [n, d] of Object.entries(events)) {
-        map[n] = d.delivery;
-        if (d.ttlMs !== undefined) ttl[n] = d.ttlMs;
-      }
+      const map = Object.fromEntries(Object.entries(events).map(([name, d]) => [name, Object.freeze({
+        delivery: d.delivery,
+        ...(d.keyIsPublisher ? { key_is_publisher: true } : {}),
+        ...(d.ttlMs !== undefined ? { ttl_ms: d.ttlMs } : {}),
+      })]));
       return Object.freeze({
         pattern: rulePattern,
-        types: [...new Set(Object.values(map))].sort() as Delivery[],
-        events: map,
+        types: Object.freeze([...new Set(Object.values(events).map(d => d.delivery))].sort()),
+        events: Object.freeze(map),
+        strict_events: true,
         access: spec.access ?? 'token',
         presence: spec.presence ?? false,
-        keyIsPublisher: Object.entries(events)
-          .filter(([, d]) => d.keyIsPublisher)
-          .map(([n]) => n),
-        ttlMs: ttl,
       });
     },
     memberOps(): Op[] {

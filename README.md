@@ -74,8 +74,9 @@ void room.publish('typing', { on: true }, { delivery: 'signal', ttlMs: 3_000 });
 ```
 
 `room.messages` exposes the stream message view; `room.values('read')` and `room.values('typing')` expose current state.
-In mixed-type topics, only stream events receive stream sequence numbers. Use the event's `uid` for lasting references,
-such as read receipts, rather than its cursor. Signal events have no UID.
+In mixed-type topics, only stream events receive stream sequence numbers. Single-type KV and signal topics can also carry sequence positions. Use the event's `uid` for lasting references such as read receipts, rather than its cursor or display `id`. Signal events have no UID; their unnumbered IDs are best-effort display keys, not durable identifiers.
+
+Event names must contain 1–64 UTF-8 bytes. `defineTopic().rule()` exports a JSON-ready rule with event-local `delivery`, `key_is_publisher` and `ttl_ms` options and `strict_events: true`. Paste the result into the dashboard's topic-rule editor; there are no separate event-option maps.
 
 Read more in [Topics and events](https://docs.folkways.io/docs/js-sdk/topics-and-events).
 
@@ -84,10 +85,45 @@ Read more in [Topics and events](https://docs.folkways.io/docs/js-sdk/topics-and
 - **Acknowledgements:** stream and KV publishes return a receipt. `accepted` means the node accepted the event, not that it has committed it to durable storage. When disk-backed stream storage is enabled, a crash may still lose recently accepted events.
 - **Replay and retention:** stream history is bounded by the topic's retention limit and a maximum of 24 hours. Disk-backed history can survive a restart when enabled and intact; in-memory history cannot. The SDK reports a gap when the requested history is no longer available. Store business-critical records in your own durable system.
 - **Idempotency:** retries reuse the same key. The node remembers keys for up to 10 minutes, with at most 10,000 entries per topic, scoped to the publisher and topic. Retries outside that window, or after the scope is lost, may apply again. A publish timeout does not establish that the event failed to reach the node.
-- **Current state:** KV and signals are held in memory on the node. Subscribers receive current values, not a history of every intermediate update. KV deletions and expiry are represented by tombstones; signals expire silently. Signal lifetime defaults to five seconds unless configured by a rule or overridden by a positive publish `ttlMs`. The SDK's local signal view uses its independent `signalTtlMs` approximation; it does not know the exact service-side expiry.
+- **Current state:** KV and signals are held in memory on the node. Subscribers receive current values, not a history of every intermediate update. KV deletions and expiry are represented by tombstones; signals expire silently. Signal lifetime defaults to five seconds unless configured by a rule or overridden by a positive publish `ttlMs`. When expiry metadata is available, the SDK estimates the remaining lifetime from the service's packet clock and does not renew a signal on repeated snapshots. Queue, network and runtime scheduling delays may affect local display time. Older services without expiry metadata use the `signalTtlMs` fallback (five seconds by default).
 - **Reconnect:** the SDK resubscribes rather than restoring a server session. Stream replay is limited to retained history; applications should handle gaps and make durable side effects idempotent. Offline signals are dropped rather than queued or retried.
 
 See [Publishing](https://docs.folkways.io/docs/js-sdk/publishing), [Subscribing](https://docs.folkways.io/docs/js-sdk/subscribing) and [Current limitations](https://docs.folkways.io/docs/js-sdk/limitations).
+
+## Personal topics
+
+A backend using `@folkwaysio/realtime/server` can send a stream event to `$user/{identity}` with `Rest.publish()`. The identity must be a single valid topic level (for example `user:42`). Grant the service token `publish` on the intended personal topic or a deliberately scoped pattern such as `$user/>`. The service enforces authorization; allowing the topic syntax in the SDK does not grant rights. Online and presence topics remain unavailable for backend publishing through this API.
+
+## Topic membership
+
+Use the backend SDK to manage a topic configured with `access: members`. With a `Rest` instance named `folkways` and a service token granting `publish` on the topic, call:
+
+- `await folkways.members.add('private/room', ['alice', 'bob'], ['subscribe', 'publish'])`
+- `await folkways.members.set('private/room', 'bob', ['subscribe'])`
+- `await folkways.members.list('private/room')` returns the topic and its members with their operations.
+- `await folkways.members.remove('private/room', ['bob'])`
+- `await folkways.members.clear('private/room')` removes every member.
+
+Both add and set replace the specified identities' operations, rather than merging them. Membership does not override token or topic-rule restrictions. Changes are acknowledged after storage; if a mutation fails with Unavailable or times out, removals may already apply and grants may not. Inspect the current list or explicitly retry the intended change; the SDK does not automatically repeat JSON mutations.
+
+## Direct and group messages
+
+Open a room from your trusted backend with `await folkways.dm.open(['alice', 'bob'], { data: { startedBy: 'alice' } })`. The service returns the room topic, sorted distinct members and one invitation receipt per member. It sends an `invite` stream event on each member's personal topic. Clients can subscribe to their own personal topic and then to the returned room, subject to token and rule permissions.
+
+Use a rule matching `dm/>` (or your custom prefix). The backend needs `publish` on both the room and every member's personal topic. Rooms are stable for the same segment, prefix and member set; room names are not access credentials. A members-only rule adds missing members without resetting existing permissions. Two to fifty distinct members are supported.
+
+Repeat the same request after a partial failure to recover unsent invitations within the service's bounded deduplication window (up to ten minutes, subject to retained idempotency state). Each invitation has a `duplicate` flag. Changing the invitation data can send new invitations to the same room. The SDK does not automatically repeat a failed request.
+
+## Disconnecting clients and revoking tokens
+
+The backend SDK exposes `issued.jti` on the result of `createToken()`. Keep the token identifier and expiration in your application's authorized session records when you need to revoke a specific credential later; there is no need to store the raw JWT for that purpose.
+
+- `await folkways.kick('user:42')` disconnects the identity's WebSockets. It needs service `publish` permission on `$user/user:42`. The token itself remains valid.
+- `await folkways.revoke(issued.jti)` invalidates the specific token and disconnects WebSockets using it. It needs service `publish` permission on all personal topics (`$user/>` or a broader permission).
+
+These operations return no value on success and do not confirm that an identity or token existed. They apply to the receiving service instance; revocations are in memory, do not survive a restart, and must not be treated as a global ban. To prevent future access, stop issuing credentials for the identity and revoke its outstanding token identifiers.
+
+The client treats `AuthRevoked` as terminal, including after a kick; provide an explicitly authorized fresh token before reconnecting. The backend does not automatically retry kick or revoke requests. Revocation of its own credential stops authenticated operations on that SDK instance.
 
 ## Entry points
 

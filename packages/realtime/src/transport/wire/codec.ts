@@ -13,6 +13,7 @@ import * as flatbuffers from 'flatbuffers';
 import { Code } from '../../shared/codes';
 import type { Cursor } from '../../shared/cursor';
 import { RealtimeError } from '../../shared/errors';
+import { signalDeadlineFromPacket, signalNow } from '../../shared/signal-clock';
 import * as fb from './generated/folkways/protocol/v1.js';
 import {
   type ClientFrame,
@@ -178,7 +179,7 @@ function checkLen(len: number, minElemBytes: number, total: number): number {
 
 const cursorOf = (c: fb.Cursor | null): Cursor | undefined => (c ? { epoch: c.epoch(), seq: c.seq() } : undefined);
 
-function decodeEvent(e: fb.Event | null, total: number): WireEvent {
+function decodeEvent(e: fb.Event | null, total: number, serverTime: bigint, receivedAt: number): WireEvent {
   if (!e) throw bad('missing event');
   const hn = checkLen(e.headersLength(), 4, total);
   const headers: Header[] = [];
@@ -194,6 +195,7 @@ function decodeEvent(e: fb.Event | null, total: number): WireEvent {
   const uidHi = uid?.hi() ?? 0n;
   const uidLo = uid?.lo() ?? 0n;
   const version = e.version();
+  const expiry = e.expiresAtMs();
   return {
     topicId: e.topicId(),
     epoch: e.epoch(),
@@ -210,6 +212,7 @@ function decodeEvent(e: fb.Event | null, total: number): WireEvent {
     name: name === null || name === '' ? undefined : name,
     uid: uidHi === 0n && uidLo === 0n ? undefined : { hi: uidHi, lo: uidLo },
     version: version === 0n ? undefined : version,
+    ...(expiry === 0n ? {} : { expiresAtMs: expiry, signalDeadline: signalDeadlineFromPacket(expiry, serverTime, receivedAt) }),
   };
 }
 
@@ -234,10 +237,10 @@ function decodeCapabilities(w: fb.Welcome, total: number): WireCapability[] {
   return out;
 }
 
-function decodeEvents(len: number, get: (i: number) => fb.Event | null, total: number): WireEvent[] {
+function decodeEvents(len: number, get: (i: number) => fb.Event | null, total: number, serverTime: bigint, receivedAt: number): WireEvent[] {
   const n = checkLen(len, 4, total);
   const out: WireEvent[] = new Array(n);
-  for (let i = 0; i < n; i++) out[i] = decodeEvent(get(i), total);
+  for (let i = 0; i < n; i++) out[i] = decodeEvent(get(i), total, serverTime, receivedAt);
   return out;
 }
 
@@ -262,7 +265,7 @@ function decodeLimits(l: fb.Limits | null): Limits {
   };
 }
 
-function decodeServerBody(f: fb.ServerFrame, total: number): ServerMsg {
+function decodeServerBody(f: fb.ServerFrame, total: number, serverTime: bigint, receivedAt: number): ServerMsg {
   const B = fb.ServerBody;
   const type = f.bodyType();
   switch (type) {
@@ -378,7 +381,7 @@ function decodeServerBody(f: fb.ServerFrame, total: number): ServerMsg {
         topicId: b.topicId(),
         delivery: b.delivery(),
         replayed: b.replayed(),
-        events: decodeEvents(b.eventsLength(), (i) => b.events(i), total),
+        events: decodeEvents(b.eventsLength(), (i) => b.events(i), total, serverTime, receivedAt),
       };
     }
     case B.Snapshot: {
@@ -390,7 +393,7 @@ function decodeServerBody(f: fb.ServerFrame, total: number): ServerMsg {
         chunk: b.chunk(),
         lastChunk: b.lastChunk(),
         fence: cursorOf(b.fence()),
-        events: decodeEvents(b.eventsLength(), (i) => b.events(i), total),
+        events: decodeEvents(b.eventsLength(), (i) => b.events(i), total, serverTime, receivedAt),
       };
     }
     case B.SubEnded: {
@@ -420,13 +423,15 @@ export function decodeServerPacket(bytes: Uint8Array, maxBytes = Number.POSITIVE
     const root = bb.readInt32(0);
     if (root < 8 || root >= bytes.length) throw bad('root offset out of bounds');
     const packet = fb.ServerPacket.getRootAsServerPacket(bb);
+    const serverTime = packet.serverTimeMs();
+    const receivedAt = serverTime === 0n ? 0 : signalNow();
     const n = checkLen(packet.framesLength(), 4, bytes.length);
     if (n < 1 || n > MAX_FRAMES_PER_PACKET) throw bad(`packet must hold 1..${MAX_FRAMES_PER_PACKET} frames`);
     const frames: ServerFrame[] = new Array(n);
     for (let i = 0; i < n; i++) {
       const f = packet.frames(i);
       if (!f) throw bad('missing frame');
-      frames[i] = { corr: f.corr(), msg: decodeServerBody(f, bytes.length) };
+      frames[i] = { corr: f.corr(), msg: decodeServerBody(f, bytes.length, serverTime, receivedAt) };
     }
     return frames;
   } catch (e) {

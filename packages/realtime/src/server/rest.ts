@@ -3,10 +3,15 @@ import { toReceipt } from '../api/topic';
 import type { ContentTypeName, Delivery, Permission, PublishReceipt } from '../api/types';
 import { Code } from '../shared/codes';
 import { RealtimeError } from '../shared/errors';
+import { eventNameError } from '../shared/event-name';
 import { parse128, random128 } from '../shared/random';
-import { assertTopic } from '../shared/topic';
+import { assertServerPublishTopic } from '../shared/topic';
 import { AckMode, type FetchLike, HttpTransport, type PublishBody, decodeServerPacket, encodeClientPacket } from '../transport';
 import { type Signer, type SigningKey, importSigner, signJwt } from './sign';
+import { createMembersApi, type MembersApi } from './members';
+import { requestJson } from './json';
+import { createDmApi, type DmApi } from './dm';
+import { validIdentity } from './identity';
 
 export interface RestOptions {
   /** Base URL of the node's HTTP port, e.g. `https://realtime.example.com`. */
@@ -17,7 +22,7 @@ export interface RestOptions {
   signingKey: SigningKey;
   /** Identity this server publishes as. Default `server`. */
   identity?: string;
-  /** Rights of this server's own token, used by `publish()`. Default: publish on every topic. */
+  /** Rights of this server's own token, used by publishing and service APIs. Default: publish on every topic. */
   capabilities?: readonly Permission[];
   /** fetch implementation, for runtimes without a global one. */
   fetch?: FetchLike;
@@ -38,6 +43,8 @@ export interface CreateTokenOptions {
 
 export interface IssuedToken {
   readonly token: string;
+  /** Unique token identifier (JWT jti), for explicit revocation before expiry. */
+  readonly jti: string;
   readonly expiresAt: number;
   readonly identity: string | null;
   readonly kind: string;
@@ -87,10 +94,14 @@ function isBrowser(): boolean {
  *
  */
 export class Rest {
+  /** Manage members of topics configured with access: members. */
+  readonly members: MembersApi;
+  /** Open direct or group message rooms and invite their members. */
+  readonly dm: DmApi;
   private readonly http: HttpTransport;
   private readonly base: string;
   private signer?: Promise<Signer>;
-  private own?: { token: string; expiresAt: number };
+  private own?: { token: string; jti: string; expiresAt: number };
   private ownInflight?: Promise<string>;
   private revoked?: RealtimeError;
 
@@ -115,6 +126,8 @@ export class Rest {
     }
     this.base = opts.url.replace(/\/+$/, '');
     this.http = new HttpTransport(opts.fetch);
+    this.members = createMembersApi((path, body, status, topic) => this.json(path, body, status, topic));
+    this.dm = createDmApi((path, body) => this.json(path, body, 200));
   }
 
   /** Signs a short-lived token for one identity, in process. */
@@ -139,6 +152,7 @@ export class Rest {
     const ttlMs = Math.min(Math.max(req.ttlMs ?? DEFAULT_TTL_MS, 1_000), MAX_TTL_MS);
     const now = Math.floor(Date.now() / 1000);
     const exp = now + Math.ceil(ttlMs / 1000);
+    const jti = crypto.randomUUID();
     const claims: Record<string, unknown> = {
       seg: this.opts.segment,
       ...(identity !== null ? { sub: identity } : {}),
@@ -146,16 +160,43 @@ export class Rest {
       cap: capabilities.map((c) => ({ topic: c.topics, ops: [...c.ops] })),
       iat: now,
       exp,
-      jti: crypto.randomUUID(),
+      jti,
     };
     const token = await signJwt(await this.signerFor(), claims);
-    return Object.freeze({ token, expiresAt: exp * 1000, identity, kind, capabilities: capabilities.map((c) => ({ topics: c.topics, ops: [...c.ops] })) });
+    return Object.freeze({ token, jti, expiresAt: exp * 1000, identity, kind, capabilities: capabilities.map((c) => ({ topics: c.topics, ops: [...c.ops] })) });
   }
 
-  /** Publishes over HTTP. A revoked service credential disables publishing on this instance; create a new instance explicitly to resume. Retries with the same key are deduplicated within the retained idempotency window. */
+  /**
+   * Disconnect this identity's WebSocket connections on the receiving service.
+   * Requires publish on its personal topic. Does not invalidate its tokens.
+   */
+  async kick(identity: string): Promise<void> {
+    if (!validIdentity(identity)) throw invalid('identity must be a non-anonymous topic level of at most 245 bytes');
+    await this.json('/v1/kick', { identity }, 204);
+  }
+
+  /**
+   * Revoke one JWT by its jti, not the token itself. Requires publish on all
+   * personal topics. Revocations are instance-local and do not survive restart.
+   */
+  async revoke(jti: string): Promise<void> {
+    if (typeof jti !== 'string' || jti.length === 0 || new TextEncoder().encode(jti).length > 256) {
+      throw invalid('jti must be 1 to 256 UTF-8 bytes');
+    }
+    await this.json('/v1/revoke', { jti }, 204);
+    // If this instance revoked its own cached service credential, do not
+    // silently mint another one when its normal refresh time arrives.
+    if (this.own?.jti === jti) {
+      this.revoked = new RealtimeError(Code.AuthRevoked, { message: 'service credential revoked' });
+      this.own = undefined;
+    }
+  }
+
+  /** Publishes over HTTP, including authorized personal topics (`$user/{identity}`). A revoked service credential disables authenticated requests on this instance; create a new instance explicitly to resume. Retries with the same key are deduplicated within the retained idempotency window. */
   async publish(topic: string, event: string, data: unknown, opts: RestPublishOptions = {}): Promise<PublishReceipt> {
-    assertTopic(topic);
-    if (typeof event !== 'string' || event.length === 0) throw new RealtimeError(Code.InvalidArgument, { message: 'event name must be a non-empty string', topic, local: true });
+    assertServerPublishTopic(topic);
+    const nameError = eventNameError(event);
+    if (nameError) throw new RealtimeError(Code.InvalidArgument, { message: nameError, topic, local: true });
     const delivery = opts.delivery ?? 'stream';
     if (delivery === 'signal') throw new RealtimeError(Code.InvalidArgument, { message: 'signals are for live clients; publish stream or kv events from a server', topic, local: true });
     const idempotencyKey = opts.idempotencyKey !== undefined ? parse128(opts.idempotencyKey) : random128();
@@ -195,6 +236,21 @@ export class Rest {
     throw new RealtimeError(Code.Unavailable, { message: `HTTP ${reply.status} without a receipt`, topic, retryAfterMs: reply.retryAfterMs });
   }
 
+  /** Service JSON operations share the same credential cache and revocation latch as publish. */
+  private async json(path: string, body: object, status: 200 | 204, topic?: string): Promise<unknown> {
+    const token = await this.ownToken();
+    try {
+      return await this.withTimeout((signal) => requestJson(this.opts.fetch, this.base, path, token, body, status, signal, topic));
+    } catch (err) {
+      if (err instanceof RealtimeError && err.code === Code.AuthRevoked) {
+        this.revoked = err;
+        this.own = undefined;
+      }
+      // No automatic retry: a failed response may follow a partially applied mutation.
+      throw err;
+    }
+  }
+
   private checkRevocation(frames: ReturnType<typeof decodeServerPacket>): void {
     for (const { msg } of frames) {
       if ((msg.type === 'close' || msg.type === 'opError') && msg.code === Code.AuthRevoked) {
@@ -213,7 +269,7 @@ export class Rest {
     this.ownInflight ??= this.createToken({ identity: this.opts.identity ?? 'server', kind: 'service', capabilities: this.opts.capabilities ?? SERVER_RIGHTS, ttlMs: MAX_TTL_MS })
       .then((t) => {
         if (this.revoked) throw this.revoked;
-        this.own = { token: t.token, expiresAt: t.expiresAt };
+        this.own = { token: t.token, jti: t.jti, expiresAt: t.expiresAt };
         return t.token;
       })
       .finally(() => {

@@ -1,23 +1,27 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from 'react';
-import type { Message, Realtime } from '@folkwaysio/realtime';
+import { defineTopic, type Message, type Realtime } from '@folkwaysio/realtime';
 import { nameOf, type SignIn } from './api';
 import { Avatar, Eyebrow, Wordmark } from './ui';
 
-// A topic rule has one class, so the room's messages (Durable) and its
-// signals (Ephemeral: typing, and who is here) live on two topics.
+// One room carries messages, read positions and typing signals.
 const ROOM = 'chat/lobby';
-const SIGNALS = 'typing/lobby';
-// When the `chat/>` rule has presence turned on, the node keeps one entry per
-// connection in the room here, keyed `identity#session`.
 const PRESENCE = `$presence/${ROOM}`;
-// Otherwise each connection says it is here with a signal this often. Signals
-// live 5 s, so someone who leaves drops off the list within a few seconds.
-const HERE_EVERY_MS = 2_000;
 const HISTORY = 50;
 const GROUP_MS = 5 * 60_000;
 
-type RoomEvents = { message: { text: string } };
-type SignalEvents = { typing: { typing: boolean }; here: { connections: number } };
+type RoomEvents = {
+  message: { text: string };
+  read: { messageUid: string };
+  typing: { typing: boolean };
+};
+const chatRoom = defineTopic<RoomEvents>()(ROOM, {
+  events: {
+    message: 'stream',
+    read: { delivery: 'kv', keyIsPublisher: true, ttlMs: 86_400_000 },
+    typing: { delivery: 'signal', ttlMs: 3_000 },
+  },
+  presence: true,
+});
 type PresenceEntry = { identity?: string; session?: string; since?: number };
 
 interface Person {
@@ -27,43 +31,27 @@ interface Person {
 
 const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-/**
- * One person per identity, however many connections they have: from the
- * node's presence entries (one per connection) and from `here` signals (one
- * per identity, carrying its connection count).
- */
-function people(presence: ReadonlyMap<string, Message>, here: ReadonlyMap<string, Message>): Person[] {
-  const byIdentity = new Map<string, Person>();
-  const add = (identity: string, connections: number) => {
-    const p = byIdentity.get(identity) ?? { identity, connections: 0 };
-    p.connections = Math.max(p.connections, connections);
-    byIdentity.set(identity, p);
-  };
+/** One person per identity, with a count of their live room connections. */
+function people(presence: ReadonlyMap<string, Message>): Person[] {
   const counts = new Map<string, number>();
   for (const m of presence.values()) {
     if (m.deleted) continue;
     const entry = (m.data ?? {}) as PresenceEntry;
     const identity = entry.identity ?? m.publisher;
     counts.set(identity, (counts.get(identity) ?? 0) + 1);
-    add(identity, counts.get(identity)!);
   }
-  for (const m of here.values()) {
-    const n = (m.data as { connections?: unknown } | undefined)?.connections;
-    add(m.publisher, typeof n === 'number' && n > 0 ? n : 1);
-  }
-  return [...byIdentity.values()];
+  return [...counts].map(([identity, connections]) => ({ identity, connections }));
 }
 
 export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; onSignOut: () => void }) {
-  const room = client.topic<RoomEvents>(ROOM);
-  const signals = client.topic<SignalEvents>(SIGNALS);
+  const room = chatRoom.open(client, {});
   const presenceTopic = client.topic(PRESENCE);
   // Every live connection of this identity, anywhere in the segment. Readable by its owner without any right.
   const onlineTopic = client.topic(`$online/${me.identity}`);
 
   const messages = useSyncExternalStore(room.messages.subscribe, room.messages.getSnapshot);
-  const typingValues = useSyncExternalStore(signals.values('typing').subscribe, signals.values('typing').getSnapshot);
-  const hereValues = useSyncExternalStore(signals.values('here').subscribe, signals.values('here').getSnapshot);
+  const typingValues = useSyncExternalStore(room.values('typing').subscribe, room.values('typing').getSnapshot);
+  const readValues = useSyncExternalStore(room.values('read').subscribe, room.values('read').getSnapshot);
   const presenceValues = useSyncExternalStore(presenceTopic.values().subscribe, presenceTopic.values().getSnapshot);
   const onlineValues = useSyncExternalStore(onlineTopic.values().subscribe, onlineTopic.values().getSnapshot);
   const { state, transport, error: connError } = useSyncExternalStore(client.connection.subscribe, client.connection.getSnapshot);
@@ -73,28 +61,30 @@ export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; 
   const [loaded, setLoaded] = useState(false);
   const [showPeople, setShowPeople] = useState(false);
   const lastSignal = useRef(0);
+  const lastRead = useRef<string | undefined>(undefined);
   const list = useRef<HTMLOListElement>(null);
   const stick = useRef(true);
 
   useEffect(() => {
     const sub = room.subscribe({ from: { last: HISTORY } });
+    let active = true;
     sub.on('error', (e) => setError(e.message));
-    const t = setTimeout(() => setLoaded(true), 600);
+    sub.on('ended', (e) => setError(e.message));
+    sub.on('gap', () => setError('Some earlier messages are no longer retained. Showing available history.'));
+    void sub.ready.then(() => { if (active) setLoaded(true); }, () => {});
     return () => {
-      clearTimeout(t);
+      active = false;
       void sub.unsubscribe();
     };
   }, [room]);
 
   useEffect(() => {
-    const subs = [signals.subscribe(), onlineTopic.subscribe({ from: 'oldest' })];
-    // Refused or empty when the segment has no presence for `chat/>`; the `here` signals cover that.
-    const presence = presenceTopic.subscribe({ from: 'oldest' });
-    presence.on('error', () => {});
+    const subs = [presenceTopic.subscribe({ from: 'oldest' }), onlineTopic.subscribe({ from: 'oldest' })];
+    for (const sub of subs) sub.on('error', (e) => setError(e.message));
     return () => {
-      for (const s of [...subs, presence]) void s.unsubscribe();
+      for (const sub of subs) void sub.unsubscribe();
     };
-  }, [signals, presenceTopic, onlineTopic]);
+  }, [presenceTopic, onlineTopic]);
 
   // Follow new messages while the list is scrolled to the bottom.
   useLayoutEffect(() => {
@@ -102,22 +92,35 @@ export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; 
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  const myConnections = Math.max(1, [...onlineValues.values()].filter((m) => !m.deleted).length);
-  const connectionsRef = useRef(myConnections);
-  connectionsRef.current = myConnections;
+  const myConnections = [...onlineValues.values()].filter((m) => !m.deleted).length;
 
-  // Say "I'm here" (with how many connections this identity has) while connected.
+  // Record the latest confirmed message in the open room, not proof that
+  // someone read its text. Use the UID instead of a cursor or local ID.
+  const latestUid = [...messages].reverse().find((m) => m.name === 'message' && m.status === 'sent' && !m.fromCache && m.uid)?.uid;
   useEffect(() => {
-    const beat = () => void signals.publish('here', { connections: connectionsRef.current }, { delivery: 'signal' });
-    beat();
-    const t = setInterval(beat, HERE_EVERY_MS);
-    return () => clearInterval(t);
-  }, [signals]);
+    if (!loaded || state !== 'connected' || !latestUid || lastRead.current === latestUid) return;
+    lastRead.current = latestUid;
+    void room.publish('read', { messageUid: latestUid }).catch((err: Error) => {
+      if (lastRead.current === latestUid) lastRead.current = undefined;
+      setError(err.message);
+    });
+  }, [room, loaded, state, latestUid]);
+
+  const readers = new Map<string, string[]>();
+  for (const m of readValues.values()) {
+    if (m.publisher === me.identity || m.deleted) continue;
+    const uid = (m.data as { messageUid?: unknown } | undefined)?.messageUid;
+    if (typeof uid !== 'string') continue;
+    const names = readers.get(uid) ?? [];
+    names.push(nameOf(m.publisher));
+    readers.set(uid, names);
+  }
 
   // You first, then everyone else by name.
+  const present = people(presenceValues);
   const inRoom = [
-    { identity: me.identity, connections: myConnections },
-    ...people(presenceValues, hereValues)
+    ...present.filter((p) => p.identity === me.identity),
+    ...present
       .filter((p) => p.identity !== me.identity)
       .sort((a, b) => nameOf(a.identity).localeCompare(nameOf(b.identity))),
   ];
@@ -126,7 +129,7 @@ export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; 
     .map((m) => nameOf(m.publisher));
 
   function signal(isTyping: boolean) {
-    void signals.publish('typing', { typing: isTyping }, { delivery: 'signal' });
+    void room.publish('typing', { typing: isTyping });
   }
 
   async function send(e?: FormEvent) {
@@ -146,7 +149,10 @@ export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; 
 
   function onType(value: string) {
     setDraft(value);
-    if (value && Date.now() - lastSignal.current > 2_000) {
+    if (!value) {
+      lastSignal.current = 0;
+      signal(false);
+    } else if (Date.now() - lastSignal.current > 1_000) {
       lastSignal.current = Date.now();
       signal(true);
     }
@@ -223,6 +229,7 @@ export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; 
                       </p>
                     )}
                     <p className="msg-text">{typeof text === 'string' ? text : JSON.stringify(m.data)}</p>
+                    {mine && m.uid && readers.has(m.uid) && <p className="msg-state">Read up to by {readers.get(m.uid)!.sort().join(', ')}</p>}
                     {m.status === 'pending' && <p className="msg-state">Sending…</p>}
                     {m.status === 'failed' && (
                       <p className="msg-state bad">
@@ -279,11 +286,11 @@ export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; 
         </section>
 
         <aside className={`people ${showPeople ? 'open' : ''}`} aria-label="People in the room">
-          <Eyebrow>In the room · {inRoom.length}</Eyebrow>
+          <Eyebrow>WebSocket presence · {inRoom.length}</Eyebrow>
           <ul className="people-list">
             {inRoom.map((p) => {
               const mine = p.identity === me.identity;
-              const connections = mine ? Math.max(p.connections, myConnections) : p.connections;
+              const connections = p.connections;
               return (
                 <li key={p.identity}>
                   <span className="presence-avatar">
@@ -310,9 +317,9 @@ export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; 
             </p>
             <p className="you-count">
               <span className="live-dot static" aria-hidden="true" />
-              {myConnections === 1 ? 'Connected in this tab only' : `Connected in ${myConnections} places`}
+              {myConnections === 0 ? 'No active WebSocket connections' : `${myConnections} active WebSocket ${myConnections === 1 ? 'connection' : 'connections'}`}
             </p>
-            <p className="note">Same name, same person: every tab or browser that signs in as {me.name} adds a connection.</p>
+            <p className="note">Only WebSocket connections appear in presence. HTTP clients can still exchange messages and state.</p>
           </div>
         </aside>
       </div>

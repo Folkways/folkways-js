@@ -68,6 +68,15 @@ const rest = (extra: Partial<ConstructorParameters<typeof Rest>[0]> = {}) =>
   new Rest({ url: 'http://localhost:9006', segment: SEG, signingKey: { kid: 'fixture-key', privateKey: DEV_KEY }, ...extra });
 
 describe('Folkways.Rest', () => {
+  it('rejects invalid UTF-8 event-name lengths before sending', async () => {
+    const fetch = vi.fn();
+    const api = rest({ fetch });
+    for (const name of ['', 'a'.repeat(65), 'é'.repeat(33), '😀'.repeat(17)]) {
+      await expect(api.publish('chat/lobby', name, 'x')).rejects.toMatchObject({ code: Code.InvalidArgument, local: true });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('signs tokens in process with an Ed25519 key, without calling the node', async () => {
     const key = await pair('EdDSA');
     const fetch = vi.fn();
@@ -85,6 +94,7 @@ describe('Folkways.Rest', () => {
     expect(claims.iat as number).toBeGreaterThanOrEqual(before);
     expect(t.expiresAt).toBe((claims.exp as number) * 1000);
     expect(claims.jti).toMatch(/^[0-9a-f-]{36}$/);
+    expect(t.jti).toBe(claims.jti);
   });
 
   it('signs with P-256 keys too', async () => {
@@ -109,6 +119,24 @@ describe('Folkways.Rest', () => {
     expect(claims.kind).toBe('anonymous');
     expect((claims.exp as number) - (claims.iat as number)).toBe(900);
     expect(t.identity).toBeNull();
+    expect(t.jti).toBe(claims.jti);
+  });
+
+  it('exposes a unique signed token identifier for every issued token', async () => {
+    const api = rest();
+    const issued = await Promise.all([
+      api.createToken({ identity: 'alice' }),
+      api.createToken({ identity: 'alice' }),
+      api.createToken({ kind: 'anonymous' }),
+      api.createToken({ kind: 'service', identity: 'backend' }),
+      api.createToken({ kind: 'agent', identity: 'agent:1' }),
+    ]);
+    expect(new Set(issued.map(t => t.jti)).size).toBe(issued.length);
+    for (const t of issued) {
+      const signed = decode(t.token);
+      expect(t.jti).toBe(signed.claims.jti);
+      expect(verify(null, signed.input, DEV.publicKey, signed.sig)).toBe(true);
+    }
   });
 
   it('refuses tokens the node would refuse', async () => {
@@ -150,6 +178,41 @@ describe('Folkways.Rest', () => {
     const { input, sig } = decode(tokens[0]!);
     expect(verify(null, input, DEV.publicKey, sig)).toBe(true);
     expect(decode(tokens[0]!).claims).toMatchObject({ seg: SEG, sub: 'billing', kind: 'service', cap: [{ topic: '>', ops: ['publish'] }] });
+  });
+
+  it('publishes to a personal topic with the configured service capability and returns the receipt', async () => {
+    const target = '$user/user:42';
+    const node = fakeNode((f, token) => {
+      expect(f.msg).toMatchObject({ type: 'publish', publish: { topic: { name: target }, name: 'notice', ack: AckMode.Accepted } });
+      const signed = decode(token);
+      expect(verify(null, signed.input, DEV.publicKey, signed.sig)).toBe(true);
+      expect(signed.claims).toMatchObject({ seg: SEG, sub: 'billing', kind: 'service', cap: [{ topic: target, ops: ['publish'] }] });
+      return { type: 'pubAck', topicId: 1n, level: AckMode.Accepted, cursor: { epoch: EPOCH, seq: 3n }, duplicate: false, serverTsMs: 9 };
+    });
+    const api = rest({ fetch: node.fetch, identity: 'billing', capabilities: [{ topics: target, ops: ['publish'] }] });
+    await expect(api.publish(target, 'notice', { text: 'paid' })).resolves.toMatchObject({ topic: target, delivery: 'stream', id: `${EPOCH}:3` });
+    expect(node.calls).toHaveLength(1);
+  });
+
+  it('rejects invalid personal topics and other reserved topics before sending', async () => {
+    const fetch = vi.fn();
+    const api = rest({ fetch });
+    for (const target of ['$user/', '$user/a/b', '$user/a b', '$user/é', '$user/*', '$user/>', '$user/' + 'a'.repeat(246), '$online/user:42', '$presence/chat/1', '$other/a']) {
+      await expect(api.publish(target, 'notice', 'x')).rejects.toMatchObject({ code: Code.InvalidTopic, local: true });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('preserves a service denial for personal topics without widening token rights or retrying', async () => {
+    const target = '$user/user:42';
+    const node = fakeNode((f, token) => {
+      expect(f.msg).toMatchObject({ type: 'publish', publish: { topic: { name: target } } });
+      expect(decode(token).claims.cap).toEqual([{ topic: 'chat/>', ops: ['publish'] }]);
+      return { type: 'opError', code: Code.Forbidden, message: 'not allowed', retryAfterMs: 0, topicId: 0n };
+    }, 403);
+    const api = rest({ fetch: node.fetch, capabilities: [{ topics: 'chat/>', ops: ['publish'] }] });
+    await expect(api.publish(target, 'notice', 'x')).rejects.toMatchObject({ code: Code.Forbidden, topic: target });
+    expect(node.calls).toHaveLength(1);
   });
 
   it('signs a new service token when the node refuses the cached one', async () => {

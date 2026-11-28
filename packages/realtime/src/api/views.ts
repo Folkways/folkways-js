@@ -1,5 +1,6 @@
 import { type Engine, type StoredValue, type TopicEntry, DeliveryClass } from '../engine';
 import type { RealtimeError } from '../shared/errors';
+import { signalNow, signalTimerDelay } from '../shared/signal-clock';
 import { Live } from './live';
 import { toMessage } from './message';
 import type { LiveView, Message, TopicMessage } from './types';
@@ -12,7 +13,7 @@ type Entry = TopicMessage & { readonly localId?: string; readonly ackedId?: stri
 /**
  * `topic.values(event)`: a ReadonlyMap of the current values that is also a
  * live view. kv values are keyed by key, signals by publisher (only those
- * younger than the signal TTL).
+ * whose estimated lifetime has not elapsed).
  */
 export class ValuesView implements ReadonlyMap<string, Message>, LiveView<ReadonlyMap<string, Message>> {
   private readonly live: Live<ReadonlyMap<string, Message>>;
@@ -35,7 +36,7 @@ export class ValuesView implements ReadonlyMap<string, Message>, LiveView<Readon
     clearTimeout(this.timer);
     this.live.set(this.read());
     const at = this.nextExpiry();
-    if (at !== undefined) this.timer = setTimeout(() => this.refresh(), Math.max(0, at - Date.now()) + 1);
+    if (at !== undefined && Number.isFinite(at)) this.timer = setTimeout(() => this.refresh(), signalTimerDelay(at, signalNow()));
   }
 
   get size(): number {
@@ -97,6 +98,7 @@ export class TopicViews {
         this.onError,
       );
       this.valueViews.set(k, v);
+      v.refresh(); // a view created after delivery still needs an expiry timer
     }
     return v;
   }
@@ -213,12 +215,12 @@ export class TopicViews {
 
   private readValues(event: string | undefined): ReadonlyMap<string, Message> {
     const out = new Map<string, Message>();
-    const cutoff = Date.now() - this.signalTtlMs;
+    const now = signalNow();
     const add = (byName: ReadonlyMap<string, ReadonlyMap<string, StoredValue>>, signals: boolean) => {
       for (const [name, byKey] of byName) {
         if (event !== undefined && name !== event) continue;
         for (const [key, v] of byKey) {
-          if (signals && v.receivedAt < cutoff) continue;
+          if (signals && (v.signalDeadline ?? v.receivedAt + this.signalTtlMs) <= now) continue;
           // Across event names, keys are scoped by name: read/user:7, location/user:7.
           out.set(event === undefined && name !== '' ? `${name}/${key}` : key, toMessage({ topic: this.topic, event: v.event, delivery: v.delivery, replayed: false, fromSnapshot: true, fromCache: v.cached }));
         }
@@ -235,13 +237,14 @@ export class TopicViews {
 
   private nextSignalExpiry(event: string | undefined): number | undefined {
     let next: number | undefined;
-    const cutoff = Date.now() - this.signalTtlMs;
+    const now = signalNow();
     for (const entry of this.entries.keys()) {
       for (const [name, byKey] of this.engine.values(entry).signals) {
         if (event !== undefined && name !== event) continue;
         for (const v of byKey.values()) {
-          if (v.receivedAt < cutoff || v.delivery !== DeliveryClass.Ephemeral) continue;
-          const at = v.receivedAt + this.signalTtlMs;
+          if (v.delivery !== DeliveryClass.Ephemeral) continue;
+          const at = v.signalDeadline ?? v.receivedAt + this.signalTtlMs;
+          if (at <= now || !Number.isFinite(at)) continue;
           if (next === undefined || at < next) next = at;
         }
       }

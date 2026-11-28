@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeClientPacket, encodeServerPacket, event } from '../../../test/support/server-codec';
 import { Code } from '../../shared/codes';
 import { RealtimeError } from '../../shared/errors';
+import { signalNow } from '../../shared/signal-clock';
 import { decodeServerPacket, encodeClientPacket } from './codec';
 import { AckMode, ContentType, DEFAULT_LIMITS, DeliveryClass, GapReason, OnGap, StartAt, type ClientMsg, type ServerMsg } from './model';
 
@@ -168,6 +169,23 @@ describe('server packets', () => {
     expect(d!.msg).toMatchObject({ events: [{ delivery: DeliveryClass.Unspecified, name: undefined, uid: undefined, version: undefined }] });
     const [w] = decodeServerPacket(encodeServerPacket([{ corr: 1n, msg: { ...(msgs[4] as Extract<ServerMsg, { type: 'welcome' }>), segmentId: '', environment: '', capabilities: [] } }]));
     expect(w!.msg).toMatchObject({ segmentId: '', environment: '', capabilities: [] });
+  });
+
+  it('decodes finite, indefinite and expired signal deadlines from the packet clock', () => {
+    const serverTime = 1_800_000_000_000n;
+    const expiries = [serverTime + 300n, (1n << 64n) - 1n, serverTime - 1n, 0n];
+    const events = expiries.map((expiresAtMs, i) => event(4n, BIG, 0n, String(i), { delivery: DeliveryClass.Ephemeral, expiresAtMs }));
+    const bytes = encodeServerPacket([{ corr: 0n, msg: { type: 'deliver', topicId: 4n, delivery: DeliveryClass.Ephemeral, replayed: false, events } }], 'RTES', serverTime);
+    const before = signalNow();
+    const msg = decodeServerPacket(bytes)[0]!.msg;
+    if (msg.type !== 'deliver') throw new Error('expected deliver');
+    const after = signalNow();
+    expect(msg.events[0]!.expiresAtMs).toBe(expiries[0]);
+    expect(msg.events[0]!.signalDeadline).toBeGreaterThanOrEqual(before + 300);
+    expect(msg.events[0]!.signalDeadline).toBeLessThanOrEqual(after + 300);
+    expect(msg.events[1]!.signalDeadline).toBe(Infinity);
+    expect(msg.events[2]!.signalDeadline).toBeLessThanOrEqual(after);
+    expect(msg.events[3]!.signalDeadline).toBeUndefined();
   });
 
   it('decodes the rate limits of Welcome, leaving out the ones a node sends as 0', () => {

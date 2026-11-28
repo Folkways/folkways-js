@@ -231,8 +231,8 @@ export class PollSession implements Session {
   syncSubscriptions(): void {
     this.host.registry.drainUnsubscribes(); // polls are stateless: nothing to tell the node
     if (!this.opened || this.ended) return;
-    if (this.host.registry.entries().some((e) => e.wire === 'idle')) {
-      // Probe the new topic now instead of after the current long-poll.
+    if (this.host.registry.entries().some((e) => e.wire === 'idle' || e.retype)) {
+      // Probe a new or widened topic now instead of after the current long-poll.
       this.pollAbort?.abort();
     }
     this.wake?.();
@@ -259,11 +259,14 @@ export class PollSession implements Session {
       try {
         let retryAfter = 0;
         for (const e of registry.entries()) {
-          if (e.wire !== 'idle') continue;
+          if (e.wire !== 'idle' && !e.retype) continue;
           if (!e.loaded) await e.loading;
           if (e.removed || this.ended) continue;
           retryAfter = Math.max(retryAfter, await this.probe(e));
         }
+        // A filter may widen again while its probe is in flight. Finish that
+        // expansion before building any ordinary delta poll for the topic.
+        if (registry.entries().some((e) => e.wire === 'active' && e.retype)) continue;
         const active = registry.entries().filter((e) => e.wire === 'active');
         if (active.length > 0 && !this.ended) {
           await this.longPoll(active);
@@ -280,15 +283,27 @@ export class PollSession implements Session {
     }
   }
 
-  /** First read of a topic, alone, so errors and the topic id are unambiguous. Returns a retry delay. */
+  /** First or widened read of a topic, alone, so errors and the topic id are unambiguous. Returns a retry delay. */
   private async probe(e: TopicEntry): Promise<number> {
+    const widening = e.retype;
     e.wire = 'subscribing';
-    const body = e.subscribeBody();
-    const frames = await this.call(
-      '/v1/poll',
-      [{ corr: this.corr(), msg: { type: 'poll', poll: { topics: [body], maxEvents: this.opts.maxEvents, waitMs: 0 } } }],
-      this.endController.signal,
-    );
+    // A state version from a narrower filter is not proof that newly requested
+    // values were read. Ask for a snapshot without disturbing stream resume.
+    const body = widening ? this.pollBody(e, false, true) : e.subscribeBody();
+    let frames: ServerFrame[];
+    try {
+      frames = await this.call(
+        '/v1/poll',
+        [{ corr: this.corr(), msg: { type: 'poll', poll: { topics: [body], maxEvents: this.opts.maxEvents, waitMs: 0 } } }],
+        this.endController.signal,
+      );
+    } catch (err) {
+      if (!e.removed) {
+        e.wire = 'idle';
+        e.retype ||= widening;
+      }
+      throw err;
+    }
     const { registry } = this.host;
     let acked = false;
     for (const { msg } of frames) {
@@ -296,7 +311,11 @@ export class PollSession implements Session {
       switch (msg.type) {
         case 'opError': {
           const err = opError(msg.code, msg.message, msg.retryAfterMs, msg.topicId);
-          registry.onSubscribeError(e, err);
+          const recovered = registry.onSubscribeError(e, err);
+          if (recovered && widening) {
+            e.retype = true;
+            if (err.code === Code.InvalidCursor) e.latest = undefined;
+          }
           return err.retry === 'backoff' ? Math.max(err.retryAfterMs ?? 0, 1_000) : 0;
         }
         case 'gap':
@@ -316,7 +335,10 @@ export class PollSession implements Session {
           break;
       }
     }
-    if (!acked && !e.removed) e.wire = 'idle';
+    if (!acked && !e.removed) {
+      e.wire = 'idle';
+      e.retype ||= widening;
+    }
     this.afterRead(e);
     return 0;
   }
@@ -428,19 +450,19 @@ export class PollSession implements Session {
   }
 
   /** Where the next poll of an established topic starts. */
-  private pollBody(e: TopicEntry, recheck: boolean): SubscribeBody {
+  private pollBody(e: TopicEntry, recheck: boolean, forceSnapshot = false): SubscribeBody {
     const topic = { name: e.name };
     const onGap = e.spec.onGap;
     const types = e.wantedTypes();
     e.wireTypes = types;
     e.retype = false;
     // Topics with several types: kv and signal changes resume from the state version.
-    const stateAfter = e.stateLatest;
+    const stateAfter = forceSnapshot ? undefined : e.stateLatest;
     const base = { topic, onGap, snapshot: true, types, stateAfter };
     if (e.received) return { ...base, start: StartAt.After, cursor: e.received };
     if (e.latest) return { ...base, start: StartAt.After, cursor: e.latest };
     // An empty Durable topic, or a room with no stream events yet: everything it will hold is new to us.
-    if (!e.isState || stateAfter) return { ...base, start: StartAt.Oldest };
+    if (forceSnapshot || !e.isState || stateAfter) return { ...base, start: StartAt.Oldest };
     // An empty state topic has no cursor to poll after, so every other poll asks for a fresh snapshot.
     return { ...base, start: StartAt.Latest, snapshot: recheck };
   }
