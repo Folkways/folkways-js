@@ -323,8 +323,9 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     // Fetch the new token first, so a failure leaves the current one in place.
     const fresh = new TokenManager(source);
     const token = await fresh.get();
-    if (this.revocationBlocked && token === this.tokens.current) {
-      throw this.fatalError!;
+    if (this.closedForGood) throw this.fatalError ?? localError(Code.ClientClosed, 'client closed');
+    if (this.tokens.isRevoked(token) || (this.revocationBlocked && token === this.tokens.current)) {
+      throw this.fatalError?.code === Code.AuthRevoked ? this.fatalError : new RealtimeError(Code.AuthRevoked);
     }
     const claims = peekJwt(token);
     const info = this.sessionInfo;
@@ -590,11 +591,12 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
       this.publishes.sessionLost();
       this.registry.sessionLost();
       if (this.stopped) return;
-      if (this.switching) {
+      if (this.switching && closed.code !== Code.AuthRevoked) {
         this.switching = false;
         this.setState('reconnecting');
         continue;
       }
+      this.switching = false;
       this.log.info('disconnected', { code: closed.code, reason: closed.reason });
       this.emit('disconnected', closed);
       const err = new RealtimeError(closed.code, {
@@ -705,7 +707,10 @@ export class Engine extends Emitter<EngineEvents> implements SessionHost {
     this.log.error('connection failed', { code: err.codeName, reason: err.message });
     this.stopped = true;
     this.fatalError = err;
-    if (err.code === Code.AuthRevoked) this.revocationBlocked = true;
+    if (err.code === Code.AuthRevoked) {
+      this.revocationBlocked = true;
+      this.tokens.blockRevocation(err);
+    }
     clearTimeout(this.wsProbe);
     this.session?.close(Code.ClientClosed, 'client failed');
     this.publishes.rejectAll(err);

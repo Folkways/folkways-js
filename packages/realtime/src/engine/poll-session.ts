@@ -468,15 +468,20 @@ export class PollSession implements Session {
     let refreshed = false;
     for (;;) {
       const token = await tokens.get();
+      if (signal.aborted) throw new TransportError('aborted', true);
       const reply = await this.transport.request(this.opts.baseUrl, path, token, packet, signal);
       const frames = reply.packets.flatMap((p) => decodeServerPacket(p));
       // Revocation is terminal even if a gateway returns an unexpected HTTP status.
       for (const { msg } of frames) {
         if (msg.type === 'close' && msg.code === Code.AuthRevoked) {
-          throw new RealtimeError(msg.code, { message: msg.reason, retryAfterMs: msg.retryAfterMs });
+          const error = new RealtimeError(msg.code, { message: msg.reason, retryAfterMs: msg.retryAfterMs });
+          tokens.blockRevocation(error, token);
+          throw error;
         }
         if (msg.type === 'opError' && msg.code === Code.AuthRevoked) {
-          throw new RealtimeError(msg.code, { message: msg.message, retryAfterMs: msg.retryAfterMs });
+          const error = new RealtimeError(msg.code, { message: msg.message, retryAfterMs: msg.retryAfterMs });
+          tokens.blockRevocation(error, token);
+          throw error;
         }
       }
       if (reply.status === 200) return frames;

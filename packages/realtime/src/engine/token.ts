@@ -135,6 +135,9 @@ export class TokenManager {
   private token?: string;
   private expiresAt?: number;
   private inflight?: Promise<string>;
+  private generation = 0;
+  private blocked?: RealtimeError;
+  private readonly revoked = new Set<string>();
   /** The node refused the last token: the next one is asked for as `rejected`. */
   private rejected = false;
 
@@ -147,6 +150,8 @@ export class TokenManager {
 
   /** Replaces the token source (`client.updateToken()`). */
   setSource(source: TokenSource): void {
+    this.generation++;
+    this.blocked = undefined;
     this.source = source;
     this.inflight = undefined;
     this.rejected = false;
@@ -159,6 +164,18 @@ export class TokenManager {
   adopt(token: string): void {
     this.set(token);
     this.rejected = false;
+  }
+
+  /** Stop refreshes and remember the credential rejected by the service. */
+  blockRevocation(error: RealtimeError, token = this.token): void {
+    if (token) this.revoked.add(token);
+    this.blocked = error;
+    this.generation++;
+    this.inflight = undefined;
+  }
+
+  isRevoked(token: string): boolean {
+    return this.revoked.has(token);
   }
 
   /** The current token, if one is cached. Never log it. */
@@ -188,6 +205,7 @@ export class TokenManager {
 
   /** A usable token: the cached one unless it is about to expire. */
   async get(): Promise<string> {
+    if (this.blocked) throw this.blocked;
     if (this.token && !this.expiringSoon()) return this.token;
     if (!this.refreshable) {
       if (this.token) return this.token;
@@ -198,12 +216,16 @@ export class TokenManager {
 
   /** Asks the provider for a new token. Concurrent callers share one call. */
   refresh(reason: TokenReason): Promise<string> {
+    if (this.blocked) return Promise.reject(this.blocked);
     if (typeof this.source === 'string') return Promise.resolve(this.source);
     if (this.inflight) return this.inflight;
     const provider = this.source;
+    const generation = this.generation;
     const p = (async () => {
       try {
         const token = await provider({ reason });
+        if (generation !== this.generation) throw this.blocked ?? new RealtimeError(Code.Aborted, { message: 'token source changed', local: true });
+        if (this.revoked.has(token)) throw new RealtimeError(Code.AuthRevoked);
         if (typeof token !== 'string' || token.length === 0) {
           throw new RealtimeError(Code.AuthRequired, { message: 'token provider returned no token', local: true });
         }
@@ -214,7 +236,7 @@ export class TokenManager {
         if (e instanceof RealtimeError) throw e;
         throw new RealtimeError(Code.AuthRequired, { message: 'token provider failed', local: true, cause: e });
       } finally {
-        this.inflight = undefined;
+        if (generation === this.generation) this.inflight = undefined;
       }
     })();
     this.inflight = p;

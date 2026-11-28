@@ -176,10 +176,12 @@ describe('Folkways.Rest', () => {
 
   it('does not replace a revoked service token or retry the publish', async () => {
     const node = fakeNode(() => ({ type: 'close', code: Code.AuthRevoked, reason: 'revoked', retryAfterMs: 0 }), 401);
-    await expect(rest({ fetch: node.fetch }).publish('chat/1', 'm', 'x')).rejects.toMatchObject({
+    const service = rest({ fetch: node.fetch });
+    await expect(service.publish('chat/1', 'm', 'x')).rejects.toMatchObject({
       code: Code.AuthRevoked,
       message: 'revoked',
     });
+    await expect(service.publish('chat/1', 'm', 'again')).rejects.toMatchObject({ code: Code.AuthRevoked });
     expect(node.calls).toHaveLength(1);
   });
 

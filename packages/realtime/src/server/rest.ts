@@ -93,6 +93,7 @@ export class Rest {
   private signer?: Promise<Signer>;
   private own?: { token: string; expiresAt: number };
   private ownInflight?: Promise<string>;
+  private revoked?: RealtimeError;
 
   constructor(private readonly opts: RestOptions) {
     if (!opts) throw invalid('Rest needs options');
@@ -152,7 +153,7 @@ export class Rest {
     return Object.freeze({ token, expiresAt: exp * 1000, identity, kind, capabilities: capabilities.map((c) => ({ topics: c.topics, ops: [...c.ops] })) });
   }
 
-  /** Publishes one event over HTTP. Retries with the same key are deduplicated within the retained idempotency window. */
+  /** Publishes over HTTP. A revoked service credential disables publishing on this instance; create a new instance explicitly to resume. Retries with the same key are deduplicated within the retained idempotency window. */
   async publish(topic: string, event: string, data: unknown, opts: RestPublishOptions = {}): Promise<PublishReceipt> {
     assertTopic(topic);
     if (typeof event !== 'string' || event.length === 0) throw new RealtimeError(Code.InvalidArgument, { message: 'event name must be a non-empty string', topic, local: true });
@@ -179,12 +180,14 @@ export class Rest {
     let token = await this.ownToken();
     let reply = await this.withTimeout((signal) => this.http.request(this.base, '/v1/publish', token, packet, signal));
     let frames = reply.packets.flatMap((p) => decodeServerPacket(p));
-    const revoked = frames.some(({ msg }) => (msg.type === 'close' || msg.type === 'opError') && msg.code === Code.AuthRevoked);
-    if (reply.status === 401 && !revoked) {
+    this.checkRevocation(frames);
+    if (reply.status === 401) {
       this.own = undefined;
       token = await this.ownToken();
       reply = await this.withTimeout((signal) => this.http.request(this.base, '/v1/publish', token, packet, signal));
       frames = reply.packets.flatMap((p) => decodeServerPacket(p));
+      this.checkRevocation(frames);
+    }
     for (const { msg } of frames) {
       if (msg.type === 'pubAck') return toReceipt(topic, delivery, msg);
       if (msg.type === 'opError') throw new RealtimeError(msg.code, { message: msg.message, retryAfterMs: msg.retryAfterMs, topic });
@@ -193,18 +196,33 @@ export class Rest {
     throw new RealtimeError(Code.Unavailable, { message: `HTTP ${reply.status} without a receipt`, topic, retryAfterMs: reply.retryAfterMs });
   }
 
-  /** This server's own `service` token, signed here and cached until shortly before it expires. */
+  private checkRevocation(frames: ReturnType<typeof decodeServerPacket>): void {
+    for (const { msg } of frames) {
+      if ((msg.type === 'close' || msg.type === 'opError') && msg.code === Code.AuthRevoked) {
+        this.revoked = new RealtimeError(msg.code, { message: msg.type === 'close' ? msg.reason : msg.message, retryAfterMs: msg.retryAfterMs });
+        this.own = undefined;
+        throw this.revoked;
+      }
+    }
+    if (this.revoked) throw this.revoked;
+  }
+
+  /** This server's own service token, signed here and cached until shortly before it expires. */
   private async ownToken(): Promise<string> {
+    if (this.revoked) throw this.revoked;
     if (this.own && this.own.expiresAt - Date.now() > REFRESH_LEAD_MS) return this.own.token;
     this.ownInflight ??= this.createToken({ identity: this.opts.identity ?? 'server', kind: 'service', capabilities: this.opts.capabilities ?? SERVER_RIGHTS, ttlMs: MAX_TTL_MS })
       .then((t) => {
+        if (this.revoked) throw this.revoked;
         this.own = { token: t.token, expiresAt: t.expiresAt };
         return t.token;
       })
       .finally(() => {
         this.ownInflight = undefined;
       });
-    return this.ownInflight;
+    const token = await this.ownInflight;
+    if (this.revoked) throw this.revoked;
+    return token;
   }
 
   /** The imported signing key; a key that fails to import is retried on the next call. */

@@ -156,6 +156,31 @@ describe('TokenManager', () => {
     expect(provider.mock.calls[2]![0]).toEqual({ reason: 'rejected' });
   });
 
+  it('does not let an obsolete refresh overwrite explicitly replaced credentials', async () => {
+    let resolve!: (token: string) => void;
+    const tm = new TokenManager(() => new Promise<string>((r) => { resolve = r; }));
+    const pending = expect(tm.refresh('initial')).rejects.toMatchObject({ code: Code.Aborted });
+    const fresh = mintToken('alice');
+    tm.setSource(fresh);
+    resolve(mintToken('bob'));
+    await pending;
+    expect(tm.current).toBe(fresh);
+  });
+
+  it('blocks a refresh that completes after revocation', async () => {
+    let resolve!: (token: string) => void;
+    const tm = new TokenManager(() => new Promise<string>((r) => { resolve = r; }));
+    const token = mintToken('alice');
+    tm.adopt(token);
+    const pending = expect(tm.refresh('expiring')).rejects.toMatchObject({ code: Code.AuthRevoked });
+    tm.blockRevocation(new RealtimeError(Code.AuthRevoked), token);
+    resolve(mintToken('alice', { ttlSecs: 900 }));
+    await pending;
+    await expect(tm.get()).rejects.toMatchObject({ code: Code.AuthRevoked });
+    expect(tm.isRevoked(token)).toBe(true);
+    expect(tm.current).toBe(token);
+  });
+
   it('reads seg, kind and cap without verifying', () => {
     const t = mintToken('dan', { seg: 'seg-1', cap: [{ topic: 'chat/*', ops: ['publish', 'subscribe'] }] });
     expect(peekJwt(t)).toMatchObject({ sub: 'dan', seg: 'seg-1', cap: [{ topic: 'chat/*', ops: ['publish', 'subscribe'] }] });
