@@ -4,8 +4,8 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { Cursor } from '../../rte/v1/cursor.js';
-import { GapReason } from '../../rte/v1/gap-reason.js';
+import { Cursor } from '../../../folkways/protocol/v1/cursor.js';
+import { GapReason } from '../../../folkways/protocol/v1/gap-reason.js';
 
 
 export class Gap {

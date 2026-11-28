@@ -49,7 +49,7 @@ describe('HttpTransport', () => {
     expect(reply.retryAfterMs).toBe(2000);
   });
 
-  it('treats a non-RTE error page as a bare status', async () => {
+  it('treats a non-protocol error page as a bare status', async () => {
     const { f } = fetchReturning(502, new TextEncoder().encode('<html>bad gateway</html>'), 'text/html');
     const reply = await new HttpTransport(f).request('http://n', '/v1/poll', 't', new Uint8Array(1));
     expect(reply).toMatchObject({ status: 502, packets: [] });

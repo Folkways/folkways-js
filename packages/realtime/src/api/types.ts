@@ -1,9 +1,6 @@
 /**
- * The public types of @folkwaysio/realtime (ADR-001, revision 3).
- *
- * Written before the implementation and reviewed on their own (FLK-55),
- * because they become a public API on the first npm release. Names follow
- * the portal vocabulary: segment, topic, delivery type, event name.
+ * The public types of @folkwaysio/realtime.
+ * Names follow the portal vocabulary: segment, topic, delivery type, event name.
  */
 import type { Limits, TransportKind } from '../engine';
 import type { Cursor } from '../shared/cursor';
@@ -75,7 +72,7 @@ export interface Session {
 export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'failed' | 'closed';
 
 /**
- * How the node lets this connection publish (ADR-015 `Flow`). When a
+ * How the node lets this connection publish. When a
  * segment's deliveries run over its outbound byte rate, the node slows its
  * publishers instead of dropping deliveries:
  * - `normal`: publishes go out as they are made;
@@ -285,7 +282,7 @@ export type { Store, StoreCipher } from '../engine';
 
 export type TokenReason = 'initial' | 'expiring' | 'rejected';
 
-/** Returns a signed RTE token, typically by asking your backend. */
+/** Returns a signed Folkways token, typically by asking your backend. */
 export type TokenProvider = (ctx: { reason: TokenReason }) => string | Promise<string>;
 
 export type TokenSource = string | TokenProvider;

@@ -7,7 +7,7 @@ import { AckMode, type ClientFrame, type ServerMsg, joinLengthPrefixed } from '.
 import { Folkways, Rest } from './index';
 
 const EPOCH = 1879046969544933376n;
-const SEG = 'c7e5a92b-62a1-4b14-bd8f-8bb74c77d3ff';
+const SEG = '00000000-0000-4000-8000-000000000042';
 /** The key most tests sign with; the ones about signing make their own. */
 const DEV = generateKeyPairSync('ed25519');
 const DEV_KEY = DEV.privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
@@ -65,15 +65,15 @@ async function pair(alg: 'EdDSA' | 'ES256') {
 }
 
 const rest = (extra: Partial<ConstructorParameters<typeof Rest>[0]> = {}) =>
-  new Rest({ url: 'http://localhost:9006', segment: SEG, signingKey: { kid: 'dev-1', privateKey: DEV_KEY }, ...extra });
+  new Rest({ url: 'http://localhost:9006', segment: SEG, signingKey: { kid: 'fixture-key', privateKey: DEV_KEY }, ...extra });
 
 describe('Folkways.Rest', () => {
   it('signs tokens in process with an Ed25519 key, without calling the node', async () => {
     const key = await pair('EdDSA');
     const fetch = vi.fn();
-    const rte = new Folkways.Rest({ url: 'https://rte.example.com/', segment: SEG, signingKey: { kid: 'backend-1', privateKey: key.privateKey }, fetch });
+    const folkways = new Folkways.Rest({ url: 'https://realtime.example.com/', segment: SEG, signingKey: { kid: 'backend-1', privateKey: key.privateKey }, fetch });
     const before = Math.floor(Date.now() / 1000);
-    const t = await rte.createToken({ identity: 'user:42', capabilities: [{ topics: 'chat/*', ops: ['subscribe', 'publish'] }], ttlMs: 120_000 });
+    const t = await folkways.createToken({ identity: 'user:42', capabilities: [{ topics: 'chat/*', ops: ['subscribe', 'publish'] }], ttlMs: 120_000 });
 
     expect(fetch).not.toHaveBeenCalled();
     expect(t).toMatchObject({ identity: 'user:42', kind: 'user', capabilities: [{ topics: 'chat/*', ops: ['subscribe', 'publish'] }] });
@@ -112,12 +112,12 @@ describe('Folkways.Rest', () => {
   });
 
   it('refuses tokens the node would refuse', async () => {
-    const rte = rest();
-    await expect(rte.createToken({})).rejects.toMatchObject({ code: Code.InvalidArgument, message: expect.stringContaining('identity is required') });
-    await expect(rte.createToken({ kind: 'anonymous', identity: 'bob' })).rejects.toMatchObject({ code: Code.InvalidArgument });
-    await expect(rte.createToken({ identity: 'anon:1' })).rejects.toMatchObject({ code: Code.InvalidArgument });
-    await expect(rte.createToken({ identity: 'x'.repeat(257) })).rejects.toMatchObject({ code: Code.InvalidArgument });
-    await expect(rte.createToken({ identity: 'a', capabilities: [{ topics: 'chat/>', ops: [] }] })).rejects.toMatchObject({ code: Code.InvalidArgument });
+    const folkways = rest();
+    await expect(folkways.createToken({})).rejects.toMatchObject({ code: Code.InvalidArgument, message: expect.stringContaining('identity is required') });
+    await expect(folkways.createToken({ kind: 'anonymous', identity: 'bob' })).rejects.toMatchObject({ code: Code.InvalidArgument });
+    await expect(folkways.createToken({ identity: 'anon:1' })).rejects.toMatchObject({ code: Code.InvalidArgument });
+    await expect(folkways.createToken({ identity: 'x'.repeat(257) })).rejects.toMatchObject({ code: Code.InvalidArgument });
+    await expect(folkways.createToken({ identity: 'a', capabilities: [{ topics: 'chat/>', ops: [] }] })).rejects.toMatchObject({ code: Code.InvalidArgument });
   });
 
   it('reports a key it cannot use when signing', async () => {
@@ -140,9 +140,9 @@ describe('Folkways.Rest', () => {
       expect(f.msg).toMatchObject({ type: 'publish', publish: { topic: { name: 'chat/1' }, name: 'notice', ack: AckMode.Accepted } });
       return { type: 'pubAck', topicId: 1n, level: AckMode.Accepted, cursor: { epoch: EPOCH, seq: 3n }, duplicate: false, serverTsMs: 9 };
     });
-    const rte = rest({ fetch: node.fetch, identity: 'billing' });
-    const r = await rte.publish('chat/1', 'notice', { text: 'paid' });
-    await rte.publish('chat/1', 'notice', 'again');
+    const folkways = rest({ fetch: node.fetch, identity: 'billing' });
+    const r = await folkways.publish('chat/1', 'notice', { text: 'paid' });
+    await folkways.publish('chat/1', 'notice', 'again');
     expect(r).toMatchObject({ topic: 'chat/1', delivery: 'stream', id: `${EPOCH}:3` });
     expect(node.calls.every((c) => c.url === 'http://localhost:9006/v1/publish')).toBe(true);
     // One token, cached across publishes
@@ -187,18 +187,18 @@ describe('Folkways.Rest', () => {
 
   it('turns OpError into a RealtimeError and refuses signals', async () => {
     const node = fakeNode(() => ({ type: 'opError', code: Code.Forbidden, message: 'no', retryAfterMs: 0, topicId: 0n }));
-    const rte = rest({ fetch: node.fetch });
-    await expect(rte.publish('chat/1', 'm', 'x')).rejects.toMatchObject({ code: Code.Forbidden, topic: 'chat/1' });
-    await expect(rte.publish('chat/1', 'typing', {}, { delivery: 'signal' })).rejects.toMatchObject({ code: Code.InvalidArgument });
+    const folkways = rest({ fetch: node.fetch });
+    await expect(folkways.publish('chat/1', 'm', 'x')).rejects.toMatchObject({ code: Code.Forbidden, topic: 'chat/1' });
+    await expect(folkways.publish('chat/1', 'typing', {}, { delivery: 'signal' })).rejects.toMatchObject({ code: Code.InvalidArgument });
   });
 
   it('refuses API keys and bad options with a pointer to signing keys', () => {
-    expect(() => new Rest({ apiKey: 'rte_sk_x.y', url: 'http://localhost:9006' } as never)).toThrow(/ADR-008/);
+    expect(() => new Rest({ apiKey: 'rte_sk_x.y', url: 'http://localhost:9006' } as never)).toThrow(/secret API keys/);
     expect(() => rest({ signingKey: { kid: 'k', privateKey: 'rte_sk_backend.0123456789abcdef0123456789abcdef' } })).toThrow(/API key/);
     expect(() => rest({ segment: 'Local Dev' })).toThrow(/segment id/);
     expect(() => rest({ signingKey: { kid: '', privateKey: DEV_KEY } })).toThrow(/kid/);
     expect(() => rest({ signingKey: { kid: 'k', privateKey: '  ' } })).toThrow(/privateKey/);
-    expect(() => rest({ url: 'rte.example.com' })).toThrow(/url/);
+    expect(() => rest({ url: 'realtime.example.com' })).toThrow(/url/);
   });
 
   it('refuses to run in a browser', () => {

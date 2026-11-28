@@ -5,7 +5,7 @@
 import * as flatbuffers from 'flatbuffers';
 
 import type { Cursor } from '../../src/shared/cursor';
-import * as fb from '../../src/transport/wire/generated/rte/v1.js';
+import * as fb from '../../src/transport/wire/generated/folkways/protocol/v1.js';
 import type {
   ClientFrame,
   ClientMsg,

@@ -4,7 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { TopicCursor } from '../../rte/v1/topic-cursor.js';
+import { TopicCursor } from '../../../folkways/protocol/v1/topic-cursor.js';
 
 
 export class CursorAck {

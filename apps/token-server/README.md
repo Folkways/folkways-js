@@ -86,31 +86,30 @@ chmod 600 secrets/signing-key.pem
 Then fill in `.env`, which git ignores too:
 
 ```bash
-RTE_URL=https://rte.example.com
-RTE_SEGMENT_ID=5faeecf0-db6e-41a3-9448-afe1b096a6d2
-RTE_KEY_ID=backend-2026-10
-RTE_PRIVATE_KEY_FILE=./secrets/signing-key.pem
+FOLKWAYS_URL=https://realtime.example.com
+FOLKWAYS_SEGMENT_ID=00000000-0000-4000-8000-000000000043
+FOLKWAYS_KEY_ID=backend-2026-10
+FOLKWAYS_PRIVATE_KEY_FILE=./secrets/signing-key.pem
 ```
 
 The server reads the private key from one of two settings. Set exactly one:
 
 | Setting | Holds | Use it when |
 | --- | --- | --- |
-| `RTE_PRIVATE_KEY_FILE` | The **path** of the private key file, absolute or relative to `apps/token-server` | The key is a file: on your laptop, on a VM, or a secret your platform mounts as a file (Kubernetes, Docker secrets) |
-| `RTE_PRIVATE_KEY` | The **key itself**. Keep its newlines, or write them as `\n` to fit it on one line | Your host injects secrets as environment variables (Vercel, Render, Fly.io, Heroku, GitHub Actions) |
+| `FOLKWAYS_PRIVATE_KEY_FILE` | The **path** of the private key file, absolute or relative to `apps/token-server` | The key is a file: on your laptop, on a VM, or a secret your platform mounts as a file (Kubernetes, Docker secrets) |
+| `FOLKWAYS_PRIVATE_KEY` | The **key itself**. Keep its newlines, or write them as `\n` to fit it on one line | Your host injects secrets as environment variables (Vercel, Render, Fly.io, Heroku, GitHub Actions) |
 
 ```bash
-# RTE_PRIVATE_KEY_FILE: a path
-RTE_PRIVATE_KEY_FILE=./secrets/signing-key.pem
+# FOLKWAYS_PRIVATE_KEY_FILE: a path
+FOLKWAYS_PRIVATE_KEY_FILE=./secrets/signing-key.pem
 
-# RTE_PRIVATE_KEY: the key, on one line
-RTE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEI...\n-----END PRIVATE KEY-----"
+# FOLKWAYS_PRIVATE_KEY: the key, on one line
+FOLKWAYS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEI...\n-----END PRIVATE KEY-----"
 ```
 
 Either one takes the key as the dashboard gives it (a PKCS#8 PEM), and also: an `EC PRIVATE KEY` PEM (what
 `openssl ecparam -genkey` writes), the PEM's base64 body without its `-----BEGIN` lines, or a private JWK. The server
-works out whether it is Ed25519 or P-256. There is no shared-secret option: `RTE_SECRET` was removed, and the server
-refuses to start while it is set.
+works out whether it is Ed25519 or P-256. Only asymmetric signing keys are supported.
 
 > [!WARNING]
 > The private key lets anyone sign tokens for any user of your segment. Keep it out of your repository, your app's
@@ -129,7 +128,7 @@ pnpm --filter @folkwaysio/token-server dev
 
 ```text
 token-server: listening on http://127.0.0.1:8787
-  segment 5faeecf0-db6e-41a3-9448-afe1b096a6d2, key backend-2026-10 from ./secrets/signing-key.pem, tokens last 600 s
+  segment 00000000-0000-4000-8000-000000000043, key backend-2026-10 from ./secrets/signing-key.pem, tokens last 600 s
 ```
 
 Before it listens, the server signs one token. If a setting is missing or the key can't sign, it says what is wrong
@@ -194,12 +193,12 @@ The server reads these from the environment. When there is a `.env` file in its 
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `RTE_URL` | required | The node URL, from the segment's **Connect** tab |
-| `RTE_WS_URL` | unset | Only for a node that serves WebSocket on its own port, such as a local one (`ws://127.0.0.1:9005/v1/ws`) |
-| `RTE_SEGMENT_ID` | required | The segment ID (a UUID), from the **Connect** tab |
-| `RTE_KEY_ID` | required | The signing key's ID (`kid`), from the **Signing keys** tab |
-| `RTE_PRIVATE_KEY_FILE` or `RTE_PRIVATE_KEY` | one required | The key's private half: a path to it, or the key itself; see [Store the key](#2-store-the-key) |
-| `RTE_TOKEN_TTL_SECONDS` | `600` | How long each token lives, from 60 to 900 seconds |
+| `FOLKWAYS_URL` | required | The node URL, from the segment's **Connect** tab |
+| `FOLKWAYS_WS_URL` | unset | Only for a node that serves WebSocket on its own port, such as a local one (`ws://127.0.0.1:9005/v1/ws`) |
+| `FOLKWAYS_SEGMENT_ID` | required | The segment ID (a UUID), from the **Connect** tab |
+| `FOLKWAYS_KEY_ID` | required | The signing key's ID (`kid`), from the **Signing keys** tab |
+| `FOLKWAYS_PRIVATE_KEY_FILE` or `FOLKWAYS_PRIVATE_KEY` | one required | The key's private half: a path to it, or the key itself; see [Store the key](#2-store-the-key) |
+| `FOLKWAYS_TOKEN_TTL_SECONDS` | `600` | How long each token lives, from 60 to 900 seconds |
 | `SESSION_SECRET` | random | Signs the sign-in sessions. At least 32 characters. Unset, a random one is made at startup, so restarting signs everyone out |
 | `HOST` | `127.0.0.1` | Address to listen on. Use `0.0.0.0` in a container |
 | `PORT` | `8787` | Port to listen on |
@@ -221,14 +220,14 @@ The token endpoint is the part to keep. In your backend it is a few lines behind
 ```ts
 import { Folkways } from '@folkwaysio/realtime/server';
 
-const rte = new Folkways.Rest({
-  url: process.env.RTE_URL!,
-  segment: process.env.RTE_SEGMENT_ID!,
-  signingKey: { kid: process.env.RTE_KEY_ID!, privateKey: process.env.RTE_PRIVATE_KEY! },
+const folkways = new Folkways.Rest({
+  url: process.env.FOLKWAYS_URL!,
+  segment: process.env.FOLKWAYS_SEGMENT_ID!,
+  signingKey: { kid: process.env.FOLKWAYS_KEY_ID!, privateKey: process.env.FOLKWAYS_PRIVATE_KEY! },
 });
 
 app.post('/api/realtime-token', requireLogin, async (req, res) => {
-  const { token, expiresAt } = await rte.createToken({
+  const { token, expiresAt } = await folkways.createToken({
     identity: `user:${req.user.id}`,
     capabilities: [{ topics: `chat/team-${req.user.teamId}/>`, ops: ['subscribe', 'publish'] }],
   });
@@ -242,7 +241,7 @@ app.post('/api/realtime-token', requireLogin, async (req, res) => {
   belong to, for example `chat/team-7/>` instead of `chat/>`.
 - **Same origin.** Serve the token endpoint from your app's origin, or proxy it there as the example app does. Then
   the browser sends your own session cookie with the SDK's `authUrl` request and no CORS is needed.
-- **Publishing from your backend.** The same `rte` client publishes events over HTTP, such as a notice after a
+- **Publishing from your backend.** The same `folkways` client publishes events over HTTP, such as a notice after a
   payment. See [Issue tokens from your backend](https://docs.folkways.io/docs/js-sdk/server-tokens).
 
 ## Before you deploy
@@ -261,7 +260,7 @@ app.post('/api/realtime-token', requireLogin, async (req, res) => {
 To rotate a key without downtime:
 
 1. In the dashboard, add a new signing key with a new ID. Both keys work side by side.
-2. Save the new private key, set `RTE_KEY_ID` to the new ID and restart the server.
+2. Save the new private key, set `FOLKWAYS_KEY_ID` to the new ID and restart the server.
 3. After 15 minutes, the longest a token can live, delete the old key in the dashboard.
 
 If a private key leaks, add a new key, switch the server to it, and delete the leaked key right away. Deleting a key
@@ -271,16 +270,15 @@ closes every connection still using a token signed with it.
 
 | Problem | Fix |
 | --- | --- |
-| `RTE_… is not set` when the server starts | Fill in `.env` from `.env.example`, then restart the server |
-| `RTE_SECRET is no longer supported` | Shared secrets were removed. Add an Ed25519 key pair in the dashboard, put its private key in `RTE_PRIVATE_KEY_FILE` or `RTE_PRIVATE_KEY`, set `RTE_KEY_ID` to its ID, and delete `RTE_SECRET` |
+| `FOLKWAYS_… is not set` when the server starts | Fill in `.env` from `.env.example`, then restart the server |
 | `is a public key` | You saved the public half. Use the private key the dashboard showed when the key was created |
-| `holds a key, not a path` / `looks like a file path` | The key and the path are in each other's setting. A path goes in `RTE_PRIVATE_KEY_FILE`, the key itself in `RTE_PRIVATE_KEY` |
+| `holds a key, not a path` / `looks like a file path` | The key and the path are in each other's setting. A path goes in `FOLKWAYS_PRIVATE_KEY_FILE`, the key itself in `FOLKWAYS_PRIVATE_KEY` |
 | `is encrypted` / `is an OpenSSH key` | Decrypt it (`openssl pkcs8 -in encrypted.pem -out key.pem`), or make a PEM key: `openssl genpkey -algorithm ed25519 -out key.pem` |
 | `not a private key we can read` | Check that you copied all of the key. Only Ed25519 and P-256 keys work |
 | The app says `Can't reach the token server` | Start the token server, or set `TOKEN_SERVER_URL` in the app's `.env.local` |
 | The app says `Your sign-in has expired` | The token server restarted without `SESSION_SECRET`, or the 8-hour session ended. Sign in again |
-| The app says `The node refused the token` (`AuthInvalid`) | `RTE_SEGMENT_ID` or `RTE_KEY_ID` doesn't match the key in the dashboard, the private key belongs to a different key than `RTE_KEY_ID`, or the key was deleted. Check that the server's clock is right |
-| The app says `Can't reach the node at …` | Check `RTE_URL` (and `RTE_WS_URL` for a local node) in `.env`, restart this server, and check that the node is running |
+| The app says `The node refused the token` (`AuthInvalid`) | `FOLKWAYS_SEGMENT_ID` or `FOLKWAYS_KEY_ID` doesn't match the key in the dashboard, the private key belongs to a different key than `FOLKWAYS_KEY_ID`, or the key was deleted. Check that the server's clock is right |
+| The app says `Can't reach the node at …` | Check `FOLKWAYS_URL` (and `FOLKWAYS_WS_URL` for a local node) in `.env`, restart this server, and check that the node is running |
 | `Forbidden` when subscribing or publishing | The topic needs a rule that allows the operation, and the token's permissions (`src/permissions.ts`) must include it |
 
 More in [Errors and troubleshooting](https://docs.folkways.io/docs/js-sdk/errors).

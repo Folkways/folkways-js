@@ -4,7 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { ServerFrame } from '../../rte/v1/server-frame.js';
+import { ServerFrame } from '../../../folkways/protocol/v1/server-frame.js';
 
 
 export class ServerPacket {

@@ -4,8 +4,8 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { Cursor } from '../../rte/v1/cursor.js';
-import { DeliveryClass } from '../../rte/v1/delivery-class.js';
+import { Cursor } from '../../../folkways/protocol/v1/cursor.js';
+import { DeliveryClass } from '../../../folkways/protocol/v1/delivery-class.js';
 
 
 export class SubAck {

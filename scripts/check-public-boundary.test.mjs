@@ -9,6 +9,14 @@ test('rejects links outside the public repository and non-public endpoints', () 
   const text = ['Folkways', 'unlisted-example'].join('/') + ' https://' + ['service', 'internal'].join('.');
   assert.deepEqual(findings(text).map((x) => x.rule), ['repository reference', 'non-public endpoint']);
 });
+test('distinguishes generated import paths from repository links', () => {
+  assert.deepEqual(findings("import { Event } from '../../../folkways/protocol/v1/event.js';"), []);
+  assert.deepEqual(findings('packages/realtime/src/transport/wire/generated/folkways/protocol/v1/event.ts'), []);
+  for (const host of ['github.com/', 'api.github.com/repos/', 'raw.githubusercontent.com/']) {
+    const link = 'https://' + host + ['Folkways', 'unlisted-example'].join('/');
+    assert.equal(findings(link)[0]?.rule, 'repository reference');
+  }
+});
 test('rejects complete embedded key blocks, not placeholders', () => {
   const header = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
   const footer = ['-----END', 'PRIVATE KEY-----'].join(' ');

@@ -4,7 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { Code } from '../../rte/v1/code.js';
+import { Code } from '../../../folkways/protocol/v1/code.js';
 
 
 export class SubEnded {

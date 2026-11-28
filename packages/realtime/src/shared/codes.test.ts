@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { Code as WireCode } from '../transport/wire/generated/rte/v1/code.js';
+import { Code as WireCode } from '../transport/wire/generated/folkways/protocol/v1/code.js';
 import { Code, WIRE_CODES, codeInfo, isFatalCloseCode } from './codes';
 
 describe('codes', () => {

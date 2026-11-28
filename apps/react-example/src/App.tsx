@@ -14,9 +14,9 @@ function describe(err: unknown): string {
   if (err instanceof SignedOut) return err.message;
   if (isRealtimeError(err)) {
     if (err.codeName === 'AuthInvalid') {
-      return 'The node refused the token. Check that RTE_SEGMENT_ID, RTE_KEY_ID and the signing key in apps/token-server/.env belong to the same key of the same segment.';
+      return 'The node refused the token. Check that FOLKWAYS_SEGMENT_ID, FOLKWAYS_KEY_ID and the signing key in apps/token-server/.env belong to the same key of the same segment.';
     }
-    if (err.codeName === 'Timeout') return `Can't reach the node at ${nodeUrl}. Check RTE_URL in apps/token-server/.env, and that the node is running.`;
+    if (err.codeName === 'Timeout') return `Can't reach the node at ${nodeUrl}. Check FOLKWAYS_URL in apps/token-server/.env, and that the node is running.`;
     return `${err.codeName}: ${err.message}`;
   }
   return (err as Error).message ?? String(err);

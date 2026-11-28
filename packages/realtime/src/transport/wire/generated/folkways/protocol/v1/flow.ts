@@ -4,7 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { FlowAction } from '../../rte/v1/flow-action.js';
+import { FlowAction } from '../../../folkways/protocol/v1/flow-action.js';
 
 
 export class Flow {

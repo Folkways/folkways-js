@@ -4,7 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { Subscribe } from '../../rte/v1/subscribe.js';
+import { Subscribe } from '../../../folkways/protocol/v1/subscribe.js';
 
 
 export class Poll {

@@ -37,8 +37,8 @@ function definedTopicsType(client: Realtime): void {
 
 // The README's Node 20 setup: `webSocket: (await import('ws')).WebSocket`.
 async function webSocketImplementations(): Promise<void> {
-  new Folkways.Realtime({ url: 'https://rte.example.com', authUrl: '/api/rte-token', webSocket: NodeWebSocket });
-  const options: RealtimeOptions = { url: 'https://rte.example.com', webSocket: (await import('ws')).WebSocket };
+  new Folkways.Realtime({ url: 'https://realtime.example.com', authUrl: '/api/realtime-token', webSocket: NodeWebSocket });
+  const options: RealtimeOptions = { url: 'https://realtime.example.com', webSocket: (await import('ws')).WebSocket };
   expectTypeOf(options.webSocket).toEqualTypeOf<WebSocketConstructor | undefined>();
   expectTypeOf(NodeWebSocket).toExtend<WebSocketConstructor>();
   expectTypeOf(globalThis.WebSocket).toExtend<WebSocketConstructor>();

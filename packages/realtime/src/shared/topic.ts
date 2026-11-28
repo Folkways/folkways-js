@@ -1,7 +1,7 @@
 import { Code } from './codes';
 import { RealtimeError } from './errors';
 
-/** Limits of the topic grammar (RTE protocol guide §9). */
+/** Limits of the topic grammar (the topic grammar specification). */
 export const MAX_TOPIC_BYTES = 255;
 export const MAX_TOPIC_LEVELS = 16;
 
@@ -12,7 +12,7 @@ const LEVEL = /^[A-Za-z0-9._~:@=+-]+$/;
  * ASCII, `/`-separated levels of `A-Z a-z 0-9 . _ ~ : @ = + -`, at most 16
  * levels and 255 bytes; names starting with `$` are reserved.
  */
-/** System topics apps may read: kept by the node (ADR-001 D3, D8). */
+/** System topics apps may read: kept by the node. */
 export const SYSTEM_PREFIXES = ['$user/', '$online/', '$presence/'] as const;
 
 export function isSystemTopic(name: string): boolean {

@@ -4,7 +4,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { ServerBody, unionToServerBody, unionListToServerBody } from '../../rte/v1/server-body.js';
+import { ServerBody, unionToServerBody, unionListToServerBody } from '../../../folkways/protocol/v1/server-body.js';
 
 
 export class ServerFrame {

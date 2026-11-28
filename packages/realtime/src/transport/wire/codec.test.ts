@@ -106,7 +106,7 @@ describe('server packets', () => {
     {
       type: 'welcome',
       protoMinor: 0,
-      server: 'rte-1',
+      server: 'service-1',
       serverTimeMs: 1_700_000_000_000,
       sessionId: { hi: BIG, lo: 1n },
       resumed: false,
@@ -160,7 +160,7 @@ describe('server packets', () => {
     for (let i = 0; i < msgs.length; i++) expect(back[i]!.msg).toEqual(msgs[i]);
   });
 
-  it('decodes frames from a node before ADR-001 with the safe defaults', () => {
+  it('decodes frames from a node before the feature was introduced with the safe defaults', () => {
     const old = event(4n, BIG, 2n, 'x');
     const [d] = decodeServerPacket(
       encodeServerPacket([{ corr: 0n, msg: { type: 'deliver', topicId: 4n, delivery: DeliveryClass.Durable, replayed: false, events: [old] } }]),
@@ -170,7 +170,7 @@ describe('server packets', () => {
     expect(w!.msg).toMatchObject({ segmentId: '', environment: '', capabilities: [] });
   });
 
-  it('decodes the ADR-015 rate limits of Welcome, leaving out the ones a node sends as 0', () => {
+  it('decodes the rate limits of Welcome, leaving out the ones a node sends as 0', () => {
     const welcome = msgs[4] as Extract<ServerMsg, { type: 'welcome' }>;
     const rates = {
       publishPerSec: 20,

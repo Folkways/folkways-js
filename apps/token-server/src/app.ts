@@ -12,7 +12,7 @@ export type Log = (line: string) => void;
 
 /** The `Rest` client that signs tokens with the segment's signing key. */
 export function createRest(config: Config): Rest {
-  return new Folkways.Rest({ url: config.rteUrl, segment: config.segment, signingKey: config.signingKey });
+  return new Folkways.Rest({ url: config.serviceUrl, segment: config.segment, signingKey: config.signingKey });
 }
 
 export const identityOf = (name: string) => `user:${name}`;
@@ -28,7 +28,7 @@ export const identityOf = (name: string) => `user:${name}`;
  * The same name may sign in any number of times: every session gets the same
  * identity, so the node sees one user with several connections.
  */
-export function createApp(config: Config, rte: Rest = createRest(config), log: Log = console.log): express.Express {
+export function createApp(config: Config, folkways: Rest = createRest(config), log: Log = console.log): express.Express {
   const sessions = new Sessions(config.sessionSecret);
   const app = express();
   app.disable('x-powered-by');
@@ -41,7 +41,7 @@ export function createApp(config: Config, rte: Rest = createRest(config), log: L
   // The app connects to the node this server signs tokens for, so the segment's
   // settings live in one place (.env here) and the app needs none of its own.
   app.get('/api/connection', (_req, res) => {
-    res.json({ url: config.rteUrl, ...(config.rteWsUrl ? { endpoints: { websocket: config.rteWsUrl } } : {}) });
+    res.json({ url: config.serviceUrl, ...(config.webSocketUrl ? { endpoints: { websocket: config.webSocketUrl } } : {}) });
   });
 
   app.post('/api/login', (req, res) => {
@@ -69,7 +69,7 @@ export function createApp(config: Config, rte: Rest = createRest(config), log: L
     }
     const identity = identityOf(session.name);
     const reason: unknown = req.body?.reason;
-    const issued = await rte.createToken({ identity, capabilities: permissionsFor(identity), ttlMs: config.tokenTtlMs });
+    const issued = await folkways.createToken({ identity, capabilities: permissionsFor(identity), ttlMs: config.tokenTtlMs });
     log(`token for ${identity} (${typeof reason === 'string' && REASONS.has(reason) ? reason : 'no reason'}), expires ${new Date(issued.expiresAt).toISOString()}`);
     res.json({ token: issued.token, expiresAt: issued.expiresAt });
   });

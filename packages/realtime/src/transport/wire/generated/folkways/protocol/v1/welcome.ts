@@ -4,9 +4,9 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { Capability } from '../../rte/v1/capability.js';
-import { Limits } from '../../rte/v1/limits.js';
-import { Uuid128 } from '../../rte/v1/uuid128.js';
+import { Capability } from '../../../folkways/protocol/v1/capability.js';
+import { Limits } from '../../../folkways/protocol/v1/limits.js';
+import { Uuid128 } from '../../../folkways/protocol/v1/uuid128.js';
 
 
 export class Welcome {

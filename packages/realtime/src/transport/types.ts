@@ -1,5 +1,5 @@
 /**
- * Layer 3 contracts. Transports move RTE packets as bytes and know nothing
+ * Layer 3 contracts. Transports move Folkways packets as bytes and know nothing
  * about topics, tokens' meaning or frames: the engine (layer 2) does.
  */
 

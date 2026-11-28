@@ -90,7 +90,7 @@ class WsConnection implements StreamConnection {
   }
 }
 
-/** WebSocket transport: one RTE packet per binary message. */
+/** WebSocket transport: one Folkways packet per binary message. */
 export class WebSocketTransport implements StreamTransport {
   readonly kind = 'websocket' as const;
 

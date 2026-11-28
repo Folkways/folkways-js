@@ -1,5 +1,5 @@
 /**
- * FlatBuffers codec for the client side of RTE v1: encodes `RTEC` client
+ * FlatBuffers codec for the client side of Folkways protocol v1: encodes `RTEC` client
  * packets and decodes `RTES` server packets.
  *
  * Decoding is fail-closed. The JavaScript FlatBuffers runtime has no
@@ -13,7 +13,7 @@ import * as flatbuffers from 'flatbuffers';
 import { Code } from '../../shared/codes';
 import type { Cursor } from '../../shared/cursor';
 import { RealtimeError } from '../../shared/errors';
-import * as fb from './generated/rte/v1.js';
+import * as fb from './generated/folkways/protocol/v1.js';
 import {
   type ClientFrame,
   type ClientMsg,
@@ -243,7 +243,7 @@ function decodeEvents(len: number, get: (i: number) => fb.Event | null, total: n
 
 function decodeLimits(l: fb.Limits | null): Limits {
   if (!l) throw bad('Welcome without limits');
-  // A rate field of 0 was not announced (a node before ADR-015): leave it out.
+  // A rate field of 0 was not announced (a node before this feature): leave it out.
   const rates: { -readonly [K in (typeof RATE_LIMIT_FIELDS)[number]]?: number } = {};
   for (const k of RATE_LIMIT_FIELDS) {
     const v = l[k]();

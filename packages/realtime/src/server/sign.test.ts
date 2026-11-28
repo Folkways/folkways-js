@@ -110,7 +110,7 @@ describe('importSigner refuses what is not an Ed25519 or P-256 private key', () 
   });
 
   it('OpenSSH and encrypted private keys, saying how to convert them', async () => {
-    await refused('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----', 'openssl genpkey -algorithm ed25519');
+    await refused('-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----', 'openssl genpkey -algorithm ed25519');
     const { privateKey } = generateKeyPairSync('ed25519');
     const encrypted = privateKey.export({ type: 'pkcs8', format: 'pem', cipher: 'aes-256-cbc', passphrase: 'pw' }) as string;
     await refused(encrypted, 'is encrypted; decrypt it first');
@@ -130,10 +130,10 @@ describe('importSigner refuses what is not an Ed25519 or P-256 private key', () 
   });
 });
 
-describe('the mistake that started FLK-211', () => {
+describe('private key encodings', () => {
   it('a P-256 key pasted without its PEM lines signs ES256, not HS256', async () => {
     const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
-    // What was put in RTE_SECRET: the PEM's body, starting MEECAQ… or MIGHAgEA…
+    // the PEM's body, starting MEECAQ… or MIGHAgEA…
     const body = pemBody(privateKey.export({ type: 'pkcs8', format: 'pem' }) as string);
     expect(body).toMatch(/^M/);
     await signsVerifiably({ kid: 'acme-rides-staging-2026-11-2', privateKey: body }, publicKey, 'ES256');

@@ -36,7 +36,7 @@ users. [Set up the dashboard](https://docs.folkways.io/docs/js-sdk/prerequisites
 import { Folkways } from '@folkwaysio/realtime';
 
 const client = new Folkways.Realtime({
-  url: 'https://rte.example.com',  // your node URL, from the segment's Connect tab
+  url: 'https://realtime.example.com',  // your node URL, from the segment's Connect tab
   authUrl: '/api/realtime-token',  // your backend's token endpoint
 });
 await client.connect();

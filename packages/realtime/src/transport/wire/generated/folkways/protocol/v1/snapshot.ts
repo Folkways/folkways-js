@@ -4,8 +4,8 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { Cursor } from '../../rte/v1/cursor.js';
-import { Event } from '../../rte/v1/event.js';
+import { Cursor } from '../../../folkways/protocol/v1/cursor.js';
+import { Event } from '../../../folkways/protocol/v1/event.js';
 
 
 export class Snapshot {

@@ -4,8 +4,8 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { DeliveryClass } from '../../rte/v1/delivery-class.js';
-import { Event } from '../../rte/v1/event.js';
+import { DeliveryClass } from '../../../folkways/protocol/v1/delivery-class.js';
+import { Event } from '../../../folkways/protocol/v1/event.js';
 
 
 export class Deliver {

@@ -4,11 +4,11 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-import { AckMode } from '../../rte/v1/ack-mode.js';
-import { ContentType } from '../../rte/v1/content-type.js';
-import { DeliveryClass } from '../../rte/v1/delivery-class.js';
-import { Header } from '../../rte/v1/header.js';
-import { Uuid128 } from '../../rte/v1/uuid128.js';
+import { AckMode } from '../../../folkways/protocol/v1/ack-mode.js';
+import { ContentType } from '../../../folkways/protocol/v1/content-type.js';
+import { DeliveryClass } from '../../../folkways/protocol/v1/delivery-class.js';
+import { Header } from '../../../folkways/protocol/v1/header.js';
+import { Uuid128 } from '../../../folkways/protocol/v1/uuid128.js';
 
 
 export class Publish {
