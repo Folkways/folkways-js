@@ -7,11 +7,10 @@ look for when reviewing it.
 
 - **Code review:** read a pull request and comment on it. Check that the code is
   clear, correct, and matches the style of the surrounding code.
-- ** Coding:** fix a bug, add a feature, or improve existing code.
+- **Coding:** fix a bug, add a feature, or improve existing code.
 - **Report a bug or ask for a feature:** see [Getting help and reporting issues](SUPPORT.md).
 - **Improve documentation:** fix the README or these guides here. For the documentation site, open an issue
   describing what is missing or unclear.
-- **Fix a bug or build a feature:** read on.
 
 Security problems are the exception: never report them in an issue or a pull request. Follow the
 [security policy](SECURITY.md) instead.
