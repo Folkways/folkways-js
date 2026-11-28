@@ -142,9 +142,9 @@ export interface Message<T = unknown, E extends string = string> {
   readonly data: T;
   /** Stable id minted by the topic owner; survives node restarts. Point receipts and edits at it. */
   readonly uid?: string;
-  /** Position in the topic, for stream events (and numbered kv events). */
+  /** Position in the topic; mixed topics number only stream events, single-type topics may number state events too. */
   readonly cursor?: Cursor;
-  /** Unique within the topic; usable as a React key. */
+  /** Cursor-derived ID when numbered, otherwise UID when available; signals without either use a best-effort local display key. Use uid for lasting references. */
   readonly id: string;
   /** kv key (scoped by event name); for signals, the publisher. */
   readonly key?: string;
@@ -205,9 +205,11 @@ export type ContentTypeName = 'bytes' | 'json' | 'text' | 'flatbuffers' | 'proto
 export interface PublishReceipt {
   readonly topic: string;
   readonly delivery: Delivery;
+  /** Stable event identity when assigned; use for lasting references. */
   readonly uid?: string;
+  /** Sequence position when numbered, including single-type KV topics. */
   readonly cursor?: Cursor;
-  /** Same as `Message.id` of the delivered event. */
+  /** Same as `Message.id` of the delivered event; not a permanent identity. */
   readonly id: string;
   readonly level: 'accepted' | 'committed';
   /** The node had already accepted this idempotency key; nothing was published twice. */

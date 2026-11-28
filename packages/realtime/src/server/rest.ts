@@ -3,6 +3,7 @@ import { toReceipt } from '../api/topic';
 import type { ContentTypeName, Delivery, Permission, PublishReceipt } from '../api/types';
 import { Code } from '../shared/codes';
 import { RealtimeError } from '../shared/errors';
+import { eventNameError } from '../shared/event-name';
 import { parse128, random128 } from '../shared/random';
 import { assertTopic } from '../shared/topic';
 import { AckMode, type FetchLike, HttpTransport, type PublishBody, decodeServerPacket, encodeClientPacket } from '../transport';
@@ -155,7 +156,8 @@ export class Rest {
   /** Publishes over HTTP. A revoked service credential disables publishing on this instance; create a new instance explicitly to resume. Retries with the same key are deduplicated within the retained idempotency window. */
   async publish(topic: string, event: string, data: unknown, opts: RestPublishOptions = {}): Promise<PublishReceipt> {
     assertTopic(topic);
-    if (typeof event !== 'string' || event.length === 0) throw new RealtimeError(Code.InvalidArgument, { message: 'event name must be a non-empty string', topic, local: true });
+    const nameError = eventNameError(event);
+    if (nameError) throw new RealtimeError(Code.InvalidArgument, { message: nameError, topic, local: true });
     const delivery = opts.delivery ?? 'stream';
     if (delivery === 'signal') throw new RealtimeError(Code.InvalidArgument, { message: 'signals are for live clients; publish stream or kv events from a server', topic, local: true });
     const idempotencyKey = opts.idempotencyKey !== undefined ? parse128(opts.idempotencyKey) : random128();

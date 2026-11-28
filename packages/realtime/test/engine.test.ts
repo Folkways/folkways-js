@@ -626,7 +626,12 @@ describe('publish', () => {
     await expect(c.topic('chat/lobby').publish('message', 'too long')).rejects.toMatchObject({ code: Code.PayloadTooLarge, local: true });
     expect(() => c.topic('bad topic')).toThrow(RealtimeError);
     await expect(c.topic('chat/lobby').publish('message', 'x', { idempotencyKey: 'nope' })).rejects.toMatchObject({ code: Code.InvalidArgument });
+    for (const name of ['', 'a'.repeat(65), 'é'.repeat(33), '😀'.repeat(17)]) {
+      await expect(c.topic('chat/lobby').publish(name, 'x')).rejects.toMatchObject({ code: Code.InvalidArgument, local: true });
+    }
     expect(conn.sent('publish')).toHaveLength(0);
+    await c.topic('chat/lobby').publish('😀'.repeat(16), 'x', { delivery: 'signal' });
+    expect((await conn.next('publish')).msg.publish.name).toBe('😀'.repeat(16));
   });
 
   it('sends signals fire-and-forget with NoAck, and drops them while not connected', async () => {
@@ -1490,13 +1495,24 @@ describe('defineTopic', () => {
     expect(chatRoom.rule()).toEqual({
       pattern: 'chat/*',
       types: ['kv', 'signal', 'stream'],
-      events: { message: 'stream', typing: 'signal', read: 'kv' },
+      events: {
+        message: { delivery: 'stream' },
+        typing: { delivery: 'signal', ttl_ms: 3_000 },
+        read: { delivery: 'kv', key_is_publisher: true, ttl_ms: 30 * 86_400_000 },
+      },
+      strict_events: true,
       access: 'members',
       presence: true,
-      keyIsPublisher: ['read'],
-      ttlMs: { typing: 3_000, read: 30 * 86_400_000 },
     });
     expect(chatRoom.memberOps()).toEqual(['subscribe', 'publish', 'signal', 'set', 'presence']);
+    expect(JSON.parse(JSON.stringify(chatRoom.rule())).events.read).toEqual({ delivery: 'kv', key_is_publisher: true, ttl_ms: 30 * 86_400_000 });
+    expect(() => defineTopic('chat/{room}', { events: { '': 'stream' } })).toThrow(/event name/);
+    expect(() => defineTopic('chat/{room}', { events: { ['é'.repeat(33)]: 'stream' } })).toThrow(/64 UTF-8 bytes/);
+    expect(defineTopic('chat/{room}', { events: { ['é'.repeat(32)]: 'stream' } }).rule().events['é'.repeat(32)]).toEqual({ delivery: 'stream' });
+    const unusual = defineTopic('chat/{room}', { events: { ['__proto__']: 'stream', constructor: 'kv' } });
+    expect(Object.keys(unusual.rule().events)).toEqual(['__proto__', 'constructor']);
+    expect(JSON.parse(JSON.stringify(unusual.rule())).events['__proto__']).toEqual({ delivery: 'stream' });
+    expect(Object.isFrozen(chatRoom.events.read)).toBe(true);
     expect(() => defineTopic('chat/{room}', { events: { message: { delivery: 'stream', ttlMs: 5 } } })).toThrow(/kv and signal/);
     expect(() => defineTopic('chat/{room}', { events: { typing: { delivery: 'signal', keyIsPublisher: true } } })).toThrow(/kv events only/);
     for (const delivery of ['kv', 'signal'] as const) {
@@ -1504,7 +1520,7 @@ describe('defineTopic', () => {
         expect(() => defineTopic('chat/{room}', { events: { value: { delivery, ttlMs } } })).toThrow(/ttlMs must be an integer/);
       }
       for (const ttlMs of [0, 0xffffffff]) {
-        expect(defineTopic('chat/{room}', { events: { value: { delivery, ttlMs } } }).rule().ttlMs).toEqual({ value: ttlMs });
+        expect(defineTopic('chat/{room}', { events: { value: { delivery, ttlMs } } }).rule().events.value).toEqual({ delivery, ttl_ms: ttlMs });
       }
     }
   });

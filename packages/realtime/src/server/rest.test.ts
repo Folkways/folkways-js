@@ -68,6 +68,15 @@ const rest = (extra: Partial<ConstructorParameters<typeof Rest>[0]> = {}) =>
   new Rest({ url: 'http://localhost:9006', segment: SEG, signingKey: { kid: 'fixture-key', privateKey: DEV_KEY }, ...extra });
 
 describe('Folkways.Rest', () => {
+  it('rejects invalid UTF-8 event-name lengths before sending', async () => {
+    const fetch = vi.fn();
+    const api = rest({ fetch });
+    for (const name of ['', 'a'.repeat(65), 'é'.repeat(33), '😀'.repeat(17)]) {
+      await expect(api.publish('chat/lobby', name, 'x')).rejects.toMatchObject({ code: Code.InvalidArgument, local: true });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('signs tokens in process with an Ed25519 key, without calling the node', async () => {
     const key = await pair('EdDSA');
     const fetch = vi.fn();

@@ -132,7 +132,7 @@ export function gapReasonName(r: GapReason): GapReasonName {
   }
 }
 
-/** `"epoch:seq"` for numbered events, else the uid: unique within a topic. */
+/** `"epoch:seq"` for numbered events, otherwise UID or a best-effort display key. */
 export function eventId(cursor: Cursor | undefined, uid: string | undefined, fallback: string): string {
   if (cursor) return formatCursor(cursor);
   return uid ?? fallback;

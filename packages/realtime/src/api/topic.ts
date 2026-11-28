@@ -2,6 +2,7 @@ import { AckMode, type Engine, type Header, OnGap, type PubAck, type PublishBody
 import { Code } from '../shared/codes';
 import { type Cursor, parseCursor } from '../shared/cursor';
 import { RealtimeError } from '../shared/errors';
+import { eventNameError } from '../shared/event-name';
 import { format128, parse128, random128 } from '../shared/random';
 import { deliveryCode, encodePayload, eventId } from './message';
 import { Subscription } from './subscription';
@@ -103,7 +104,7 @@ export class Topic<E extends EventMap = EventMap, S extends keyof E & string = n
 
   /**
    * Current values of an event, as a live ReadonlyMap: kv values by key,
-   * signals by publisher (sent in the last 5 s). Without an event name,
+   * signals by publisher (while their estimated lifetime remains). Without an event name,
    * every value of the topic keyed `name/key` (e.g. a `$presence/…` topic,
    * whose entries have no name, keeps plain keys). Filled while a
    * subscription of this handle is active.
@@ -219,7 +220,7 @@ export class Topic<E extends EventMap = EventMap, S extends keyof E & string = n
   /** The delivery of an event: the option, else the topic's definition, else `stream`. */
   private deliveryFor(event: string, opts: PublishOptions): Delivery {
     if (!this.defined) return opts.delivery ?? 'stream';
-    const def = this.defined[event];
+    const def = Object.prototype.hasOwnProperty.call(this.defined, event) ? this.defined[event] : undefined;
     if (!def) throw invalid(`event "${event}" is not in this topic's definition`, this.name);
     if (opts.delivery && opts.delivery !== def.delivery) {
       throw new RealtimeError(Code.ClassMismatch, {
@@ -238,7 +239,8 @@ export class Topic<E extends EventMap = EventMap, S extends keyof E & string = n
   }
 
   private body(event: string, data: unknown, delivery: Delivery, opts: PublishOptions): PublishBody {
-    if (typeof event !== 'string' || event.length === 0) throw invalid('event name must be a non-empty string', this.name);
+    const nameError = eventNameError(event);
+    if (nameError) throw invalid(nameError, this.name);
     if (opts.remove && delivery !== 'kv') throw invalid('remove applies to kv events only', this.name);
     if (opts.key !== undefined && delivery !== 'kv') throw invalid('key applies to kv events only', this.name);
     if (opts.ttlMs !== undefined && delivery === 'stream') throw invalid('ttlMs applies to kv and signal events only', this.name);

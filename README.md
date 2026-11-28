@@ -74,8 +74,9 @@ void room.publish('typing', { on: true }, { delivery: 'signal', ttlMs: 3_000 });
 ```
 
 `room.messages` exposes the stream message view; `room.values('read')` and `room.values('typing')` expose current state.
-In mixed-type topics, only stream events receive stream sequence numbers. Use the event's `uid` for lasting references,
-such as read receipts, rather than its cursor. Signal events have no UID.
+In mixed-type topics, only stream events receive stream sequence numbers. Single-type KV and signal topics can also carry sequence positions. Use the event's `uid` for lasting references such as read receipts, rather than its cursor or display `id`. Signal events have no UID; their unnumbered IDs are best-effort display keys, not durable identifiers.
+
+Event names must contain 1–64 UTF-8 bytes. `defineTopic().rule()` exports a JSON-ready rule with event-local `delivery`, `key_is_publisher` and `ttl_ms` options and `strict_events: true`. Paste the result into the dashboard's topic-rule editor; there are no separate event-option maps.
 
 Read more in [Topics and events](https://docs.folkways.io/docs/js-sdk/topics-and-events).
 
