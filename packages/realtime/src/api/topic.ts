@@ -5,6 +5,7 @@ import { RealtimeError } from '../shared/errors';
 import { format128, parse128, random128 } from '../shared/random';
 import { deliveryCode, encodePayload, eventId } from './message';
 import { Subscription } from './subscription';
+import { validTtlMs } from './ttl';
 import type {
   Delivery,
   EventMap,
@@ -239,14 +240,13 @@ export class Topic<E extends EventMap = EventMap, S extends keyof E & string = n
   private body(event: string, data: unknown, delivery: Delivery, opts: PublishOptions): PublishBody {
     if (typeof event !== 'string' || event.length === 0) throw invalid('event name must be a non-empty string', this.name);
     if (opts.remove && delivery !== 'kv') throw invalid('remove applies to kv events only', this.name);
-    if ((opts.key !== undefined || opts.ttlMs !== undefined) && delivery !== 'kv') {
-      throw invalid('key and ttlMs apply to kv events only', this.name);
-    }
+    if (opts.key !== undefined && delivery !== 'kv') throw invalid('key applies to kv events only', this.name);
+    if (opts.ttlMs !== undefined && delivery === 'stream') throw invalid('ttlMs applies to kv and signal events only', this.name);
     if (opts.key !== undefined && (typeof opts.key !== 'string' || opts.key.length === 0)) {
       throw invalid('key must be a non-empty string', this.name);
     }
-    if (opts.ttlMs !== undefined && !(Number.isInteger(opts.ttlMs) && opts.ttlMs >= 0 && opts.ttlMs <= 0xffffffff)) {
-      throw invalid('ttlMs must be a non-negative integer', this.name);
+    if (opts.ttlMs !== undefined && !validTtlMs(opts.ttlMs)) {
+      throw invalid('ttlMs must be an integer between 0 and 4294967295', this.name);
     }
     const { payload, contentType } = opts.remove ? { payload: new Uint8Array(0), contentType: 0 } : encodePayload(data, opts.contentType);
     let idempotencyKey: { hi: bigint; lo: bigint } | undefined;

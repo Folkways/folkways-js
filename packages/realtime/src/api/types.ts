@@ -183,7 +183,7 @@ export interface PublishOptions {
   delivery?: Delivery;
   /** kv: the key. Defaults to your identity. */
   key?: string;
-  /** kv: how long the value lives (ms). */
+  /** KV or signal lifetime in ms (unsigned 32-bit integer). Positive values override the rule; zero uses the service rule. Omission uses the event definition, if supplied. */
   ttlMs?: number;
   /** kv: delete the key (`data` is ignored). */
   remove?: boolean;

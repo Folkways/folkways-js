@@ -24,10 +24,11 @@ function narrowsByEventName(room: Topic<Chat>, client: Realtime): void {
 
 function definedTopicsType(client: Realtime): void {
   const chatRoom = defineTopic<Chat>()('chat/{room}', {
-    events: { message: 'stream', typing: 'signal', read: { delivery: 'kv', keyIsPublisher: true } },
+    events: { message: 'stream', typing: { delivery: 'signal', ttlMs: 3_000 }, read: { delivery: 'kv', keyIsPublisher: true } },
   });
   const room = chatRoom.open(client, { room: '45' });
   expectTypeOf(room.publish('typing', { on: true })).toEqualTypeOf<Promise<void>>();
+  expectTypeOf(room.publish('typing', { on: true }, { ttlMs: 1_000 })).toEqualTypeOf<Promise<void>>();
   expectTypeOf(room.publish('message', { text: 'hi' })).toEqualTypeOf<Promise<PublishReceipt>>();
   // @ts-expect-error: the pattern needs { room }
   chatRoom.topic({ id: '1' });
