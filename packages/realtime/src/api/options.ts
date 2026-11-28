@@ -101,7 +101,7 @@ export interface RealtimeOptions {
    * `{ messagesPerTopic: 100, maxBytes: 5 MB }`; `false` turns it off.
    */
   cache?: { messagesPerTopic?: number; maxBytes?: number } | false;
-  /** How long an Ephemeral signal stays in `Subscription.values`. Default 5 000. */
+  /** Local signal view lifetime approximation in ms, not the service-side TTL. Default 5 000. */
   signalTtlMs?: number;
   /** HTTP long-poll tuning. */
   longPoll?: Partial<{ waitMs: number; maxEvents: number; emptyStateRecheckMs: number }>;

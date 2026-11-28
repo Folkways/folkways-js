@@ -3,9 +3,10 @@ import { RealtimeError } from '../shared/errors';
 import { topicError } from '../shared/topic';
 import type { Realtime } from './realtime';
 import type { Topic } from './topic';
+import { validTtlMs } from './ttl';
 import type { Delivery, EventMap, Op } from './types';
 
-/** How one event of a topic is delivered: a type, or a type with kv options. */
+/** How one event is delivered, with optional KV key constraints or KV/signal lifetime. */
 export type EventDefinition = Delivery | { readonly delivery: Delivery; readonly keyIsPublisher?: boolean; readonly ttlMs?: number };
 
 /** Event names to their definitions. */
@@ -34,6 +35,7 @@ export interface TopicRule {
   readonly presence: boolean;
   /** kv events whose key must equal the publisher. */
   readonly keyIsPublisher: readonly string[];
+  /** Default lifetime of each KV or signal event; zero means until replaced. */
   readonly ttlMs: Readonly<Record<string, number>>;
 }
 
@@ -46,11 +48,11 @@ export interface TopicDefinition<E extends EventMap, P extends string, S extends
   readonly events: Readonly<Record<keyof E & string, { readonly delivery: Delivery; readonly keyIsPublisher: boolean; readonly ttlMs?: number }>>;
   /** The concrete topic name for these parameters. Throws `InvalidTopic` for a value that is not one topic level. */
   topic(params: Record<TopicParams<P>, string>): string;
-  /** The typed handle for these parameters: publish fills in each event's delivery (and kv TTL). */
+  /** The typed handle for these parameters: publish fills in each event's delivery (and KV or signal TTL). */
   open(client: Realtime, params: Record<TopicParams<P>, string>): Topic<E, S>;
   /** The topic rule (`chat/{room}` → pattern `chat/*`). */
   rule(): TopicRule;
-  /** The operations a member needs, for `folkways.members.add(...)` and token ceilings. */
+  /** The operations a member needs, for member permissions and token ceilings. */
   memberOps(): Op[];
 }
 
@@ -100,7 +102,11 @@ function build<E extends EventMap, P extends string>(pattern: P, spec: TopicDefi
   for (const [name, def] of Object.entries(spec.events as Record<string, EventDefinition>)) {
     const d = typeof def === 'string' ? { delivery: def } : def;
     if (!['stream', 'kv', 'signal'].includes(d.delivery)) throw invalid(`event "${name}": unknown delivery "${String(d.delivery)}"`);
-    if ((d.keyIsPublisher || d.ttlMs !== undefined) && d.delivery !== 'kv') throw invalid(`event "${name}": keyIsPublisher and ttlMs apply to kv events`);
+    if (d.keyIsPublisher && d.delivery !== 'kv') throw invalid(`event "${name}": keyIsPublisher applies to kv events only`);
+    if (d.ttlMs !== undefined) {
+      if (d.delivery === 'stream') throw invalid(`event "${name}": ttlMs applies to kv and signal events only`);
+      if (!validTtlMs(d.ttlMs)) throw invalid(`event "${name}": ttlMs must be an integer between 0 and 4294967295`);
+    }
     events[name] = { delivery: d.delivery, keyIsPublisher: d.keyIsPublisher ?? false, ttlMs: d.ttlMs };
   }
   Object.freeze(events);

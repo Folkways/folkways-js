@@ -1445,7 +1445,7 @@ describe('message cache', () => {
 describe('defineTopic', () => {
   type Chat = { message: { text: string }; typing: { on: boolean }; read: { upTo: string } };
   const chatRoom = defineTopic<Chat>()('chat/{room}', {
-    events: { message: 'stream', typing: 'signal', read: { delivery: 'kv', keyIsPublisher: true, ttlMs: 30 * 86_400_000 } },
+    events: { message: 'stream', typing: { delivery: 'signal', ttlMs: 3_000 }, read: { delivery: 'kv', keyIsPublisher: true, ttlMs: 30 * 86_400_000 } },
     access: 'members',
     presence: true,
   });
@@ -1461,13 +1461,22 @@ describe('defineTopic', () => {
       access: 'members',
       presence: true,
       keyIsPublisher: ['read'],
-      ttlMs: { read: 30 * 86_400_000 },
+      ttlMs: { typing: 3_000, read: 30 * 86_400_000 },
     });
     expect(chatRoom.memberOps()).toEqual(['subscribe', 'publish', 'signal', 'set', 'presence']);
-    expect(() => defineTopic('chat/{room}', { events: { typing: { delivery: 'signal', ttlMs: 5 } } })).toThrow(/kv events/);
+    expect(() => defineTopic('chat/{room}', { events: { message: { delivery: 'stream', ttlMs: 5 } } })).toThrow(/kv and signal/);
+    expect(() => defineTopic('chat/{room}', { events: { typing: { delivery: 'signal', keyIsPublisher: true } } })).toThrow(/kv events only/);
+    for (const delivery of ['kv', 'signal'] as const) {
+      for (const ttlMs of [-1, 1.5, NaN, Infinity, 0x100000000]) {
+        expect(() => defineTopic('chat/{room}', { events: { value: { delivery, ttlMs } } })).toThrow(/ttlMs must be an integer/);
+      }
+      for (const ttlMs of [0, 0xffffffff]) {
+        expect(defineTopic('chat/{room}', { events: { value: { delivery, ttlMs } } }).rule().ttlMs).toEqual({ value: ttlMs });
+      }
+    }
   });
 
-  it('fills in each event\'s delivery and kv TTL, and refuses events outside the map', async () => {
+  it('fills in each event\'s delivery and state TTL, and refuses events outside the map', async () => {
     const fake = new FakeStreamTransport();
     const c = client(fake);
     const conn = await fake.nextConn();
@@ -1475,11 +1484,27 @@ describe('defineTopic', () => {
     await c.connect();
     const room = chatRoom.open(c, { room: '45' });
     expect(room).toBe(c.topic('chat/45'));
-    await room.publish('typing', { on: true });
+    await expect(room.publish('typing', { on: true })).resolves.toBeUndefined();
     room.publish('read', { upTo: 'x' }).catch(() => {});
     const [typing, read] = [await conn.next('publish'), await conn.next('publish')];
-    expect(typing.msg.publish).toMatchObject({ name: 'typing', delivery: DeliveryClass.Ephemeral, ack: AckMode.NoAck });
+    expect(typing.msg.publish).toMatchObject({ name: 'typing', delivery: DeliveryClass.Ephemeral, ack: AckMode.NoAck, ttlMs: 3_000 });
+    expect(typing.msg.publish.idempotencyKey).toBeUndefined();
+    expect(typing.msg.publish.key).toBeUndefined();
     expect(read.msg.publish).toMatchObject({ name: 'read', delivery: DeliveryClass.LastValue, ttlMs: 30 * 86_400_000 });
+    for (const ttlMs of [800, 0, 0xffffffff]) {
+      await expect(room.publish('typing', { on: true }, { ttlMs })).resolves.toBeUndefined();
+      expect((await conn.next('publish')).msg.publish).toMatchObject({ ttlMs, ack: AckMode.NoAck });
+    }
+    const raw = c.topic('chat/raw');
+    await expect(raw.publish('typing', true, { delivery: 'signal', ttlMs: 1_500 })).resolves.toBeUndefined();
+    expect((await conn.next('publish')).msg.publish).toMatchObject({ ttlMs: 1_500, ack: AckMode.NoAck, delivery: DeliveryClass.Ephemeral });
+    for (const ttlMs of [-1, 1.5, NaN, Infinity, 0x100000000]) {
+      await expect(room.publish('typing', { on: true }, { ttlMs })).rejects.toMatchObject({ code: Code.InvalidArgument, local: true });
+      await expect(room.publish('read', { upTo: 'x' }, { ttlMs })).rejects.toMatchObject({ code: Code.InvalidArgument, local: true });
+    }
+    await expect(room.publish('message', { text: 'x' }, { ttlMs: 1 })).rejects.toMatchObject({ code: Code.InvalidArgument, local: true });
+    await expect(room.publish('typing', { on: true }, { key: 'user' })).rejects.toMatchObject({ code: Code.InvalidArgument, local: true });
+    await expect(room.publish('typing', { on: true }, { remove: true })).rejects.toMatchObject({ code: Code.InvalidArgument, local: true });
     await expect(room.publish('message', { text: 'x' }, { delivery: 'signal' } as never)).rejects.toMatchObject({ code: Code.ClassMismatch, local: true });
     await expect((room as unknown as import('../src').Topic).publish('reads', {})).rejects.toMatchObject({ code: Code.InvalidArgument });
   });
