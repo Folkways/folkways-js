@@ -3,7 +3,7 @@
 The Validation workflow runs on pull requests and pushes to main. It uses read-only permissions and does not publish packages.
 
 - SDK and examples: frozen dependency install, workspace build, lint and tests, README TypeScript examples, release package inspection and ESM/CommonJS entry-point smoke tests.
-- Protocol bindings: build the pinned FlatBuffers 24.3.25 compiler, regenerate bindings and fail on any tracked or untracked differences.
+- Protocol bindings: build the pinned FlatBuffers 24.3.25 compiler, regenerate bindings, normalize the pinned compiler's barrel export paths, and fail on any tracked or untracked differences.
 
 The public boundary check rejects newly introduced non-public repository references, endpoints, embedded key material and machine-specific paths without logging matched content. Both source and package checks run without baseline exemptions. This is a limited heuristic, not a substitute for secret scanning or review.
 
