@@ -114,7 +114,7 @@ export class FakeConn implements StreamConnection {
     return hello;
   }
 
-  /** Sends an RTE Close, then drops the socket like the node does. */
+  /** Sends a protocol Close, then drops the socket like the node does. */
   serverClose(code: number, reason = '', retryAfterMs = 0): void {
     this.push({ corr: 0n, msg: { type: 'close', code, reason, retryAfterMs } });
     this.drop(1008);

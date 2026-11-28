@@ -8,8 +8,7 @@ import type { Outbox, OutboxItem } from './outbox';
 export type PublishState = 'queued' | 'inflight' | 'waiting' | 'done';
 
 /**
- * What the node asked publishers to do about outbound pressure (`Flow`,
- * flow control): `throttled` sends in batches, `paused` holds publishes until
+ * What the node asked publishers to do about outbound pressure (`Flow`): `throttled` sends in batches, `paused` holds publishes until
  * the node resumes.
  */
 export type FlowState = 'normal' | 'throttled' | 'paused';

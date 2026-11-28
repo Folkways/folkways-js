@@ -1,8 +1,8 @@
 import { generateKeyPairSync, sign } from 'node:crypto';
 
 /** Local-only fixtures; never used as service credentials. */
-export const DEV_SEGMENT = 'c7e5a92b-62a1-4b14-bd8f-8bb74c77d3ff';
-export const DEV_KID = 'dev-1';
+export const DEV_SEGMENT = '00000000-0000-4000-8000-000000000042';
+export const DEV_KID = 'fixture-key';
 const TEST_KEY = generateKeyPairSync('ed25519').privateKey;
 
 export interface Capability {

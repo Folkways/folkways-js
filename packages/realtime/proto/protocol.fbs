@@ -148,7 +148,7 @@ table Event {
   delivery: DeliveryClass;
   // Event name chosen by the publisher, e.g. "message", "typing", "read".
   name: string;
-  // Stable id minted by the topic owner (AiraID); survives node restarts.
+  // Stable id minted by the topic owner; survives node restarts.
   uid: Uuid128;
   // in a topic with several types, kv and signal events take no
   // sequence number; they carry the topic's state version instead, which

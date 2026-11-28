@@ -87,7 +87,7 @@ Then fill in `.env`, which git ignores too:
 
 ```bash
 FOLKWAYS_URL=https://realtime.example.com
-FOLKWAYS_SEGMENT_ID=5faeecf0-db6e-41a3-9448-afe1b096a6d2
+FOLKWAYS_SEGMENT_ID=00000000-0000-4000-8000-000000000043
 FOLKWAYS_KEY_ID=backend-2026-10
 FOLKWAYS_PRIVATE_KEY_FILE=./secrets/signing-key.pem
 ```
@@ -109,8 +109,7 @@ FOLKWAYS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEI...\n---
 
 Either one takes the key as the dashboard gives it (a PKCS#8 PEM), and also: an `EC PRIVATE KEY` PEM (what
 `openssl ecparam -genkey` writes), the PEM's base64 body without its `-----BEGIN` lines, or a private JWK. The server
-works out whether it is Ed25519 or P-256. There is no shared-secret option: `FOLKWAYS_SECRET` was removed, and the server
-refuses to start while it is set.
+works out whether it is Ed25519 or P-256. Only asymmetric signing keys are supported.
 
 > [!WARNING]
 > The private key lets anyone sign tokens for any user of your segment. Keep it out of your repository, your app's
@@ -129,7 +128,7 @@ pnpm --filter @folkwaysio/token-server dev
 
 ```text
 token-server: listening on http://127.0.0.1:8787
-  segment 5faeecf0-db6e-41a3-9448-afe1b096a6d2, key backend-2026-10 from ./secrets/signing-key.pem, tokens last 600 s
+  segment 00000000-0000-4000-8000-000000000043, key backend-2026-10 from ./secrets/signing-key.pem, tokens last 600 s
 ```
 
 Before it listens, the server signs one token. If a setting is missing or the key can't sign, it says what is wrong
@@ -272,7 +271,6 @@ closes every connection still using a token signed with it.
 | Problem | Fix |
 | --- | --- |
 | `FOLKWAYS_… is not set` when the server starts | Fill in `.env` from `.env.example`, then restart the server |
-| `FOLKWAYS_SECRET is no longer supported` | Shared secrets were removed. Add an Ed25519 key pair in the dashboard, put its private key in `FOLKWAYS_PRIVATE_KEY_FILE` or `FOLKWAYS_PRIVATE_KEY`, set `FOLKWAYS_KEY_ID` to its ID, and delete `FOLKWAYS_SECRET` |
 | `is a public key` | You saved the public half. Use the private key the dashboard showed when the key was created |
 | `holds a key, not a path` / `looks like a file path` | The key and the path are in each other's setting. A path goes in `FOLKWAYS_PRIVATE_KEY_FILE`, the key itself in `FOLKWAYS_PRIVATE_KEY` |
 | `is encrypted` / `is an OpenSSH key` | Decrypt it (`openssl pkcs8 -in encrypted.pem -out key.pem`), or make a PEM key: `openssl genpkey -algorithm ed25519 -out key.pem` |

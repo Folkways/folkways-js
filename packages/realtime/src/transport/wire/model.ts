@@ -117,7 +117,7 @@ export interface WireEvent {
   readonly delivery: DeliveryClass;
   /** Event name chosen by the publisher; absent from nodes before this feature. */
   readonly name?: string;
-  /** Stable id minted by the topic owner (AiraID); absent from nodes before this feature. */
+  /** Stable id minted by the topic owner; absent from nodes before this feature. */
   readonly uid?: Uuid128;
   /**
    * State version of a kv or signal event in a topic with several types,

@@ -28,15 +28,9 @@ jobs:
         with:
           node-version-file: .nvmrc
       - name: Check public source boundary
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           node --test scripts/check-public-boundary.test.mjs
-          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
-            node scripts/check-public-boundary.mjs source --base "$BASE_SHA"
-          else
-            node scripts/check-public-boundary.mjs source --strict
-          fi
+          node scripts/check-public-boundary.mjs source --strict
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm lint

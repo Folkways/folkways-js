@@ -154,7 +154,6 @@ describe('the two ways to give the server its private key', () => {
     const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
     const pkcs8 = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
     const sec1 = privateKey.export({ type: 'sec1', format: 'pem' }) as string;
-    // The bare body is what was once pasted into FOLKWAYS_SECRET and signed as HS256
     const body = pkcs8.replace(/-----[A-Z ]+-----/g, '').replace(/\s+/g, '');
     for (const value of [pkcs8, sec1, body]) {
       const token = await tokenWith({ FOLKWAYS_PRIVATE_KEY: value });
@@ -178,15 +177,6 @@ describe('loadConfig', () => {
   it('lists every missing setting at once, naming both key variables', () => {
     const text = problems({});
     for (const name of ['FOLKWAYS_URL', 'FOLKWAYS_SEGMENT_ID', 'FOLKWAYS_KEY_ID', 'FOLKWAYS_PRIVATE_KEY_FILE', 'FOLKWAYS_PRIVATE_KEY']) expect(text).toContain(name);
-  });
-
-  it('refuses FOLKWAYS_SECRET and says where the private key goes instead', () => {
-    for (const env of [{ FOLKWAYS_SECRET: 'a-shared-secret' }, { FOLKWAYS_SECRET: 'a-shared-secret', FOLKWAYS_PRIVATE_KEY: KEY_PEM }]) {
-      const text = problems({ ...BASE_ENV, ...env });
-      expect(text).toMatch(/FOLKWAYS_SECRET is no longer supported/);
-      expect(text).toContain('FOLKWAYS_PRIVATE_KEY_FILE');
-      expect(text).toContain('FOLKWAYS_PRIVATE_KEY');
-    }
   });
 
   it('takes exactly one private key setting', () => {

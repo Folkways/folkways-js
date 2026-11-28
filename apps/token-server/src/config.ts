@@ -107,12 +107,6 @@ interface PrivateKey {
  */
 function readPrivateKey(env: NodeJS.ProcessEnv, cwd: string, problems: string[]): PrivateKey | undefined {
   const read = (name: string) => env[name]?.trim() ?? '';
-  if (read('FOLKWAYS_SECRET')) {
-    problems.push(
-      'FOLKWAYS_SECRET is no longer supported: shared secrets (HS256) were removed. Signing keys are key pairs; put the private key in FOLKWAYS_PRIVATE_KEY_FILE (a path to the .pem) or FOLKWAYS_PRIVATE_KEY (the key itself), and remove FOLKWAYS_SECRET',
-    );
-    return undefined;
-  }
   const file = read('FOLKWAYS_PRIVATE_KEY_FILE');
   const inline = read('FOLKWAYS_PRIVATE_KEY');
   if (file && inline) {
