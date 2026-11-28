@@ -51,9 +51,7 @@ token itself.
 
 - Node.js 20.12 or newer and pnpm, as the [development guide](../../docs/DEVELOPMENT.md#prerequisites) describes.
 - A segment in the [Folkways dashboard](https://docs.folkways.io/docs/js-sdk/prerequisites). For the example app,
-  give it two topic rules:
-  - `chat/>`, class **Durable**, with presence turned on (so the app can show who is in the room);
-  - `typing/>`, class **Ephemeral**.
+  configure the single mixed-delivery `chat/lobby` rule in the [React example setup](../react-example/README.md#before-you-start). The token grants subscribe, history, publish, set, signal and presence on that exact room; the segment rule must allow these too.
 
 ## 1. Create a signing key
 

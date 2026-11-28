@@ -87,8 +87,7 @@ describe('token endpoint', () => {
       sub: 'user:alice',
       kind: 'user',
       cap: [
-        { topic: 'chat/>', ops: ['subscribe', 'history', 'publish', 'presence'] },
-        { topic: 'typing/>', ops: ['subscribe', 'signal'] },
+        { topic: 'chat/lobby', ops: ['subscribe', 'history', 'publish', 'set', 'signal', 'presence'] },
       ],
     });
     expect(claims.exp - claims.iat).toBe(600);

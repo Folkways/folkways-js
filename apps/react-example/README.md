@@ -4,8 +4,9 @@ A chat on `chat/lobby` built with `@folkwaysio/realtime` and React's `useSyncExt
 "Unbroken" design tokens. You sign in with a name through the [example token server](../token-server), which signs a
 token for you.
 
-- **Messages** on `chat/lobby` (Durable): the last 50 on join, sending status and retry.
-- **Typing** on `typing/lobby` (Ephemeral signals).
+- **Messages**: stream event `message`, the last 50 on join, sending status and retry.
+- **Read positions**: KV event `read`, keyed by publisher, referencing a message UID and retained for 24 hours.
+- **Typing**: signal event `typing`, expires after three seconds. All three events share `chat/lobby`.
 - **Who's here** from the node's `$presence/chat/lobby`: one person per name, with how many connections they have.
 - **Your connections** from `$online/user:<name>`: sign in with the same name in another tab or browser and you are
   one person connected in two places.
@@ -18,7 +19,37 @@ several times.
 In the [Folkways dashboard](https://docs.folkways.io/docs/js-sdk/prerequisites), set up a segment with:
 
 - a signing key, which the token server uses to sign your tokens;
-- two topic rules: `chat/>` with class **Durable** and presence turned on; and `typing/>` with class **Ephemeral**.
+- one mixed topic rule for `chat/lobby`, with presence enabled. Grant subscribe, history, publish, set, signal and presence in the rule. Paste this JSON into the topic-rule editor:
+
+```json
+{
+  "pattern": "chat/lobby",
+  "types": [
+    "kv",
+    "signal",
+    "stream"
+  ],
+  "events": {
+    "message": {
+      "delivery": "stream"
+    },
+    "read": {
+      "delivery": "kv",
+      "key_is_publisher": true,
+      "ttl_ms": 86400000
+    },
+    "typing": {
+      "delivery": "signal",
+      "ttl_ms": 3000
+    }
+  },
+  "strict_events": true,
+  "access": "token",
+  "presence": true
+}
+```
+
+If migrating an older example, replace its separate `chat/>` and `typing/>` rules for this demo rather than leaving overlapping incompatible rules.
 
 Then set up the token server as its [README](../token-server/README.md) explains.
 
@@ -39,12 +70,18 @@ Open the page and sign in with a name. Open a second tab and sign in with anothe
 The dev server forwards `/api` to the token server at `http://127.0.0.1:8787`, so the app and the token endpoint
 share one origin. Set `TOKEN_SERVER_URL` in `apps/react-example/.env.local` only if the token server runs elsewhere.
 
+## Try both transports and reconnect
+
+By default the SDK prefers WebSocket and can fall back to HTTP. Add `?transport=websocket` or `?transport=http` to the app URL to force one transport. With two identities, verify messages, read positions, typing expiry and connection counts over each transport. Go offline and return online; verify reconnect, retained replay and current state. The app reports history gaps.
+
+The read marker demonstrates per-identity state for the latest confirmed message in the open room, not proof that a human read it. Multiple tabs may overwrite one another's position; applications needing monotonic receipts must enforce their own progress rules.
+
 ## What to look at
 
 | File | What it shows |
 | --- | --- |
 | `src/App.tsx` | Sign-in, and one client connected with a `token` function that asks the token server |
-| `src/Chat.tsx` | `topic.messages`, `topic.values()` for typing, presence and your connections, and `client.connection` |
+| `src/Chat.tsx` | `topic.messages`, `topic.values()` for read positions, typing, presence and your connections, and `client.connection` |
 | `src/api.ts` | The calls to the token server: where to connect, sign-in and tokens |
 | `src/styles/tokens.css` | The design tokens, copied from folkways.io |
 | `vite.config.ts` | The `/api` proxy to the token server |
