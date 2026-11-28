@@ -29,7 +29,7 @@ const OPS: readonly Op[] = ['subscribe', 'publish', 'set', 'signal', 'history', 
 const invalid = (message: string) => new RealtimeError(Code.InvalidArgument, { message, local: true });
 
 function validIdentity(value: unknown): value is string {
-  return typeof value === 'string' && value.length <= 245 && /^[A-Za-z0-9._~:@=+-]+$/.test(value) && !value.startsWith('anon:');
+  return typeof value === 'string' && value.length > 0 && value.length <= 245 && !/[^A-Za-z0-9._~:@=+-]/.test(value) && !value.startsWith('anon:');
 }
 function validOps(value: unknown): value is Op[] {
   return Array.isArray(value) && value.length > 0 && value.every((op) => OPS.includes(op as Op));
