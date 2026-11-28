@@ -8,6 +8,7 @@ import {
   type RealtimeOptions,
   type StreamTransport,
   connect,
+  defineTopic,
 } from '../src';
 import { Rest } from '../src/server';
 import type { StreamConnection } from '../src/transport/types';
@@ -117,6 +118,43 @@ for (const transport of ['websocket', 'http'] as const) {
       await until(() => alice.topic(topic).values('location').size === 1, 8_000, 'delete applied');
       expect([...alice.topic(topic).values('location').keys()]).toEqual(['driver-2']);
     });
+
+    it('uses one typed chat room for messages, UID read state, typing and recovery', async () => {
+      const definition = defineTopic<{ message: { text: string }; read: { messageUid: string }; typing: { typing: boolean } }>()('example-chat/{room}', {
+        events: { message: 'stream', read: { delivery: 'kv', keyIsPublisher: true, ttlMs: 86_400_000 }, typing: { delivery: 'signal', ttlMs: 3_000 } },
+        presence: true,
+      });
+      const roomId = uniq();
+      const topic = definition.topic({ room: roomId });
+      const aliceId = `alice:${uniq()}`, bobId = `bob:${uniq()}`;
+      const cap: NonNullable<NonNullable<Parameters<typeof mintToken>[1]>['cap']> = [{ topic, ops: ['subscribe', 'publish', 'set', 'history', 'signal', 'presence'] }];
+      const alice = await open(aliceId, { ...opts, token: () => mintToken(aliceId, { cap }) });
+      const bob = await open(bobId, { ...opts, token: () => mintToken(bobId, { cap }) });
+      const aRoom = definition.open(alice, { room: roomId });
+      const bRoom = definition.open(bob, { room: roomId });
+      const presence = alice.topic(`$presence/${topic}`);
+      await aRoom.subscribe({ from: { last: 50 } }).ready;
+      await bRoom.subscribe().ready;
+      await presence.subscribe({ from: 'oldest' }).ready;
+      const receipt = await aRoom.publish('message', { text: 'hello' });
+      expect(receipt.uid).toBeTruthy();
+      await until(() => bRoom.messages.getSnapshot().some(m => m.uid === receipt.uid), 8_000, 'stream message');
+      await bRoom.publish('read', { messageUid: receipt.uid! });
+      await until(() => (aRoom.values('read').get(bobId)?.data as { messageUid?: string } | undefined)?.messageUid === receipt.uid, 8_000, 'read position');
+      await bRoom.publish('typing', { typing: true });
+      await until(() => aRoom.values('typing').has(bobId), 8_000, 'typing signal');
+      await until(() => !aRoom.values('typing').has(bobId), 8_000, 'typing expiry');
+      expect(aRoom.messages.getSnapshot().map(m => m.name)).toEqual(['message']);
+      const present = () => [...presence.values().values()].some(m => (m.data as { identity?: string } | undefined)?.identity === bobId);
+      if (transport === 'websocket') await until(present, 8_000, 'room presence');
+      else expect(present()).toBe(false);
+      await bob.close();
+      const reopened = await open(bobId, { ...opts, token: () => mintToken(bobId, { cap }) });
+      const replay = definition.open(reopened, { room: roomId });
+      await replay.subscribe({ from: 'oldest' }).ready;
+      await until(() => replay.messages.getSnapshot().some(m => m.uid === receipt.uid) && replay.values('read').has(bobId), 8_000, 'reopened room history and state');
+      expect(replay.values('typing').has(bobId)).toBe(false);
+    }, 45_000);
 
     it('reports Forbidden for topics without a rule or right', async () => {
       const alice = await open('alice', opts);

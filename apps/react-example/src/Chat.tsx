@@ -92,7 +92,7 @@ export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; 
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  const myConnections = Math.max(1, [...onlineValues.values()].filter((m) => !m.deleted).length);
+  const myConnections = [...onlineValues.values()].filter((m) => !m.deleted).length;
 
   // Record the latest confirmed message in the open room, not proof that
   // someone read its text. Use the UID instead of a cursor or local ID.
@@ -117,9 +117,10 @@ export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; 
   }
 
   // You first, then everyone else by name.
+  const present = people(presenceValues);
   const inRoom = [
-    { identity: me.identity, connections: myConnections },
-    ...people(presenceValues)
+    ...present.filter((p) => p.identity === me.identity),
+    ...present
       .filter((p) => p.identity !== me.identity)
       .sort((a, b) => nameOf(a.identity).localeCompare(nameOf(b.identity))),
   ];
@@ -285,11 +286,11 @@ export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; 
         </section>
 
         <aside className={`people ${showPeople ? 'open' : ''}`} aria-label="People in the room">
-          <Eyebrow>In the room · {inRoom.length}</Eyebrow>
+          <Eyebrow>WebSocket presence · {inRoom.length}</Eyebrow>
           <ul className="people-list">
             {inRoom.map((p) => {
               const mine = p.identity === me.identity;
-              const connections = mine ? Math.max(p.connections, myConnections) : p.connections;
+              const connections = p.connections;
               return (
                 <li key={p.identity}>
                   <span className="presence-avatar">
@@ -316,9 +317,9 @@ export function Chat({ client, me, onSignOut }: { client: Realtime; me: SignIn; 
             </p>
             <p className="you-count">
               <span className="live-dot static" aria-hidden="true" />
-              {myConnections === 1 ? 'Connected in this tab only' : `Connected in ${myConnections} places`}
+              {myConnections === 0 ? 'No active WebSocket connections' : `${myConnections} active WebSocket ${myConnections === 1 ? 'connection' : 'connections'}`}
             </p>
-            <p className="note">Same name, same person: every tab or browser that signs in as {me.name} adds a connection.</p>
+            <p className="note">Only WebSocket connections appear in presence. HTTP clients can still exchange messages and state.</p>
           </div>
         </aside>
       </div>

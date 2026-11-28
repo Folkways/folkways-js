@@ -7,7 +7,7 @@ token for you.
 - **Messages**: stream event `message`, the last 50 on join, sending status and retry.
 - **Read positions**: KV event `read`, keyed by publisher, referencing a message UID and retained for 24 hours.
 - **Typing**: signal event `typing`, expires after three seconds. All three events share `chat/lobby`.
-- **Who's here** from the node's `$presence/chat/lobby`: one person per name, with how many connections they have.
+- **Who's here** from `$presence/chat/lobby`: live WebSocket subscribers by identity, with connection counts. HTTP clients can read presence but do not appear in it.
 - **Your connections** from `$online/user:<name>`: sign in with the same name in another tab or browser and you are
   one person connected in two places.
 
@@ -72,7 +72,7 @@ share one origin. Set `TOKEN_SERVER_URL` in `apps/react-example/.env.local` only
 
 ## Try both transports and reconnect
 
-By default the SDK prefers WebSocket and can fall back to HTTP. Add `?transport=websocket` or `?transport=http` to the app URL to force one transport. With two identities, verify messages, read positions, typing expiry and connection counts over each transport. Go offline and return online; verify reconnect, retained replay and current state. The app reports history gaps.
+By default the SDK prefers WebSocket and can fall back to HTTP. Add `?transport=websocket` or `?transport=http` to the app URL to force one transport. With two identities, verify messages, read positions and typing expiry over each transport. On WebSocket, also verify connection counts; HTTP clients do not appear in service-maintained presence. Go offline and return online; verify reconnect, retained replay and current state. The app reports history gaps.
 
 The read marker demonstrates per-identity state for the latest confirmed message in the open room, not proof that a human read it. Multiple tabs may overwrite one another's position; applications needing monotonic receipts must enforce their own progress rules.
 
