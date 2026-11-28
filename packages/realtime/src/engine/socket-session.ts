@@ -34,7 +34,7 @@ export interface SocketSessionOptions {
 type Pending =
   | { kind: 'publish'; p: OutboundPublish }
   | { kind: 'subscribe'; entry: TopicEntry; timer: ReturnType<typeof setTimeout> }
-  | { kind: 'reauth'; resolve: () => void; reject: (e: RealtimeError) => void; timer: ReturnType<typeof setTimeout> }
+  | { kind: 'reauth'; token: string; resolve: () => void; reject: (e: RealtimeError) => void; timer: ReturnType<typeof setTimeout> }
   | { kind: 'ignore' };
 
 interface QueuedFrame {
@@ -68,6 +68,7 @@ export class SocketSession implements Session {
   private heartbeat?: ReturnType<typeof setInterval>;
   private ackTimer?: ReturnType<typeof setInterval>;
   private refreshing = false;
+  private activeToken?: string;
 
   constructor(
     private readonly host: SessionHost,
@@ -83,6 +84,7 @@ export class SocketSession implements Session {
 
   async open(signal: AbortSignal): Promise<SessionInfo> {
     const token = await this.host.tokens.get();
+    this.activeToken = token;
     const conn = await this.transport.connect(this.opts.url, signal);
     this.conn = conn;
     conn.onPacket = (b) => this.onPacket(b);
@@ -363,7 +365,10 @@ export class SocketSession implements Session {
         return;
       }
       case 'reauth':
-        if (msg.type === 'opOk') p.resolve();
+        if (msg.type === 'opOk') {
+          this.activeToken = p.token;
+          p.resolve();
+        }
         else if (msg.type === 'opError') p.reject(opError(msg.code, msg.message, msg.retryAfterMs));
         return;
       case 'ignore':
@@ -416,14 +421,15 @@ export class SocketSession implements Session {
       while (!this.ended && Date.now() < expiresAtMs) {
         try {
           const token = await tokens.refresh('expiring');
-          if (this.ended) return;
+          if (this.ended || tokens.current !== token) return;
           await this.reauth(token);
+          if (this.ended || tokens.current !== token) return;
           const exp = peekJwt(token).exp;
           if (exp) tokens.setExpiry(exp);
           this.host.tokenRefreshed(exp);
           return;
         } catch (err) {
-          if (this.ended) return;
+          if (this.ended || (err instanceof RealtimeError && err.code === Code.Aborted)) return;
           log.warn('token refresh failed; retrying', { err: (err as Error).message });
           await sleep(backoff.next(), this.endController.signal);
         }
@@ -444,7 +450,7 @@ export class SocketSession implements Session {
         this.pending.delete(corr);
         reject(localError(Code.Timeout, 'no reply to Reauth'));
       }, this.host.requestTimeoutMs);
-      this.pending.set(corr, { kind: 'reauth', resolve, reject, timer });
+      this.pending.set(corr, { kind: 'reauth', token, resolve, reject, timer });
       this.enqueue({ frame: { corr, msg: { type: 'reauth', token } } });
     });
   }
@@ -453,6 +459,13 @@ export class SocketSession implements Session {
 
   private onServerClose(): void {
     const c = this.serverClose!;
+    if (c.code === Code.AuthRevoked) {
+      const error = new RealtimeError(c.code, { message: c.reason, retryAfterMs: c.retryAfterMs });
+      this.host.tokens.blockRevocation(error, this.activeToken);
+      for (const p of this.pending.values()) {
+        if (p.kind === 'reauth') this.host.tokens.blockRevocation(error, p.token);
+      }
+    }
     if (this.waiter) {
       this.waiter.reject(new RealtimeError(c.code, { message: c.reason, retryAfterMs: c.retryAfterMs }));
       this.waiter = undefined;

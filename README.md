@@ -2,7 +2,7 @@
 
 Live chat, locations, typing indicators and feeds for web, mobile and Node.js apps.
 `@folkwaysio/realtime` connects your app to Folkways and keeps it in sync: it picks a transport, reconnects after
-network drops, refreshes tokens and resumes every subscription where it left off.
+network drops, refreshes tokens and restores subscriptions from their saved positions when history is available.
 
 **[Documentation](https://docs.folkways.io/docs/js-sdk)** ·
 [Quick start](https://docs.folkways.io/docs/js-sdk/quick-start) ·
@@ -11,9 +11,9 @@ network drops, refreshes tokens and resumes every subscription where it left off
 
 ## Features
 
-- **Topics with three delivery types:** ordered, replayable `stream` events; shared `kv` state; short-lived `signal`s.
-- **Resilient by default:** reconnects with backoff, resumes from the last event handled, never delivers twice.
-- **Safe publishing:** every publish is applied at most once, retried when it can be, and queued while offline.
+- **Three delivery types on one topic:** ordered, replayable `stream` events; shared `kv` state; short-lived `signal`s.
+- **Reconnect and resume:** reconnects with backoff, replays retained stream events and refreshes current state. Reports gaps when history is unavailable.
+- **Retry-aware publishing:** queues stream and KV publishes within configured limits and reuses idempotency keys on retries.
 - **WebSocket with HTTP fallback:** switches to long-polling where WebSockets are blocked, and back.
 - **UI-ready live views:** message lists and current values that plug into React, Svelte or Vue.
 - **Typed:** written in TypeScript, with event maps that type every payload.
@@ -46,7 +46,7 @@ const lobby = client.topic<{ message: { text: string } }>('chat/lobby');
 // Receive the last 20 messages, then every new one.
 lobby.subscribe((msg) => console.log(`${msg.publisher}: ${msg.data.text}`), { from: { last: 20 } });
 
-// Send one. It resolves once Folkways has stored it.
+// Send one. The receipt confirms the level of acknowledgement reached.
 await lobby.publish('message', { text: 'Hello!' });
 ```
 
@@ -54,16 +54,40 @@ await lobby.publish('message', { text: 'Hello!' });
 
 | Type | What Folkways keeps | Use it for |
 | --- | --- | --- |
-| `stream` (default) | Every event, in order, replayable | Chat, feeds, orders |
-| `kv` | The latest value per key | Locations, read receipts, status, scores |
-| `signal` | Each sender's latest signal, for 5 seconds | Typing indicators, live cursors |
+| `stream` (default) | Ordered events within the configured retention limits | Chat, feeds, orders |
+| `kv` | Latest value per event name and key | Locations, read receipts, status, scores |
+| `signal` | Latest short-lived signal per event name and publisher | Typing indicators, live cursors |
+
+One topic can carry all three types. Configure a rule matching `rooms/*` in the dashboard with `message` (Stream),
+`read` (KV) and `typing` (Signal), and grant the user the corresponding operations and subscription access.
 
 ```ts
-await client.topic('rides/42/location').publish('location', { lat: 59.43, lng: 24.75 }, { delivery: 'kv' });
-client.topic('typing/lobby').publish('typing', { on: true }, { delivery: 'signal' });
+const room = client.topic('rooms/42');
+const sub = room.subscribe({ from: { last: 20 } });
+await sub.ready;
+
+const receipt = await room.publish('message', { text: 'Hello!' });
+if (receipt.uid) {
+  await room.publish('read', { messageUid: receipt.uid }, { delivery: 'kv' });
+}
+void room.publish('typing', { on: true }, { delivery: 'signal' });
 ```
 
+`room.messages` exposes the stream message view; `room.values('read')` and `room.values('typing')` expose current state.
+In mixed-type topics, only stream events receive stream sequence numbers. Use the event's `uid` for lasting references,
+such as read receipts, rather than its cursor. Signal events have no UID.
+
 Read more in [Topics and events](https://docs.folkways.io/docs/js-sdk/topics-and-events).
+
+## Delivery guarantees
+
+- **Acknowledgements:** stream and KV publishes return a receipt. `accepted` means the node accepted the event, not that it has committed it to durable storage. When disk-backed stream storage is enabled, a crash may still lose recently accepted events.
+- **Replay and retention:** stream history is bounded by the topic's retention limit and a maximum of 24 hours. Disk-backed history can survive a restart when enabled and intact; in-memory history cannot. The SDK reports a gap when the requested history is no longer available. Store business-critical records in your own durable system.
+- **Idempotency:** retries reuse the same key. The node remembers keys for up to 10 minutes, with at most 10,000 entries per topic, scoped to the publisher and topic. Retries outside that window, or after the scope is lost, may apply again. A publish timeout does not establish that the event failed to reach the node.
+- **Current state:** KV and signals are held in memory on the node. Subscribers receive current values, not a history of every intermediate update. KV deletions and expiry are represented by tombstones; signals expire silently. Signal TTL defaults to five seconds, and this SDK's local signal view uses its configured `signalTtlMs` approximation.
+- **Reconnect:** the SDK resubscribes rather than restoring a server session. Stream replay is limited to retained history; applications should handle gaps and make durable side effects idempotent. Offline signals are dropped rather than queued or retried.
+
+See [Publishing](https://docs.folkways.io/docs/js-sdk/publishing), [Subscribing](https://docs.folkways.io/docs/js-sdk/subscribing) and [Current limitations](https://docs.folkways.io/docs/js-sdk/limitations).
 
 ## Entry points
 

@@ -9,7 +9,7 @@ export type PublishState = 'queued' | 'inflight' | 'waiting' | 'done';
 
 /**
  * What the node asked publishers to do about outbound pressure (`Flow`,
- * ADR-015 D4): `throttled` sends in batches, `paused` holds publishes until
+ * flow control): `throttled` sends in batches, `paused` holds publishes until
  * the node resumes.
  */
 export type FlowState = 'normal' | 'throttled' | 'paused';

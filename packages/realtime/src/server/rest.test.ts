@@ -7,7 +7,7 @@ import { AckMode, type ClientFrame, type ServerMsg, joinLengthPrefixed } from '.
 import { Folkways, Rest } from './index';
 
 const EPOCH = 1879046969544933376n;
-const SEG = 'c7e5a92b-62a1-4b14-bd8f-8bb74c77d3ff';
+const SEG = '00000000-0000-4000-8000-000000000042';
 /** The key most tests sign with; the ones about signing make their own. */
 const DEV = generateKeyPairSync('ed25519');
 const DEV_KEY = DEV.privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
@@ -65,7 +65,7 @@ async function pair(alg: 'EdDSA' | 'ES256') {
 }
 
 const rest = (extra: Partial<ConstructorParameters<typeof Rest>[0]> = {}) =>
-  new Rest({ url: 'http://localhost:9006', segment: SEG, signingKey: { kid: 'dev-1', privateKey: DEV_KEY }, ...extra });
+  new Rest({ url: 'http://localhost:9006', segment: SEG, signingKey: { kid: 'fixture-key', privateKey: DEV_KEY }, ...extra });
 
 describe('Folkways.Rest', () => {
   it('signs tokens in process with an Ed25519 key, without calling the node', async () => {
@@ -176,10 +176,12 @@ describe('Folkways.Rest', () => {
 
   it('does not replace a revoked service token or retry the publish', async () => {
     const node = fakeNode(() => ({ type: 'close', code: Code.AuthRevoked, reason: 'revoked', retryAfterMs: 0 }), 401);
-    await expect(rest({ fetch: node.fetch }).publish('chat/1', 'm', 'x')).rejects.toMatchObject({
+    const service = rest({ fetch: node.fetch });
+    await expect(service.publish('chat/1', 'm', 'x')).rejects.toMatchObject({
       code: Code.AuthRevoked,
-      message: 'revoked',
+      message: 'AuthRevoked: revoked',
     });
+    await expect(service.publish('chat/1', 'm', 'again')).rejects.toMatchObject({ code: Code.AuthRevoked });
     expect(node.calls).toHaveLength(1);
   });
 

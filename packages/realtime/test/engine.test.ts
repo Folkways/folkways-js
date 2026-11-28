@@ -71,7 +71,7 @@ describe('connection', () => {
     const c = client(fake, { token: provider });
     const conn = await fake.nextConn();
     await conn.next('hello');
-    const failure = expect(c.connect()).rejects.toMatchObject({ code: Code.AuthRevoked, message: 'revoked' });
+    const failure = expect(c.connect()).rejects.toMatchObject({ code: Code.AuthRevoked, message: 'AuthRevoked: revoked' });
     conn.serverClose(Code.AuthRevoked, 'revoked');
     await failure;
     expect(c.connection.state).toBe('failed');
@@ -109,11 +109,30 @@ describe('connection', () => {
     const conn = await fake.nextConn();
     await conn.welcome();
     await c.connect();
-    const failed = expect(c.updateToken(mintToken('alice', { ttlSecs: 900 }))).rejects.toMatchObject({ code: Code.AuthRevoked, message: 'revoked' });
+    const failed = expect(c.updateToken(mintToken('alice', { ttlSecs: 900 }))).rejects.toMatchObject({ code: Code.AuthRevoked, message: 'AuthRevoked: revoked' });
     const reauth = await conn.next('reauth');
     conn.reply(reauth.corr, { type: 'opError', code: Code.AuthRevoked, message: 'revoked', retryAfterMs: 0, topicId: 0n });
     await failed;
     await until(() => c.connection.state === 'failed');
+    expect(fake.conns).toHaveLength(1);
+  });
+
+  it('ignores an automatic refresh completed after revocation', async () => {
+    const fake = new FakeStreamTransport();
+    const original = mintToken('alice');
+    let resolve!: (token: string) => void;
+    const provider = vi.fn(({ reason }: { reason: string }) => reason === 'initial' ? original : new Promise<string>((r) => { resolve = r; }));
+    const c = client(fake, { token: provider });
+    const conn = await fake.nextConn();
+    await conn.welcome();
+    await c.connect();
+    conn.reply(0n, { type: 'tokenExpiring', expiresAtMs: Date.now() + 30_000 });
+    await until(() => provider.mock.calls.length === 2);
+    conn.serverClose(Code.AuthRevoked, 'revoked');
+    await until(() => c.connection.state === 'failed');
+    resolve(mintToken('alice', { ttlSecs: 900 }));
+    await expect(c.updateToken(original)).rejects.toMatchObject({ code: Code.AuthRevoked });
+    await expect(c.connect()).rejects.toMatchObject({ code: Code.AuthRevoked });
     expect(fake.conns).toHaveLength(1);
   });
 

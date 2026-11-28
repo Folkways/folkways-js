@@ -5,7 +5,7 @@ import type { WireCapability } from '../transport';
 import type { CursorStore } from './cursor-store';
 
 /**
- * The local store port (ADR-001 D5): a small string key-value interface.
+ * The local store port: a small string key-value interface.
  * Methods may be async. Only the engine writes to it.
  */
 export interface Store {

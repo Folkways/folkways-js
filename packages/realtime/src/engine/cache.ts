@@ -53,7 +53,7 @@ export function decodeEvent(o: Json): WireEvent {
 }
 
 /**
- * A bounded cache of what the node already sent (ADR-001 D5): recent stream
+ * A bounded cache of what the node already sent: recent stream
  * events per topic and kv values, in a persistent store, so a reload can
  * render at once and then catch up. Signals are never stored. Writes are
  * coalesced per topic.

@@ -43,7 +43,7 @@ export interface DeliveredEvent {
 export interface ActiveInfo {
   readonly topicId: bigint;
   readonly deliveryClass: DeliveryClass;
-  /** Event types the topic's rule allows; empty from nodes before ADR-001. */
+  /** Event types the topic's rule allows; empty from nodes before mixed delivery support. */
   readonly deliveries: readonly DeliveryClass[];
   readonly catchingUp: boolean;
   readonly oldest?: Cursor;
@@ -200,7 +200,7 @@ export class TopicEntry {
     return unionTypes([...this.listeners].map((l) => l.types));
   }
 
-  /** The type of an event: its own, else the frame's, else the topic's (nodes before ADR-001). */
+  /** The type of an event: its own, else the frame's, else the topic's (nodes before mixed delivery support). */
   deliveryOf(e: WireEvent, frame: DeliveryClass = DeliveryClass.Unspecified): DeliveryClass {
     return e.delivery || frame || this.deliveryClass || DeliveryClass.Durable;
   }
@@ -436,7 +436,7 @@ export class SubscriptionRegistry {
     for (const event of d.events) {
       const delivery = entry.deliveryOf(event, d.delivery);
       // Only numbered events take part in order, dedup and resume; nodes
-      // with ADR-001 number stream events only, so kv and signal events
+      // with mixed delivery support number stream events only, so kv and signal events
       // (seq 0) never look like a gap or a duplicate.
       const numbered = event.seq > 0n;
       const c: Cursor = { epoch: event.epoch, seq: event.seq };
@@ -641,7 +641,7 @@ export class SubscriptionRegistry {
   private async processed(entry: TopicEntry, c: Cursor, gen: number): Promise<void> {
     if (gen !== entry.positionGen) return; // the position was replaced since
     entry.processed = c;
-    if (entry.isState && entry.allowed.length === 0) return; // a state topic on a node before ADR-001: snapshots resume it
+    if (entry.isState && entry.allowed.length === 0) return; // a state topic on a node before mixed delivery support: snapshots resume it
     try {
       await this.opts.cursorStore.set(entry.name, c);
     } catch (err) {

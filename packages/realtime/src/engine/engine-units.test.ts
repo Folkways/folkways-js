@@ -156,6 +156,31 @@ describe('TokenManager', () => {
     expect(provider.mock.calls[2]![0]).toEqual({ reason: 'rejected' });
   });
 
+  it('does not let an obsolete refresh overwrite explicitly replaced credentials', async () => {
+    let resolve!: (token: string) => void;
+    const tm = new TokenManager(() => new Promise<string>((r) => { resolve = r; }));
+    const pending = expect(tm.refresh('initial')).rejects.toMatchObject({ code: Code.Aborted });
+    const fresh = mintToken('alice');
+    tm.setSource(fresh);
+    resolve(mintToken('bob'));
+    await pending;
+    expect(tm.current).toBe(fresh);
+  });
+
+  it('blocks a refresh that completes after revocation', async () => {
+    let resolve!: (token: string) => void;
+    const tm = new TokenManager(() => new Promise<string>((r) => { resolve = r; }));
+    const token = mintToken('alice');
+    tm.adopt(token);
+    const pending = expect(tm.refresh('expiring')).rejects.toMatchObject({ code: Code.AuthRevoked });
+    tm.blockRevocation(new RealtimeError(Code.AuthRevoked), token);
+    resolve(mintToken('alice', { ttlSecs: 900 }));
+    await pending;
+    await expect(tm.get()).rejects.toMatchObject({ code: Code.AuthRevoked });
+    expect(tm.isRevoked(token)).toBe(true);
+    expect(tm.current).toBe(token);
+  });
+
   it('reads seg, kind and cap without verifying', () => {
     const t = mintToken('dan', { seg: 'seg-1', cap: [{ topic: 'chat/*', ops: ['publish', 'subscribe'] }] });
     expect(peekJwt(t)).toMatchObject({ sub: 'dan', seg: 'seg-1', cap: [{ topic: 'chat/*', ops: ['publish', 'subscribe'] }] });
@@ -655,7 +680,7 @@ describe('SubscriptionRegistry', () => {
     expect(e.processed).toEqual({ epoch: 2n, seq: 1n });
   });
 
-  describe('events of several types in one topic', () => {
+  describe('events of several types in one topic (ADR-001)', () => {
     const { Durable: S, LastValue: KV, Ephemeral: SIG } = DeliveryClass;
     const deliver = (...events: ReturnType<typeof event>[]) => ({ topicId: 1n, delivery: DeliveryClass.Unspecified, replayed: false, events });
 
@@ -687,7 +712,7 @@ describe('SubscriptionRegistry', () => {
       expect(e.kv.get('location')!.has('user:7')).toBe(true);
     });
 
-    it('falls back to the frame and topic class for nodes before the feature was introduced', async () => {
+    it('falls back to the frame and topic class for nodes before mixed delivery support', async () => {
       const r = new SubscriptionRegistry({ cursorStore: memoryCursorStore(), logger: silentLogger, onChange: () => {} });
       const types: number[] = [];
       const l: TopicListener = { ...listener().l, onEvent: (d) => void types.push(d.delivery) };

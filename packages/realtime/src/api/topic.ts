@@ -113,9 +113,10 @@ export class Topic<E extends EventMap = EventMap, S extends keyof E & string = n
 
   /**
    * Publishes one event. Stream and kv events resolve with the node's
-   * receipt; retries reuse the idempotency key, so an event is applied at
-   * most once. Signals are fire-and-forget: dropped while not connected,
-   * and the promise resolves once written (or dropped).
+   * receipt, which reports the acknowledgement level reached. Retries reuse
+   * the idempotency key; deduplication is bounded by the node's retained
+   * idempotency window. Signals are fire-and-forget: dropped while not
+   * connected, and the promise resolves once written (or dropped).
    */
   publish<K extends S>(event: K, data: E[K], opts?: PublishOptions): Promise<void>;
   publish<K extends keyof E & string>(event: K, data: E[K], opts: PublishOptions & { delivery: 'signal' }): Promise<void>;
