@@ -34,7 +34,7 @@ const samePosition = (a: Cursor | undefined, b: Cursor | undefined): boolean => 
 /** Topics per `Poll` (schema limit). */
 const MAX_POLL_TOPICS = 256;
 
-/** RTE code for an HTTP status that carried no RTE body (a proxy answered). */
+/** Protocol code for an HTTP status without a protocol body (a proxy answered). */
 function codeForStatus(status: number): number {
   switch (status) {
     case 400:
@@ -468,8 +468,22 @@ export class PollSession implements Session {
     let refreshed = false;
     for (;;) {
       const token = await tokens.get();
+      if (signal.aborted) throw new TransportError('aborted', true);
       const reply = await this.transport.request(this.opts.baseUrl, path, token, packet, signal);
       const frames = reply.packets.flatMap((p) => decodeServerPacket(p));
+      // Revocation is terminal even if a gateway returns an unexpected HTTP status.
+      for (const { msg } of frames) {
+        if (msg.type === 'close' && msg.code === Code.AuthRevoked) {
+          const error = new RealtimeError(msg.code, { message: msg.reason, retryAfterMs: msg.retryAfterMs });
+          tokens.blockRevocation(error, token);
+          throw error;
+        }
+        if (msg.type === 'opError' && msg.code === Code.AuthRevoked) {
+          const error = new RealtimeError(msg.code, { message: msg.message, retryAfterMs: msg.retryAfterMs });
+          tokens.blockRevocation(error, token);
+          throw error;
+        }
+      }
       if (reply.status === 200) return frames;
       const close = frames.find((f) => f.msg.type === 'close')?.msg;
       const c = close?.type === 'close' ? close : undefined;

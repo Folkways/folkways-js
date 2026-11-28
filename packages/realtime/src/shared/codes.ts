@@ -1,12 +1,12 @@
 /**
- * RTE outcome codes and the contract every client must follow for each.
+ * Protocol outcome codes and the contract every client must follow for each.
  *
- * Mirrors `rte/src/proto/codes.rs`: for every code, its HTTP status, what a
- * client may do next and whether the node closes the connection after it.
+ * For every code, its HTTP status, what a client may do next and whether
+ * the service closes the connection after it.
  * `codes.test.ts` keeps this table complete against the generated schema enum.
  */
 
-/** RTE wire codes (`enum Code` in `rte.fbs`), plus SDK-local codes from 1000 up. */
+/** Protocol wire codes, plus SDK-local codes from 1000 up. */
 export const Code = {
   Ok: 0,
 
@@ -25,6 +25,7 @@ export const Code = {
   Suspended: 204,
   ResumeRejected: 205,
   Replaced: 206,
+  AuthRevoked: 207,
 
   RateLimited: 300,
   QuotaExceeded: 301,
@@ -95,6 +96,7 @@ const TABLE: ReadonlyMap<number, CodeInfo> = new Map<number, CodeInfo>([
   [Code.ResumeRejected, info('ResumeRejected', 409, 'never', false)],
   // A newer connection for the same identity took this one's place.
   [Code.Replaced, info('Replaced', 409, 'never', true)],
+  [Code.AuthRevoked, info('AuthRevoked', 401, 'never', true)],
 
   [Code.RateLimited, info('RateLimited', 429, 'backoff', false)],
   [Code.QuotaExceeded, info('QuotaExceeded', 429, 'backoff', false)],
@@ -122,7 +124,7 @@ const TABLE: ReadonlyMap<number, CodeInfo> = new Map<number, CodeInfo>([
   [Code.IdentityChanged, info('IdentityChanged', 0, 'never', false)],
 ]);
 
-/** Every RTE wire code (excludes SDK-local codes). */
+/** Every protocol wire code (excludes SDK-local codes). */
 export const WIRE_CODES: readonly number[] = [...TABLE.keys()].filter((c) => c < 1000);
 
 /** The contract for a code. Unknown codes are treated as non-retryable. */
@@ -141,6 +143,7 @@ export function codeName(code: number): string {
 export function isFatalCloseCode(code: number): boolean {
   switch (code) {
     case Code.AuthInvalid:
+    case Code.AuthRevoked:
     case Code.Suspended:
     case Code.Replaced:
     case Code.BadFrame:

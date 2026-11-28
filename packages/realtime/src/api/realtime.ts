@@ -106,7 +106,8 @@ export class Realtime {
    * Connects and resolves with the session. Retryable failures are retried
    * quietly until `connectTimeoutMs`; rejects with a `RealtimeError` on a
    * fatal one (the connection is then `failed`), or with `Timeout` while
-   * the client keeps trying. After `failed`, calling it again starts over.
+   * the client keeps trying. After `failed`, calling it again starts over,
+   * except after AuthRevoked: explicitly update the token before reconnecting.
    */
   async connect(opts: ConnectOptions = {}): Promise<Session> {
     if (opts.segment !== undefined) this.assertSegment(opts.segment);

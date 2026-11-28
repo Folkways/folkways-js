@@ -65,6 +65,77 @@ describe('connection', () => {
     expect(fake.conns).toHaveLength(1);
   });
 
+  it('rejects a revoked handshake without refreshing or reconnecting', async () => {
+    const fake = new FakeStreamTransport();
+    const provider = vi.fn(() => mintToken('alice'));
+    const c = client(fake, { token: provider });
+    const conn = await fake.nextConn();
+    await conn.next('hello');
+    const failure = expect(c.connect()).rejects.toMatchObject({ code: Code.AuthRevoked, message: 'AuthRevoked: revoked' });
+    conn.serverClose(Code.AuthRevoked, 'revoked');
+    await failure;
+    expect(c.connection.state).toBe('failed');
+    await expect(c.connect()).rejects.toMatchObject({ code: Code.AuthRevoked });
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(fake.conns).toHaveLength(1);
+  });
+
+  it('rejects in-flight publishes and requires an explicit new token after revocation', async () => {
+    const fake = new FakeStreamTransport();
+    const token = mintToken('alice');
+    const c = client(fake, { token });
+    const conn = await fake.nextConn();
+    await conn.welcome();
+    await c.connect();
+    const pending = expect(c.topic('chat/lobby').publish('message', 'hi')).rejects.toMatchObject({ code: Code.AuthRevoked });
+    await conn.next('publish');
+    conn.serverClose(Code.AuthRevoked, 'revoked');
+    await pending;
+    await until(() => c.connection.state === 'failed');
+    await expect(c.updateToken(token)).rejects.toMatchObject({ code: Code.AuthRevoked });
+    await expect(c.connect()).rejects.toMatchObject({ code: Code.AuthRevoked });
+    expect(fake.conns).toHaveLength(1);
+    await c.updateToken(mintToken('alice', { ttlSecs: 900 }));
+    const connected = c.connect();
+    const next = await fake.nextConn();
+    await next.welcome();
+    await connected;
+    expect(c.connection.state).toBe('connected');
+  });
+
+  it('preserves revocation when explicit reauthentication is rejected', async () => {
+    const fake = new FakeStreamTransport();
+    const c = client(fake);
+    const conn = await fake.nextConn();
+    await conn.welcome();
+    await c.connect();
+    const failed = expect(c.updateToken(mintToken('alice', { ttlSecs: 900 }))).rejects.toMatchObject({ code: Code.AuthRevoked, message: 'AuthRevoked: revoked' });
+    const reauth = await conn.next('reauth');
+    conn.reply(reauth.corr, { type: 'opError', code: Code.AuthRevoked, message: 'revoked', retryAfterMs: 0, topicId: 0n });
+    await failed;
+    await until(() => c.connection.state === 'failed');
+    expect(fake.conns).toHaveLength(1);
+  });
+
+  it('ignores an automatic refresh completed after revocation', async () => {
+    const fake = new FakeStreamTransport();
+    const original = mintToken('alice');
+    let resolve!: (token: string) => void;
+    const provider = vi.fn(({ reason }: { reason: string }) => reason === 'initial' ? original : new Promise<string>((r) => { resolve = r; }));
+    const c = client(fake, { token: provider });
+    const conn = await fake.nextConn();
+    await conn.welcome();
+    await c.connect();
+    conn.reply(0n, { type: 'tokenExpiring', expiresAtMs: Date.now() + 30_000 });
+    await until(() => provider.mock.calls.length === 2);
+    conn.serverClose(Code.AuthRevoked, 'revoked');
+    await until(() => c.connection.state === 'failed');
+    resolve(mintToken('alice', { ttlSecs: 900 }));
+    await expect(c.updateToken(original)).rejects.toMatchObject({ code: Code.AuthRevoked });
+    await expect(c.connect()).rejects.toMatchObject({ code: Code.AuthRevoked });
+    expect(fake.conns).toHaveLength(1);
+  });
+
   it('rejects connect and closes on AuthInvalid with a static token', async () => {
     const fake = new FakeStreamTransport();
     const c = client(fake);
@@ -1523,6 +1594,40 @@ describe('http long-poll', () => {
     // No stream events yet, so the stream part starts from the oldest; state resumes from the version.
     expect(bodies[1]).toMatchObject({ start: StartAt.Oldest, stateAfter: { epoch: EPOCH, seq: 1n } });
     expect(bodies[2]).toMatchObject({ stateAfter: { epoch: EPOCH, seq: 2n } });
+  });
+
+  it.each(['connect', 'publish', 'poll'] as const)('stops HTTP on revocation during %s without refreshing', async (phase) => {
+    const provider = vi.fn(() => mintToken('alice'));
+    const http = new FakeRequestTransport((path, _token, frames) => {
+      if (phase === 'connect' || (phase === 'poll' && path === '/v1/poll') || frames.some((f) => f.msg.type === 'publish')) {
+        return { status: 401, frames: [{ corr: 0n, msg: { type: 'close', code: Code.AuthRevoked, reason: 'revoked', retryAfterMs: 0 } }] };
+      }
+      return { frames: frames.map((f) => ({ corr: f.corr, msg: { type: 'pong', nonce: 1n, tsMs: Date.now() } as const })) };
+    });
+    const c = new Realtime({
+      endpoints: { http: 'http://fake' },
+      transports: ['http'],
+      token: provider,
+      connectTimeoutMs: 0,
+      transportOverrides: { request: http },
+    });
+    clients.push(c);
+    if (phase === 'connect') {
+      await expect(c.connect()).rejects.toMatchObject({ code: Code.AuthRevoked });
+    } else {
+      await c.connect();
+      if (phase === 'publish') {
+        await expect(c.topic('chat/lobby').publish('message', 'hi')).rejects.toMatchObject({ code: Code.AuthRevoked });
+      } else {
+        const sub = c.topic('chat/lobby').subscribe();
+        void sub.ready.catch(() => {});
+      }
+      await until(() => c.connection.state === 'failed');
+    }
+    expect(c.connection.error?.code).toBe(Code.AuthRevoked);
+    await expect(c.connect()).rejects.toMatchObject({ code: Code.AuthRevoked });
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(http.calls).toHaveLength(phase === 'connect' ? 1 : 2);
   });
 
   it('refreshes the token once on a 401 AuthExpired', async () => {
